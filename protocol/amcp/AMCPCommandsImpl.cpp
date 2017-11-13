@@ -87,16 +87,16 @@
 /* Return codes
 
 102 [action]			Information that [action] has happened
-101 [action]			Information that [action] has happened plus one row of data  
+101 [action]			Information that [action] has happened plus one row of data
 
 202 [command] OK		[command] has been executed
-201 [command] OK		[command] has been executed, plus one row of data  
+201 [command] OK		[command] has been executed, plus one row of data
 200 [command] OK		[command] has been executed, plus multiple lines of data. ends with an empty line
 
 400 ERROR				the command could not be understood
 401 [command] ERROR		invalid/missing channel
 402 [command] ERROR		parameter missing
-403 [command] ERROR		invalid parameter  
+403 [command] ERROR		invalid parameter
 404 [command] ERROR		file not found
 
 500 FAILED				internal error
@@ -134,7 +134,7 @@ std::wstring read_utf8_file(const boost::filesystem::path& file)
 	std::wstringstream result;
 	boost::filesystem::wifstream filestream(file);
 
-	if (filestream) 
+	if (filestream)
 	{
 		// Consume BOM first
 		filestream.get();
@@ -233,21 +233,34 @@ std::wstring MediaInfo(const boost::filesystem::path& path, const spl::shared_pt
 		+ L"\r\n";
 }
 
-std::wstring ListMedia(const spl::shared_ptr<media_info_repository>& media_info_repo)
-{	
+std::wstring get_sub_directory(const std::wstring& base_folder, const std::wstring& sub_directory)
+{
+	if (sub_directory.empty())
+		return base_folder;
+
+	auto found = find_case_insensitive(base_folder + L"/" + sub_directory);
+
+	if (!found)
+		CASPAR_THROW_EXCEPTION(file_not_found() << msg_info(L"Sub directory " + sub_directory + L" not found."));
+
+	return *found;
+}
+
+std::wstring ListMedia(const spl::shared_ptr<media_info_repository>& media_info_repo, const std::wstring& sub_directory = L"")
+{
 	std::wstringstream replyString;
-	for (boost::filesystem::recursive_directory_iterator itr(env::media_folder()), end; itr != end; ++itr)
+	for (boost::filesystem::recursive_directory_iterator itr(get_sub_directory(env::media_folder(), sub_directory)), end; itr != end; ++itr)
 		replyString << MediaInfo(itr->path(), media_info_repo);
-	
+
 	return boost::to_upper_copy(replyString.str());
 }
 
-std::wstring ListTemplates(const spl::shared_ptr<core::cg_producer_registry>& cg_registry)
+std::wstring ListTemplates(const spl::shared_ptr<core::cg_producer_registry>& cg_registry, const std::wstring& sub_directory = L"")
 {
 	std::wstringstream replyString;
 
-	for (boost::filesystem::recursive_directory_iterator itr(env::template_folder()), end; itr != end; ++itr)
-	{		
+	for (boost::filesystem::recursive_directory_iterator itr(get_sub_directory(env::template_folder(), sub_directory)), end; itr != end; ++itr)
+	{
 		if(boost::filesystem::is_regular_file(itr->path()) && cg_registry->is_cg_extension(itr->path().extension().wstring()))
 		{
 			auto relativePath = get_relative_without_extension(itr->path(), env::template_folder());
@@ -264,7 +277,7 @@ std::wstring ListTemplates(const spl::shared_ptr<core::cg_producer_registry>& cg
 			auto dir = relativePath.parent_path();
 			auto file = boost::to_upper_copy(relativePath.filename().wstring());
 			relativePath = dir / file;
-						
+
 			auto str = relativePath.generic_wstring();
 			boost::trim_if(str, boost::is_any_of("\\/"));
 
@@ -280,15 +293,21 @@ std::wstring ListTemplates(const spl::shared_ptr<core::cg_producer_registry>& cg
 	return replyString.str();
 }
 
+std::vector<spl::shared_ptr<core::video_channel>> get_channels(const command_context& ctx)
+{
+	return cpplinq::from(ctx.channels)
+		.select([](channel_context c) { return spl::make_shared_ptr(c.channel); })
+		.to_vector();
+}
+
 core::frame_producer_dependencies get_producer_dependencies(const std::shared_ptr<core::video_channel>& channel, const command_context& ctx)
 {
 	return core::frame_producer_dependencies(
 			channel->frame_factory(),
-			cpplinq::from(ctx.channels)
-					.select([](channel_context c) { return spl::make_shared_ptr(c.channel); })
-					.to_vector(),
+			get_channels(ctx),
 			channel->video_format_desc(),
-			ctx.producer_registry);
+			ctx.producer_registry,
+			ctx.cg_registry);
 }
 
 // Basic Commands
@@ -536,7 +555,7 @@ void call_describer(core::help_sink& sink, const core::help_repository& repo)
 
 std::wstring call_command(command_context& ctx)
 {
-	auto result = ctx.channel.channel->stage().call(ctx.layer_index(), ctx.parameters);
+	auto result = ctx.channel.channel->stage().call(ctx.layer_index(), ctx.parameters).get();
 
 	// TODO: because of std::async deferred timed waiting does not work
 
@@ -545,10 +564,10 @@ std::wstring call_command(command_context& ctx)
 	CASPAR_THROW_EXCEPTION(timed_out());*/
 
 	std::wstringstream replyString;
-	if (result.get().empty())
+	if (result.empty())
 		replyString << L"202 CALL OK\r\n";
 	else
-		replyString << L"201 CALL OK\r\n" << result.get() << L"\r\n";
+		replyString << L"201 CALL OK\r\n" << result << L"\r\n";
 
 	return replyString.str();
 }
@@ -616,6 +635,7 @@ void add_describer(core::help_sink& sink, const core::help_repository& repo)
 	sink.example(L">> ADD 1 SCREEN");
 	sink.example(L">> ADD 1 AUDIO");
 	sink.example(L">> ADD 1 IMAGE filename");
+	sink.example(L">> ADD 2 SYNCTO 1");
 	sink.example(L">> ADD 1 FILE filename.mov");
 	sink.example(L">> ADD 1 FILE filename.mov SEPARATE_KEY");
 	sink.example(
@@ -635,7 +655,7 @@ std::wstring add_command(command_context& ctx)
 	core::diagnostics::scoped_call_context save;
 	core::diagnostics::call_context::for_thread().video_channel = ctx.channel_index + 1;
 
-	auto consumer = ctx.consumer_registry->create_consumer(ctx.parameters, &ctx.channel.channel->stage());
+	auto consumer = ctx.consumer_registry->create_consumer(ctx.parameters, &ctx.channel.channel->stage(), get_channels(ctx));
 	ctx.channel.channel->output().add(ctx.layer_index(consumer->index()), consumer);
 
 	return L"202 ADD OK\r\n";
@@ -660,7 +680,7 @@ void remove_describer(core::help_sink& sink, const core::help_repository& repo)
 std::wstring remove_command(command_context& ctx)
 {
 	auto index = ctx.layer_index(std::numeric_limits<int>::min());
-	
+
 	if (index == std::numeric_limits<int>::min())
 	{
 		replace_placeholders(
@@ -668,7 +688,7 @@ std::wstring remove_command(command_context& ctx)
 				ctx.client->address(),
 				ctx.parameters);
 
-		index = ctx.consumer_registry->create_consumer(ctx.parameters, &ctx.channel.channel->stage())->index();
+		index = ctx.consumer_registry->create_consumer(ctx.parameters, &ctx.channel.channel->stage(), get_channels(ctx))->index();
 	}
 
 	ctx.channel.channel->output().remove(index);
@@ -689,7 +709,7 @@ void print_describer(core::help_sink& sink, const core::help_repository& repo)
 
 std::wstring print_command(command_context& ctx)
 {
-	ctx.channel.channel->output().add(ctx.consumer_registry->create_consumer({ L"IMAGE" }, &ctx.channel.channel->stage()));
+	ctx.channel.channel->output().add(ctx.consumer_registry->create_consumer({ L"IMAGE" }, &ctx.channel.channel->stage(), get_channels(ctx)));
 
 	return L"202 PRINT OK\r\n";
 }
@@ -818,7 +838,7 @@ std::wstring data_store_command(command_context& ctx)
 void data_retrieve_describer(core::help_sink& sink, const core::help_repository& repo)
 {
 	sink.short_description(L"Retrieve a dataset.");
-	sink.syntax(L"DATA RETRIEVE [name:string] [data:string]");
+	sink.syntax(L"DATA RETRIEVE [name:string]");
 	sink.para()->text(L"Returns the data saved under the name ")->code(L"name")->text(L".");
 	sink.para()->text(L"Examples:");
 	sink.example(L">> DATA RETRIEVE my_data");
@@ -865,16 +885,24 @@ std::wstring data_retrieve_command(command_context& ctx)
 void data_list_describer(core::help_sink& sink, const core::help_repository& repo)
 {
 	sink.short_description(L"List stored datasets.");
-	sink.syntax(L"DATA LIST");
-	sink.para()->text(L"Returns a list of all stored datasets.");
+	sink.syntax(L"DATA LIST {[sub_directory:string]}");
+	sink.para()->text(L"Returns a list of stored datasets.");
+	sink.para()
+		->text(L"if the optional ")->code(L"sub_directory")
+		->text(L" is specified only the datasets in that sub directory will be returned.");
 }
 
 std::wstring data_list_command(command_context& ctx)
 {
+	std::wstring sub_directory;
+
+	if (!ctx.parameters.empty())
+		sub_directory = ctx.parameters.at(0);
+
 	std::wstringstream replyString;
 	replyString << L"200 DATA LIST OK\r\n";
 
-	for (boost::filesystem::recursive_directory_iterator itr(env::data_folder()), end; itr != end; ++itr)
+	for (boost::filesystem::recursive_directory_iterator itr(get_sub_directory(env::data_folder(), sub_directory)), end; itr != end; ++itr)
 	{
 		if (boost::filesystem::is_regular_file(itr->path()))
 		{
@@ -931,7 +959,7 @@ void cg_add_describer(core::help_sink& sink, const core::help_repository& repo)
 		->text(L"Prepares a template for displaying. It won't show until you call ")->see(L"CG PLAY")
 		->text(L" (unless you supply the play-on-load flag, 1 for true). Data is either inline XML or a reference to a saved dataset.");
 	sink.para()->text(L"Examples:");
-	sink.example(L"CG 1 ADD 10 svtnews/info 1");
+	sink.example(L">> CG 1 ADD 10 svtnews/info 1");
 }
 
 std::wstring cg_add_command(command_context& ctx)
@@ -1002,7 +1030,7 @@ void cg_play_describer(core::help_sink& sink, const core::help_repository& repo)
 	sink.syntax(L"CG [video_channel:int]{-[layer:int]|-9999} PLAY [cg_layer:int]");
 	sink.para()->text(L"Plays and displays the template in the specified layer.");
 	sink.para()->text(L"Examples:");
-	sink.example(L"CG 1 PLAY 0");
+	sink.example(L">> CG 1 PLAY 0");
 }
 
 std::wstring cg_play_command(command_context& ctx)
@@ -1031,7 +1059,7 @@ void cg_stop_describer(core::help_sink& sink, const core::help_repository& repo)
 		->text(L"Stops and removes the template from the specified layer. This is different from ")->code(L"REMOVE")
 		->text(L" in that the template gets a chance to animate out when it is stopped.");
 	sink.para()->text(L"Examples:");
-	sink.example(L"CG 1 STOP 0");
+	sink.example(L">> CG 1 STOP 0");
 }
 
 std::wstring cg_stop_command(command_context& ctx)
@@ -1050,7 +1078,7 @@ void cg_next_describer(core::help_sink& sink, const core::help_repository& repo)
 		->text(LR"(Triggers a "continue" in the template on the specified layer. )")
 		->text(L"This is used to control animations that has multiple discreet steps.");
 	sink.para()->text(L"Examples:");
-	sink.example(L"CG 1 NEXT 0");
+	sink.example(L">> CG 1 NEXT 0");
 }
 
 std::wstring cg_next_command(command_context& ctx)
@@ -1067,7 +1095,7 @@ void cg_remove_describer(core::help_sink& sink, const core::help_repository& rep
 	sink.syntax(L"CG [video_channel:int]{-[layer:int]|-9999} REMOVE [cg_layer:int]");
 	sink.para()->text(L"Removes the template from the specified layer.");
 	sink.para()->text(L"Examples:");
-	sink.example(L"CG 1 REMOVE 0");
+	sink.example(L">> CG 1 REMOVE 0");
 }
 
 std::wstring cg_remove_command(command_context& ctx)
@@ -1084,7 +1112,7 @@ void cg_clear_describer(core::help_sink& sink, const core::help_repository& repo
 	sink.syntax(L"CG [video_channel:int]{-[layer:int]|-9999} CLEAR");
 	sink.para()->text(L"Removes all templates on a video layer. The entire cg producer will be removed.");
 	sink.para()->text(L"Examples:");
-	sink.example(L"CG 1 CLEAR");
+	sink.example(L">> CG 1 CLEAR");
 }
 
 std::wstring cg_clear_command(command_context& ctx)
@@ -1266,16 +1294,33 @@ std::wstring ANIMATION_SYNTAX = L" {[duration:int] {[tween:string]|linear}|0 lin
 void mixer_chroma_describer(core::help_sink& sink, const core::help_repository& repo)
 {
 	sink.short_description(L"Enable chroma keying on a layer.");
-	sink.syntax(L"MIXER [video_channel:int]{-[layer:int]|-0} CHROMA {[color:none,green,blue] {[threshold:float] [softness:float] {[spill:float]}}" + ANIMATION_SYNTAX);
+	sink.syntax(L"MIXER [video_channel:int]{-[layer:int]|-0} CHROMA {[enable:0,1] {[target_hue:float] [hue_width:float] [min_saturation:float] [min_brightness:float] [softness:float] [spill_suppress:float] [spill_suppress_saturation:float] [show_mask:0,1]}}" + ANIMATION_SYNTAX);
 	sink.para()
 		->text(L"Enables or disables chroma keying on the specified video layer. Giving no parameters returns the current chroma settings.");
-	sink.para()->text(L"Examples:");
-	sink.example(L">> MIXER 1-1 CHROMA green 0.10 0.20 25 easeinsine");
-	sink.example(L">> MIXER 1-1 CHROMA none");
+	sink.para()->text(L"The chroma keying is done in the HSB/HSV color space.");
+	sink.para()->text(L"Parameters:");
+	sink.definitions()
+		->item(L"enable",						L"0 to disable chroma keying on layer. The rest of the parameters should not be given when disabling.")
+		->item(L"target_hue",					L"The hue in degrees between 0-360 where the center of the hue window will open up.")
+		->item(L"hue_width",						L"The width of the hue window within 0.0-1.0 where 1.0 means 100% of 360 degrees around target_hue.")
+		->item(L"min_saturation",				L"The minimum saturation within 0.0-1.0 required for a color to be within the chroma window.")
+		->item(L"min_brightness",				L"The minimum brightness within 0.0-1.0 required for a color to be within the chroma window.")
+		->item(L"softness",						L"The softness of the chroma keying window.")
+		->item(L"spill_suppress",				L"How much to suppress spill by within 0.0-180.0. It works by taking all hue values within +- this value from target_hue and clamps it to either target_hue - this value or target_hue + this value depending on which side it is closest to.")
+		->item(L"spill_suppress_saturation",		L"Controls how much saturation should be kept on colors affected by spill_suppress within 0.0-1.0. Full saturation may not always be desirable to be kept on suppressed colors.")
+		->item(L"show_mask",						L"If enabled, only shows the mask. Useful while editing the chroma key settings.")
+		;
+	sink.example(L">> MIXER 1-1 CHROMA 1 120 0.1 0 0 0.1 0.1 0.7 0", L"for enabling chroma keying centered around a hue of 120 degrees (green) and with a 10% hue width");
+	sink.example(L">> MIXER 1-1 CHROMA 0", L"for disabling chroma keying");
 	sink.example(
-		L">> MIXER 1-1 BLEND\n"
-		L"<< 201 MIXER OK\n"
-		L"<< SCREEN", L"for getting the current blend mode");
+		L">> MIXER 1-1 CHROMA 0\n"
+		L"<< 202 MIXER OK\n"
+		L"<< 1 120 0.1 0 0 0.1 0 1 0", L"for getting the current chroma key mode");
+	sink.para()->text(L"Deprecated legacy syntax:");
+	sink.syntax(L"MIXER [video_channel:int]{-[layer:int]|-0} CHROMA {[color:none,green,blue] {[threshold:float] [softness:float] [spill:float]}}" + ANIMATION_SYNTAX);
+	sink.para()->text(L"Deprecated legacy examples:");
+	sink.example(L">> MIXER 1-1 CHROMA green 0.10 0.20 1.0 25 easeinsine");
+	sink.example(L">> MIXER 1-1 CHROMA none");
 }
 
 std::wstring mixer_chroma_command(command_context& ctx)
@@ -1284,25 +1329,71 @@ std::wstring mixer_chroma_command(command_context& ctx)
 	{
 		auto chroma = get_current_transform(ctx).image_transform.chroma;
 		return L"201 MIXER OK\r\n"
-			+ core::get_chroma_mode(chroma.key) + L" "
-			+ boost::lexical_cast<std::wstring>(chroma.threshold) + L" "
+			+ std::wstring(chroma.enable ? L"1 " : L"0 ")
+			+ boost::lexical_cast<std::wstring>(chroma.target_hue) + L" "
+			+ boost::lexical_cast<std::wstring>(chroma.hue_width) + L" "
+			+ boost::lexical_cast<std::wstring>(chroma.min_saturation) + L" "
+			+ boost::lexical_cast<std::wstring>(chroma.min_brightness) + L" "
 			+ boost::lexical_cast<std::wstring>(chroma.softness) + L" "
-			+ boost::lexical_cast<std::wstring>(chroma.spill) + L"\r\n";
+			+ boost::lexical_cast<std::wstring>(chroma.spill_suppress) + L" "
+			+ boost::lexical_cast<std::wstring>(chroma.spill_suppress_saturation) + L" "
+			+ std::wstring(chroma.show_mask ? L"1" : L"0") + L"\r\n";
 	}
 
 	transforms_applier transforms(ctx);
-	int duration = ctx.parameters.size() > 4 ? boost::lexical_cast<int>(ctx.parameters.at(4)) : 0;
-	std::wstring tween = ctx.parameters.size() > 5 ? ctx.parameters.at(5) : L"linear";
-
 	core::chroma chroma;
-	chroma.key = get_chroma_mode(ctx.parameters.at(0));
 
-	if (chroma.key != core::chroma::type::none)
+	int duration;
+	std::wstring tween;
+
+	auto legacy_mode = core::get_chroma_mode(ctx.parameters.at(0));
+
+	if (legacy_mode)
 	{
-		chroma.threshold = boost::lexical_cast<double>(ctx.parameters.at(1));
-		chroma.softness = boost::lexical_cast<double>(ctx.parameters.at(2));
-		chroma.spill = ctx.parameters.size() > 3 ? boost::lexical_cast<double>(ctx.parameters.at(3)) : 0.0;
+
+		duration = ctx.parameters.size() > 4 ? boost::lexical_cast<int>(ctx.parameters.at(4)) : 0;
+		tween = ctx.parameters.size() > 5 ? ctx.parameters.at(5) : L"linear";
+
+		if (*legacy_mode == chroma::legacy_type::none)
+		{
+			chroma.enable = false;
+		}
+		else
+		{
+			chroma.enable						= true;
+			chroma.hue_width					= 0.5 - boost::lexical_cast<double>(ctx.parameters.at(1)) * 0.5;
+			chroma.min_brightness				= boost::lexical_cast<double>(ctx.parameters.at(1));
+			chroma.min_saturation				= boost::lexical_cast<double>(ctx.parameters.at(1));
+			chroma.softness						= boost::lexical_cast<double>(ctx.parameters.at(2)) - boost::lexical_cast<double>(ctx.parameters.at(1));
+			chroma.spill_suppress				= 180.0 - boost::lexical_cast<double>(ctx.parameters.at(3)) * 180.0;
+			chroma.spill_suppress_saturation	= 1;
+
+			if (*legacy_mode == chroma::legacy_type::green)
+				chroma.target_hue = 120;
+			else if (*legacy_mode == chroma::legacy_type::blue)
+				chroma.target_hue = 240;
+		}
 	}
+	else
+	{
+		duration = ctx.parameters.size() > 9 ? boost::lexical_cast<int>(ctx.parameters.at(9)) : 0;
+		tween = ctx.parameters.size() > 10 ? ctx.parameters.at(10) : L"linear";
+
+		chroma.enable = ctx.parameters.at(0) == L"1";
+
+		if (chroma.enable)
+		{
+			chroma.target_hue					= boost::lexical_cast<double>(ctx.parameters.at(1));
+			chroma.hue_width					= boost::lexical_cast<double>(ctx.parameters.at(2));
+			chroma.min_saturation				= boost::lexical_cast<double>(ctx.parameters.at(3));
+			chroma.min_brightness				= boost::lexical_cast<double>(ctx.parameters.at(4));
+			chroma.softness						= boost::lexical_cast<double>(ctx.parameters.at(5));
+			chroma.spill_suppress				= boost::lexical_cast<double>(ctx.parameters.at(6));
+			chroma.spill_suppress_saturation	= boost::lexical_cast<double>(ctx.parameters.at(7));
+			chroma.show_mask					= boost::lexical_cast<double>(ctx.parameters.at(8));
+		}
+	}
+
 
 	transforms.add(stage::transform_tuple_t(ctx.layer_index(), [=](frame_transform transform) -> frame_transform
 	{
@@ -2045,7 +2136,7 @@ std::wstring channel_grid_command(command_context& ctx)
 	params.push_back(L"0");
 	params.push_back(L"NAME");
 	params.push_back(L"Channel Grid Window");
-	auto screen = ctx.consumer_registry->create_consumer(params, &self.channel->stage());
+	auto screen = ctx.consumer_registry->create_consumer(params, &self.channel->stage(), get_channels(ctx));
 
 	self.channel->output().add(screen);
 
@@ -2054,7 +2145,7 @@ std::wstring channel_grid_command(command_context& ctx)
 		if (channel.channel != self.channel)
 		{
 			core::diagnostics::call_context::for_thread().layer = index;
-			auto producer = ctx.producer_registry->create_producer(get_producer_dependencies(self.channel, ctx), L"route://" + boost::lexical_cast<std::wstring>(channel.channel->index()));
+			auto producer = ctx.producer_registry->create_producer(get_producer_dependencies(self.channel, ctx), L"route://" + boost::lexical_cast<std::wstring>(channel.channel->index()) + L" NO_AUTO_DEINTERLACE");
 			self.channel->stage().load(index, producer, false);
 			self.channel->stage().play(index);
 			index++;
@@ -2077,9 +2168,12 @@ std::wstring channel_grid_command(command_context& ctx)
 
 void thumbnail_list_describer(core::help_sink& sink, const core::help_repository& repo)
 {
-	sink.short_description(L"List all thumbnails.");
-	sink.syntax(L"THUMBNAIL LIST");
-	sink.para()->text(L"Lists all thumbnails.");
+	sink.short_description(L"List thumbnails.");
+	sink.syntax(L"THUMBNAIL LIST {[sub_directory:string]}");
+	sink.para()->text(L"Lists thumbnails.");
+	sink.para()
+		->text(L"if the optional ")->code(L"sub_directory")
+		->text(L" is specified only the thumbnails in that sub directory will be returned.");
 	sink.para()->text(L"Examples:");
 	sink.example(
 		L">> THUMBNAIL LIST\n"
@@ -2090,17 +2184,22 @@ void thumbnail_list_describer(core::help_sink& sink, const core::help_repository
 
 std::wstring thumbnail_list_command(command_context& ctx)
 {
+	std::wstring sub_directory;
+
+	if (!ctx.parameters.empty())
+		sub_directory = ctx.parameters.at(0);
+
 	std::wstringstream replyString;
 	replyString << L"200 THUMBNAIL LIST OK\r\n";
 
-	for (boost::filesystem::recursive_directory_iterator itr(env::thumbnails_folder()), end; itr != end; ++itr)
+	for (boost::filesystem::recursive_directory_iterator itr(get_sub_directory(env::thumbnail_folder(), sub_directory)), end; itr != end; ++itr)
 	{
 		if (boost::filesystem::is_regular_file(itr->path()))
 		{
 			if (!boost::iequals(itr->path().extension().wstring(), L".png"))
 				continue;
 
-			auto relativePath = get_relative_without_extension(itr->path(), env::thumbnails_folder());
+			auto relativePath = get_relative_without_extension(itr->path(), env::thumbnail_folder());
 			auto str = relativePath.generic_wstring();
 
 			if (str[0] == '\\' || str[0] == '/')
@@ -2133,7 +2232,7 @@ void thumbnail_retrieve_describer(core::help_sink& sink, const core::help_reposi
 
 std::wstring thumbnail_retrieve_command(command_context& ctx)
 {
-	std::wstring filename = env::thumbnails_folder();
+	std::wstring filename = env::thumbnail_folder();
 	filename.append(ctx.parameters.at(0));
 	filename.append(L".png");
 
@@ -2198,15 +2297,16 @@ void cinf_describer(core::help_sink& sink, const core::help_repository& repo)
 	sink.short_description(L"Get information about a media file.");
 	sink.syntax(L"CINF [filename:string]");
 	sink.para()->text(L"Returns information about a media file.");
+	sink.para()->text(L"If a file with the same name exist in multiple directories, all of them are returned.");
 }
 
 std::wstring cinf_command(command_context& ctx)
 {
 	std::wstring info;
-	for (boost::filesystem::recursive_directory_iterator itr(env::media_folder()), end; itr != end && info.empty(); ++itr)
+	for (boost::filesystem::recursive_directory_iterator itr(env::media_folder()), end; itr != end; ++itr)
 	{
 		auto path = itr->path();
-		auto file = path.replace_extension(L"").filename().wstring();
+		auto file = path.stem().wstring();
 		if (boost::iequals(file, ctx.parameters.at(0)))
 			info += MediaInfo(itr->path(), ctx.media_info_repo);
 	}
@@ -2223,18 +2323,26 @@ std::wstring cinf_command(command_context& ctx)
 
 void cls_describer(core::help_sink& sink, const core::help_repository& repo)
 {
-	sink.short_description(L"List all media files.");
-	sink.syntax(L"CLS");
+	sink.short_description(L"List media files.");
+	sink.syntax(L"CLS {[sub_directory:string]}");
 	sink.para()
-		->text(L"Lists all media files in the ")->code(L"media")->text(L" folder. Use the command ")
+		->text(L"Lists media files in the ")->code(L"media")->text(L" folder. Use the command ")
 		->see(L"INFO PATHS")->text(L" to get the path to the ")->code(L"media")->text(L" folder.");
+	sink.para()
+		->text(L"if the optional ")->code(L"sub_directory")
+		->text(L" is specified only the media files in that sub directory will be returned.");
 }
 
 std::wstring cls_command(command_context& ctx)
 {
+	std::wstring sub_directory;
+
+	if (!ctx.parameters.empty())
+		sub_directory = ctx.parameters.at(0);
+
 	std::wstringstream replyString;
 	replyString << L"200 CLS OK\r\n";
-	replyString << ListMedia(ctx.media_info_repo);
+	replyString << ListMedia(ctx.media_info_repo, sub_directory);
 	replyString << L"\r\n";
 	return boost::to_upper_copy(replyString.str());
 }
@@ -2264,19 +2372,27 @@ std::wstring fls_command(command_context& ctx)
 
 void tls_describer(core::help_sink& sink, const core::help_repository& repo)
 {
-	sink.short_description(L"List all templates.");
-	sink.syntax(L"TLS");
+	sink.short_description(L"List templates.");
+	sink.syntax(L"TLS {[sub_directory:string]}");
 	sink.para()
-		->text(L"Lists all template files in the ")->code(L"templates")->text(L" folder. Use the command ")
+		->text(L"Lists template files in the ")->code(L"templates")->text(L" folder. Use the command ")
 		->see(L"INFO PATHS")->text(L" to get the path to the ")->code(L"templates")->text(L" folder.");
+	sink.para()
+		->text(L"if the optional ")->code(L"sub_directory")
+		->text(L" is specified only the template files in that sub directory will be returned.");
 }
 
 std::wstring tls_command(command_context& ctx)
 {
+	std::wstring sub_directory;
+
+	if (!ctx.parameters.empty())
+		sub_directory = ctx.parameters.at(0);
+
 	std::wstringstream replyString;
 	replyString << L"200 TLS OK\r\n";
 
-	replyString << ListTemplates(ctx.cg_registry);
+	replyString << ListTemplates(ctx.cg_registry, sub_directory);
 	replyString << L"\r\n";
 
 	return replyString.str();
@@ -2300,6 +2416,14 @@ void version_describer(core::help_sink& sink, const core::help_repository& repo)
 		L">> VERSION FLASH\n"
 		L"<< 201 VERSION OK\n"
 		L"<< 11.8.800.94");
+	sink.example(
+		L">> VERSION TEMPLATEHOST\n"
+		L"<< 201 VERSION OK\n"
+		L"<< unknown");
+	sink.example(
+		L">> VERSION CEF\n"
+		L"<< 201 VERSION OK\n"
+		L"<< 3.1750.1805");
 }
 
 std::wstring version_command(command_context& ctx)
@@ -2429,8 +2553,14 @@ void info_paths_describer(core::help_sink& sink, const core::help_repository& re
 std::wstring info_paths_command(command_context& ctx)
 {
 	boost::property_tree::wptree info;
-	info.add_child(L"paths", caspar::env::properties().get_child(L"configuration.paths"));
-	info.add(L"paths.initial-path", boost::filesystem::initial_path().wstring() + L"/");
+
+	info.add(L"paths.media-path",		caspar::env::media_folder());
+	info.add(L"paths.log-path",			caspar::env::log_folder());
+	info.add(L"paths.data-path",			caspar::env::data_folder());
+	info.add(L"paths.template-path",		caspar::env::template_folder());
+	info.add(L"paths.thumbnail-path",	caspar::env::thumbnail_folder());
+	info.add(L"paths.font-path",			caspar::env::font_folder());
+	info.add(L"paths.initial-path",		caspar::env::initial_folder() + L"/");
 
 	return create_info_xml_reply(info, L"PATHS");
 }
@@ -2817,9 +2947,9 @@ void lock_describer(core::help_sink& sink, const core::help_repository& repo)
 	sink.syntax(L"LOCK [video_channel:int] [action:ACQUIRE,RELEASE,CLEAR] {[lock-phrase:string]}");
 	sink.para()->text(L"Allows for exclusive access to a channel.");
 	sink.para()->text(L"Examples:");
-	sink.example(L"LOCK 1 ACQUIRE secret");
-	sink.example(L"LOCK 1 RELEASE");
-	sink.example(L"LOCK 1 CLEAR");
+	sink.example(L">> LOCK 1 ACQUIRE secret");
+	sink.example(L">> LOCK 1 RELEASE");
+	sink.example(L">> LOCK 1 CLEAR");
 }
 
 std::wstring lock_command(command_context& ctx)
@@ -2864,6 +2994,20 @@ std::wstring lock_command(command_context& ctx)
 
 	CASPAR_THROW_EXCEPTION(file_not_found() << msg_info(L"Unknown LOCK command " + command));
 }
+
+void req_describer(core::help_sink& sink, const core::help_repository& repo)
+{
+	sink.short_description(L"Perform any command with an additional request id identifying the response.");
+	sink.syntax(L"REQ [request_id:string] COMMAND...");
+	sink.para()
+		->text(L"This special command modifies the AMCP protocol a little bit to prepend ")
+		->code(L"RES request_id")->text(L" to the response, in order to see what asynchronous response matches what request.");
+	sink.para()->text(L"Examples:");
+	sink.example(
+		L">> REQ unique PLAY 1-0 AMB\n"
+		L"<< RES unique 202 PLAY OK");
+}
+
 
 void register_commands(amcp_command_repository& repo)
 {
@@ -2951,6 +3095,8 @@ void register_commands(amcp_command_repository& repo)
 	repo.register_command(			L"Query Commands",		L"HELP",						help_describer,						help_command,					0);
 	repo.register_command(			L"Query Commands",		L"HELP PRODUCER",				help_producer_describer,			help_producer_command,			0);
 	repo.register_command(			L"Query Commands",		L"HELP CONSUMER",				help_consumer_describer,			help_consumer_command,			0);
+
+	repo.help_repo()->register_item({ L"AMCP", L"Protocol Commands" }, L"REQ", req_describer);
 }
 
 }	//namespace amcp

@@ -5,10 +5,11 @@ if (MSVC)
 	set(OS_SPECIFIC_SOURCES
 			cpu/image/image_mixer.cpp
 			cpu/image/image_mixer.h
-	
+
 			cpu/util/xmm.h
 	)
-elseif (CMAKE_COMPILER_IS_GNUCXX)
+else()
+
 endif ()
 set(SOURCES
 
@@ -47,7 +48,6 @@ include_directories(${BOOST_INCLUDE_PATH})
 include_directories(${RXCPP_INCLUDE_PATH})
 include_directories(${TBB_INCLUDE_PATH})
 include_directories(${GLEW_INCLUDE_PATH})
-include_directories(${ASMLIB_INCLUDE_PATH})
 include_directories(${FFMPEG_INCLUDE_PATH})
 include_directories(${SFML_INCLUDE_PATH})
 

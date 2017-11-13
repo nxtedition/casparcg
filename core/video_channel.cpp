@@ -49,6 +49,7 @@
 #include <boost/lexical_cast.hpp>
 
 #include <string>
+#include <unordered_map>
 
 namespace caspar { namespace core {
 
@@ -74,7 +75,11 @@ struct video_channel::impl final
 	std::future<void>									output_ready_for_frame_	= make_ready_future();
 	spl::shared_ptr<image_mixer>						image_mixer_;
 	caspar::core::mixer									mixer_;
-	caspar::core::stage									stage_;	
+	caspar::core::stage									stage_;
+
+	mutable tbb::spin_mutex								tick_listeners_mutex_;
+	int64_t												last_tick_listener_id	= 0;
+	std::unordered_map<int64_t, std::function<void ()>>	tick_listeners_;
 
 	executor											executor_				{ L"video_channel " + boost::lexical_cast<std::wstring>(index_) };
 public:
@@ -145,33 +150,51 @@ public:
 		});
 	}
 
+	void invoke_tick_listeners()
+	{
+		auto listeners = lock(tick_listeners_mutex_, [=] { return tick_listeners_; });
+
+		for (auto listener : listeners)
+		{
+			try
+			{
+				listener.second();
+			}
+			catch (...)
+			{
+				CASPAR_LOG_CURRENT_EXCEPTION();
+			}
+		}
+	}
+
 	void tick()
 	{
 		try
 		{
+			invoke_tick_listeners();
 
 			auto format_desc	= video_format_desc();
 			auto channel_layout = audio_channel_layout();
-			
+
 			caspar::timer frame_timer;
 
 			// Produce
-			
+
 			auto stage_frames = stage_(format_desc);
-			
+
 			// Mix
-			
+
 			auto mixed_frame  = mixer_(std::move(stage_frames), format_desc, channel_layout);
-			
+
 			// Consume
 
-			output_ready_for_frame_.get();
 			output_ready_for_frame_ = output_(std::move(mixed_frame), format_desc, channel_layout);
-		
+			output_ready_for_frame_.get();
+
 			auto frame_time = frame_timer.elapsed()*format_desc.fps*0.5;
 			graph_->set_value("tick-time", frame_time);
 
-			*monitor_subject_	<< monitor::message("/profiler/time")	% frame_timer.elapsed() % (1.0/format_desc_.fps)
+			*monitor_subject_	<< monitor::message("/profiler/time")	% frame_timer.elapsed() % (1.0/ video_format_desc().fps)
 								<< monitor::message("/format")			% format_desc.name;
 		}
 		catch(...)
@@ -182,7 +205,7 @@ public:
 		if (executor_.is_running())
 			executor_.begin_invoke([=]{tick();});
 	}
-			
+
 	std::wstring print() const
 	{
 		return L"video_channel[" + boost::lexical_cast<std::wstring>(index_) + L"|" +  video_format_desc().name + L"]";
@@ -206,8 +229,8 @@ public:
 		info.add_child(L"stage", stage_info.get());
 		info.add_child(L"mixer", mixer_info.get());
 		info.add_child(L"output", output_info.get());
-   
-		return info;			   
+
+		return info;
 	}
 
 	boost::property_tree::wptree delay_info() const
@@ -224,6 +247,23 @@ public:
 		info.add_child(L"output", output_info.get());
 
 		return info;
+	}
+
+	std::shared_ptr<void> add_tick_listener(std::function<void()> listener)
+	{
+		return lock(tick_listeners_mutex_, [&]
+		{
+			auto tick_listener_id = last_tick_listener_id++;
+			tick_listeners_.insert(std::make_pair(tick_listener_id, listener));
+
+			return std::shared_ptr<void>(nullptr, [=](void*)
+			{
+				lock(tick_listeners_mutex_, [&]
+				{
+					tick_listeners_.erase(tick_listener_id);
+				});
+			});
+		});
 	}
 };
 
@@ -248,5 +288,6 @@ boost::property_tree::wptree video_channel::info() const{return impl_->info();}
 boost::property_tree::wptree video_channel::delay_info() const { return impl_->delay_info(); }
 int video_channel::index() const { return impl_->index(); }
 monitor::subject& video_channel::monitor_output(){ return *impl_->monitor_subject_; }
+std::shared_ptr<void> video_channel::add_tick_listener(std::function<void()> listener) { return impl_->add_tick_listener(std::move(listener)); }
 
 }}

@@ -33,7 +33,7 @@ if (MSVC)
 			os/windows/win32_exception.h
 			os/windows/windows.h
 	)
-elseif (CMAKE_COMPILER_IS_GNUCXX)
+else()
 	set(OS_SPECIFIC_SOURCES
 			os/linux/filesystem.cpp
 			os/linux/prec_timer.cpp
@@ -75,8 +75,6 @@ set(HEADERS
 		lock.h
 		log.h
 		memory.h
-		memcpy.h
-		memset.h
 		memshfl.h
 		no_init_proxy.h
 		param.h
@@ -97,7 +95,6 @@ add_library(common ${SOURCES} ${HEADERS} ${OS_SPECIFIC_SOURCES})
 add_precompiled_header(common stdafx.h FORCEINCLUDE)
 
 include_directories(..)
-include_directories(${ASMLIB_INCLUDE_PATH})
 include_directories(${BOOST_INCLUDE_PATH})
 include_directories(${RXCPP_INCLUDE_PATH})
 include_directories(${TBB_INCLUDE_PATH})
@@ -112,7 +109,6 @@ source_group(sources\\os os/*)
 
 if (MSVC)
 	target_link_libraries(common
-		alibcof64.lib
 		jpeg.lib
 		sndfile.lib
 		optimized sfml-system-2.lib
@@ -132,29 +128,19 @@ if (MSVC)
 	)
 else ()
 	target_link_libraries(common
-		"${DEPENDENCIES_FOLDER}/asmlib/alibelf64.a"
-		boost_system
-		boost_thread
-		boost_chrono
-		boost_filesystem
-		boost_log
-		boost_locale
-		boost_regex
-		boost_date_time
-		tbb
-		tbbmalloc
-		tbbmalloc_proxy
-		sfml-graphics-s
-		sfml-window-s
-		sfml-system-s
-		GLEW
-		GL
-		X11
-		jpeg
-		sndfile
-		freetype
-		udev
-		Xrandr
+		${Boost_LIBRARIES}
+		${TBB_LIBRARIES}
+		${SFML_LIBRARIES}
+		${GLEW_LIBRARIES}
+		${OPENGL_gl_LIBRARY}
+		${X11_LIBRARIES}
+		${JPEG_LIBRARIES}
+		${SNDFILE_LIBRARIES}
+		${FREETYPE_LIBRARIES}
+		dl
+		icui18n
+		icuuc
+		z
 		pthread
 	)
 endif ()
@@ -170,8 +156,5 @@ if(MSVC)
 	# casparcg_add_runtime_dependency("${TBB_BIN_PATH}/tbbmalloc_proxy.dll")
 	# casparcg_add_runtime_dependency("${TBB_BIN_PATH}/tbbmalloc_proxy_debug.dll")
 else()
-	casparcg_add_runtime_dependency("${GLEW_BIN_PATH}/libGLEW.so.1.12")
-	casparcg_add_runtime_dependency("${TBB_BIN_PATH}/libtbb.so.2")
-	casparcg_add_runtime_dependency("${TBB_BIN_PATH}/libtbbmalloc_proxy.so.2")
-	casparcg_add_runtime_dependency("${TBB_BIN_PATH}/libtbbmalloc.so.2")
+
 endif()

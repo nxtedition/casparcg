@@ -42,14 +42,14 @@
 
 namespace caspar { namespace core {
 
-draw_frame drop_and_skip(const draw_frame& source, const draw_frame&, const boost::rational<int64_t>&)
+draw_frame drop_or_repeat(const draw_frame& source, const draw_frame&, const boost::rational<int64_t>&)
 {
 	return source;
 }
 
 // Blends next frame with current frame when the distance is not 0.
 // Completely sharp when distance is 0 but blurry when in between.
-draw_frame blend(const draw_frame& source, const draw_frame& destination, const boost::rational<int64_t>& distance)
+draw_frame blend2(const draw_frame& source, const draw_frame& destination, const boost::rational<int64_t>& distance)
 {
 	if (destination == draw_frame::empty())
 		return source;
@@ -70,8 +70,8 @@ draw_frame blend(const draw_frame& source, const draw_frame& destination, const 
 // * A distance of 0.0 gives 50% previous, 50% current and 0% next.
 // * A distance of 0.5 gives 25% previous, 50% current and 25% next.
 // * A distance of 0.75 gives 12.5% previous, 50% current and 37.5% next.
-// This is blurrier than blend, but gives a more even bluriness, instead of sharp, blurry, sharp, blurry.
-struct blend_all
+// This is blurrier than blend2, but gives a more even bluriness, instead of sharp, blurry, sharp, blurry.
+struct blend3
 {
 	draw_frame previous_frame	= draw_frame::empty();
 	draw_frame last_source		= draw_frame::empty();
@@ -93,7 +93,7 @@ struct blend_all
 		bool has_previous = previous_frame != draw_frame::empty();
 
 		if (!has_previous)
-			return blend(source, destination, distance);
+			return blend2(source, destination, distance);
 
 		auto middle											= last_source;
 		auto next_frame										= destination;
@@ -135,7 +135,7 @@ public:
 
 	void visit(const const_frame& frame) override
 	{
-		if (!frame.audio_data().empty() && !transform_stack_.top().is_still)
+		if (!frame.audio_data().empty() && !transform_stack_.top().is_still && !transform_stack_.top().volume == 0.0)
 			on_frame_(frame);
 	}
 };
@@ -176,7 +176,7 @@ public:
 		double source	= boost::rational_cast<double>(source_);
 		double delta	= boost::rational_cast<double>(dest_) - source;
 		double result	= tweener_(time_, source, delta, duration_);
-		
+
 		return boost::rational<int64_t>(static_cast<int64_t>(result * 1000000.0), 1000000);
 	}
 
@@ -190,83 +190,41 @@ public:
 class framerate_producer : public frame_producer_base
 {
 	spl::shared_ptr<frame_producer>						source_;
-	boost::rational<int>								source_framerate_;
-	audio_channel_layout								source_channel_layout_		= audio_channel_layout::invalid();
-	boost::rational<int>								destination_framerate_;
-	field_mode											destination_fieldmode_;
+	std::function<boost::rational<int>()>				get_source_framerate_;
+	boost::rational<int>								source_framerate_				= -1;
+	audio_channel_layout								source_channel_layout_			= audio_channel_layout::invalid();
+	const boost::rational<int>							original_destination_framerate_;
+	const field_mode									original_destination_fieldmode_;
+	field_mode											destination_fieldmode_			= field_mode::empty;
 	std::vector<int>									destination_audio_cadence_;
 	boost::rational<std::int64_t>						speed_;
 	speed_tweener										user_speed_;
 	std::function<draw_frame (
 			const draw_frame& source,
 			const draw_frame& destination,
-			const boost::rational<int64_t>& distance)>	interpolator_				= drop_and_skip;
-	
-	boost::rational<std::int64_t>						current_frame_number_		= 0;
-	draw_frame											previous_frame_				= draw_frame::empty();
-	draw_frame											next_frame_					= draw_frame::empty();
+			const boost::rational<int64_t>& distance)>	interpolator_					= drop_or_repeat;
+
+	boost::rational<std::int64_t>						current_frame_number_			= 0;
+	draw_frame											previous_frame_					= draw_frame::empty();
+	draw_frame											next_frame_						= draw_frame::empty();
 	mutable_audio_buffer								audio_samples_;
 
-	unsigned int										output_repeat_				= 0;
-	unsigned int										output_frame_				= 0;
+	unsigned int										output_repeat_					= 0;
+	unsigned int										output_frame_					= 0;
+	draw_frame											last_frame_						= draw_frame::empty();
 public:
 	framerate_producer(
 			spl::shared_ptr<frame_producer> source,
-			boost::rational<int> source_framerate,
+			std::function<boost::rational<int> ()> get_source_framerate,
 			boost::rational<int> destination_framerate,
 			field_mode destination_fieldmode,
 			std::vector<int> destination_audio_cadence)
 		: source_(std::move(source))
-		, source_framerate_(std::move(source_framerate))
-		, destination_framerate_(std::move(destination_framerate))
-		, destination_fieldmode_(destination_fieldmode)
+		, get_source_framerate_(std::move(get_source_framerate))
+		, original_destination_framerate_(std::move(destination_framerate))
+		, original_destination_fieldmode_(destination_fieldmode)
 		, destination_audio_cadence_(std::move(destination_audio_cadence))
 	{
-		// Coarse adjustment to correct fps family (23.98 - 30 vs 47.95 - 60)
-		if (destination_fieldmode_ != field_mode::progressive)	// Interlaced output
-		{
-			auto diff_double	= boost::abs(source_framerate_ - destination_framerate_ * 2);
-			auto diff_keep		= boost::abs(source_framerate_ - destination_framerate_);
-
-			if (diff_double < diff_keep)						// Double rate interlaced
-			{
-				destination_framerate_ *= 2;
-			}
-			else												// Progressive non interlaced
-			{
-				destination_fieldmode_ = field_mode::progressive;
-			}
-		}
-		else													// Progressive
-		{
-			auto diff_halve	= boost::abs(source_framerate_ * 2	- destination_framerate_);
-			auto diff_keep	= boost::abs(source_framerate_		- destination_framerate_);
-
-			if (diff_halve < diff_keep)							// Repeat every frame two times
-			{
-				destination_framerate_	/= 2;
-				output_repeat_			= 2;
-			}
-		}
-
-		speed_ = boost::rational<int64_t>(source_framerate_ / destination_framerate_);
-
-		// drop_and_skip will only be used by default for exact framerate multiples (half, same and double)
-		// for all other framerates a frame interpolator will be chosen.
-		if (speed_ != 1 && speed_ * 2 != 1 && speed_ != 2)
-		{
-			auto high_source_framerate		= source_framerate_ > 47;
-			auto high_destination_framerate	= destination_framerate_ > 47
-					|| destination_fieldmode_ != field_mode::progressive;
-
-			if (high_source_framerate && high_destination_framerate)	// The bluriness of blend_all is acceptable on high framerates.
-				interpolator_ = blend_all();
-			else														// blend_all is mostly too blurry on low framerates. blend provides a compromise.
-				interpolator_ = &blend;
-
-			CASPAR_LOG(warning) << source_->print() << L" Frame blending frame rate conversion required to conform to channel frame rate.";
-		}
-
 		// Note: Uses 1 step rotated cadence for 1001 modes (1602, 1602, 1601, 1602, 1601)
 		// This cadence fills the audio mixer most optimally.
 		boost::range::rotate(destination_audio_cadence_, std::end(destination_audio_cadence_) - 1);
@@ -274,13 +232,15 @@ public:
 
 	draw_frame receive_impl() override
 	{
+		// destination field mode initially unknown but known after the first update_source_framerate().
+		auto field1 = do_render_progressive_frame(true);
+
 		if (destination_fieldmode_ == field_mode::progressive)
 		{
-			return do_render_progressive_frame(true);
+			return field1;
 		}
 		else
 		{
-			auto field1 = do_render_progressive_frame(true);
 			auto field2 = do_render_progressive_frame(false);
 
 			return draw_frame::interlace(field1, field2, destination_fieldmode_);
@@ -304,12 +264,14 @@ public:
 		}
 		else if (boost::iequals(params.at(1), L"interpolation"))
 		{
-			if (boost::iequals(params.at(2), L"blend"))
-				interpolator_ = &blend;
-			else if (boost::iequals(params.at(2), L"blend_all"))
-				interpolator_ = blend_all();
+			if (boost::iequals(params.at(2), L"blend2"))
+				interpolator_ = &blend2;
+			else if (boost::iequals(params.at(2), L"blend3"))
+				interpolator_ = blend3();
+			else if (boost::iequals(params.at(2), L"drop_or_repeat"))
+				interpolator_ = &drop_or_repeat;
 			else
-				interpolator_ = &drop_and_skip;
+				CASPAR_THROW_EXCEPTION(user_error() << msg_info("Valid interpolations are DROP_OR_REPEAT, BLEND2 and BLEND3"));
 		}
 		else if (boost::iequals(params.at(1), L"output_repeat")) // Only for debugging purposes
 		{
@@ -351,12 +313,24 @@ public:
 
 	uint32_t nb_frames() const override
 	{
-		return static_cast<uint32_t>(source_->nb_frames() * boost::rational_cast<double>(1 / get_speed() / (output_repeat_ != 0 ? 2 : 1)));
+		if (!is_initialized())
+			return std::numeric_limits<uint32_t>::max();
+
+		auto source_nb_frames = source_->nb_frames();
+		auto multiple = boost::rational_cast<double>(1 / get_speed() * (output_repeat_ != 0 ? 2 : 1));
+
+		return static_cast<uint32_t>(source_nb_frames * multiple);
 	}
 
 	uint32_t frame_number() const override
 	{
-		return static_cast<uint32_t>(source_->frame_number() * boost::rational_cast<double>(1 / get_speed() / (output_repeat_ != 0 ? 2 : 1)));
+		if (!is_initialized())
+			return 0;
+
+		auto source_frame_number = source_->frame_number() - 1; // next frame already received
+		auto multiple = boost::rational_cast<double>(1 / get_speed() * (output_repeat_ != 0 ? 2 : 1));
+
+		return static_cast<uint32_t>(source_frame_number * multiple);
 	}
 
 	constraints& pixel_constraints() override
@@ -364,13 +338,18 @@ public:
 		return source_->pixel_constraints();
 	}
 private:
+	bool is_initialized() const
+	{
+		return source_framerate_ != -1;
+	}
+
 	draw_frame do_render_progressive_frame(bool sound)
 	{
 		user_speed_.fetch_and_tick();
 
-		if (output_repeat_ && ++output_frame_ % output_repeat_)
+		if (output_repeat_ && output_frame_++ % output_repeat_)
 		{
-			auto frame = draw_frame::still(last_frame());
+			auto frame = last_frame_;
 
 			frame.transform().audio_transform.volume = 0.0;
 
@@ -394,6 +373,8 @@ private:
 		auto integer_next_frame		= boost::rational_cast<std::int64_t>(next_frame_number);
 
 		fast_forward_integer_frames(integer_next_frame - integer_current_frame);
+
+		last_frame_ = result;
 
 		if (sound)
 			return attach_sound(result);
@@ -427,6 +408,7 @@ private:
 	draw_frame pop_frame_from_source()
 	{
 		auto frame = source_->receive();
+		update_source_framerate();
 
 		if (user_speed_.fetch() == 1)
 		{
@@ -506,14 +488,75 @@ private:
 				|| user_speed_.fetch() != 1
 				|| audio_samples_.size() / source_channel_layout_.num_channels >= destination_audio_cadence_.at(0);
 	}
+
+	void update_source_framerate()
+	{
+		auto source_framerate = get_source_framerate_();
+
+		if (source_framerate_ == source_framerate)
+			return;
+
+		output_repeat_				= 0;
+		output_frame_				= 0;
+		source_framerate_			= source_framerate;
+		auto destination_framerate	= original_destination_framerate_;
+		destination_fieldmode_		= original_destination_fieldmode_;
+
+		// Coarse adjustment to correct fps family (23.98 - 30 vs 47.95 - 60)
+		if (destination_fieldmode_ != field_mode::progressive)	// Interlaced output
+		{
+			auto diff_double	= boost::abs(source_framerate_ - destination_framerate * 2);
+			auto diff_keep		= boost::abs(source_framerate_ - destination_framerate);
+
+			if (diff_double < diff_keep)						// Double rate interlaced
+			{
+				destination_framerate *= 2;
+			}
+			else												// Progressive non interlaced
+			{
+				destination_fieldmode_ = field_mode::progressive;
+			}
+		}
+		else													// Progressive
+		{
+			auto diff_halve	= boost::abs(source_framerate_ * 2	- destination_framerate);
+			auto diff_keep	= boost::abs(source_framerate_		- destination_framerate);
+
+			if (diff_halve < diff_keep)							// Repeat every frame two times
+			{
+				destination_framerate	/= 2;
+				output_repeat_			= 2;
+			}
+		}
+
+		speed_ = boost::rational<int64_t>(source_framerate_ / destination_framerate);
+
+		// drop_or_repeat will only be used by default for exact framerate multiples (half, same and double)
+		// for all other framerates a frame interpolator will be chosen.
+		if (speed_ != 1 && speed_ * 2 != 1 && speed_ != 2)
+		{
+			auto high_source_framerate		= source_framerate_ > 47;
+			auto high_destination_framerate	= destination_framerate > 47
+					|| destination_fieldmode_ != field_mode::progressive;
+
+			if (high_source_framerate && high_destination_framerate)	// The bluriness of blend3 is acceptable on high framerates.
+				interpolator_	= blend3();
+			else														// blend3 is mostly too blurry on low framerates. blend2 provides a compromise.
+				interpolator_	= &blend2;
+
+			CASPAR_LOG(warning) << source_->print() << L" Frame blending frame rate conversion required to conform to channel frame rate.";
+		}
+		else
+			interpolator_		= &drop_or_repeat;
+	}
 };
 
 void describe_framerate_producer(help_sink& sink)
 {
 	sink.para()->text(L"Framerate conversion control / Slow motion examples:");
-	sink.example(L">> CALL 1-10 FRAMERATE INTERPOLATION BLEND", L"enables 2 frame blend interpolation.");
-	sink.example(L">> CALL 1-10 FRAMERATE INTERPOLATION BLEND_ALL", L"enables 3 frame blend interpolation.");
-	sink.example(L">> CALL 1-10 FRAMERATE INTERPOLATION DROP_AND_SKIP", L"disables frame interpolation.");
+	sink.example(L">> CALL 1-10 FRAMERATE INTERPOLATION BLEND2", L"enables 2 frame blend interpolation.");
+	sink.example(L">> CALL 1-10 FRAMERATE INTERPOLATION BLEND3", L"enables 3 frame blend interpolation.");
+	sink.example(L">> CALL 1-10 FRAMERATE INTERPOLATION DROP_OR_REPEAT", L"disables frame interpolation.");
 	sink.example(L">> CALL 1-10 FRAMERATE SPEED 0.25", L"immediately changes the speed to 25%. Sound will be disabled.");
 	sink.example(L">> CALL 1-10 FRAMERATE SPEED 0.25 50", L"changes the speed to 25% linearly over 50 frames. Sound will be disabled.");
 	sink.example(L">> CALL 1-10 FRAMERATE SPEED 0.25 50 easeinoutsine", L"changes the speed to 25% over 50 frames using specified easing curve. Sound will be disabled.");
@@ -522,18 +565,17 @@ void describe_framerate_producer(help_sink& sink)
 
 spl::shared_ptr<frame_producer> create_framerate_producer(
 		spl::shared_ptr<frame_producer> source,
-		boost::rational<int> source_framerate,
+		std::function<boost::rational<int> ()> get_source_framerate,
 		boost::rational<int> destination_framerate,
 		field_mode destination_fieldmode,
 		std::vector<int> destination_audio_cadence)
 {
 	return spl::make_shared<framerate_producer>(
 			std::move(source),
-			std::move(source_framerate),
+			std::move(get_source_framerate),
 			std::move(destination_framerate),
 			destination_fieldmode,
 			std::move(destination_audio_cadence));
 }
 
 }}
-

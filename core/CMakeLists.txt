@@ -2,6 +2,8 @@ cmake_minimum_required (VERSION 2.6)
 project (core)
 
 set(SOURCES
+		consumer/syncto/syncto_consumer.cpp
+
 		consumer/frame_consumer.cpp
 		consumer/output.cpp
 		consumer/port.cpp
@@ -58,6 +60,8 @@ set(SOURCES
 		video_format.cpp
 )
 set(HEADERS
+		consumer/syncto/syncto_consumer.h
+
 		consumer/frame_consumer.h
 		consumer/output.h
 		consumer/port.h
@@ -85,6 +89,10 @@ set(HEADERS
 		interaction/interaction_event.h
 		interaction/interaction_sink.h
 		interaction/util.h
+
+		mixer/audio/audio_mixer.h
+
+		mixer/image/blend_modes.h
 
 		mixer/mixer.h
 
@@ -145,6 +153,7 @@ include_directories(${GLEW_INCLUDE_PATH})
 
 source_group(sources ./*)
 source_group(sources\\consumer consumer/*)
+source_group(sources\\consumer\\syncto consumer/syncto/*)
 source_group(sources\\diagnostics diagnostics/*)
 source_group(sources\\producer producer/*)
 source_group(sources\\producer\\framerate producer/framerate/*)
@@ -152,6 +161,8 @@ source_group(sources\\frame frame/*)
 source_group(sources\\help help/*)
 source_group(sources\\interaction interaction/*)
 source_group(sources\\mixer mixer/*)
+source_group(sources\\mixer\\audio mixer/audio/*)
+source_group(sources\\mixer\\image mixer/image/*)
 source_group(sources\\producer\\color producer/color/*)
 source_group(sources\\producer\\media_info producer/media_info/*)
 source_group(sources\\producer\\scene producer/scene/*)

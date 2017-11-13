@@ -27,7 +27,7 @@ if (MSVC)
 			interop/DeckLinkAPI.h
 			interop/DeckLinkAPIVersion.h
 	)
-elseif (CMAKE_COMPILER_IS_GNUCXX)
+else()
 	set(OS_SPECIFIC_SOURCES
 			linux_interop/DeckLinkAPIConfiguration.h
 			linux_interop/DeckLinkAPIDeckControl.h
@@ -60,7 +60,6 @@ include_directories(${BOOST_INCLUDE_PATH})
 include_directories(${TBB_INCLUDE_PATH})
 include_directories(${FFMPEG_INCLUDE_PATH})
 include_directories(${RXCPP_INCLUDE_PATH})
-include_directories(${ASMLIB_INCLUDE_PATH})
 
 set_target_properties(decklink PROPERTIES FOLDER modules)
 source_group(sources ./*)
@@ -75,7 +74,7 @@ if (MSVC)
 			core
 			ffmpeg
 	)
-elseif (CMAKE_COMPILER_IS_GNUCXX)
+else()
 	target_link_libraries(decklink
 			common
 			core

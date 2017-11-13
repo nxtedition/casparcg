@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2011 Sveriges Television AB <info@casparcg.com>
+* Copyright 2013 Sveriges Television AB http://casparcg.com/
 *
 * This file is part of CasparCG (www.casparcg.com).
 *
@@ -22,44 +22,44 @@
 #pragma once
 
 #include <common/memory.h>
-#include <common/forward.h>
-
-#include <core/monitor/monitor.h>
 
 #include <boost/noncopyable.hpp>
-#include <boost/rational.hpp>
 
 struct AVFormatContext;
 struct AVFrame;
 struct AVPacket;
 
-namespace caspar { namespace ffmpeg {
+namespace caspar {
 
-class video_decoder : public boost::noncopyable
+namespace core {
+	class frame_factory;
+	class write_frame;
+}
+
+namespace ffmpeg {
+
+class video_decoder : boost::noncopyable
 {
 public:
-	explicit video_decoder(class input& input, bool single_threaded);
-	
-	video_decoder(video_decoder&& other);
-	video_decoder& operator=(video_decoder&& other);
+	explicit video_decoder(const spl::shared_ptr<AVFormatContext>& context);
 
-	std::shared_ptr<AVFrame> operator()();
-	
-	int	 width() const;
-	int	 height() const;
-	bool is_progressive() const;
-	uint32_t file_frame_number() const;
-	boost::rational<int> framerate() const;
+	bool						ready() const;
+	bool						empty() const;
+	void						push(const std::shared_ptr<AVPacket>& packet);
+	std::shared_ptr<AVFrame>	poll();
 
-	uint32_t nb_frames() const;
+	int							width() const;
+	int							height() const;
 
-	std::wstring print() const;
-		
-	core::monitor::subject& monitor_output();
+	uint32_t					nb_frames() const;
+	uint32_t					file_frame_number() const;
+	bool						is_progressive() const;
+
+	std::wstring				print() const;
 
 private:
-	struct impl;
-	spl::shared_ptr<impl> impl_;
+	struct implementation;
+	spl::shared_ptr<implementation> impl_;
 };
 
 }}

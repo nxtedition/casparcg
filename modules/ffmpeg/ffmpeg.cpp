@@ -24,7 +24,6 @@
 #include "ffmpeg.h"
 
 #include "consumer/ffmpeg_consumer.h"
-#include "consumer/streaming_consumer.h"
 #include "producer/ffmpeg_producer.h"
 #include "producer/util/util.h"
 
@@ -50,7 +49,7 @@
 #pragma warning (disable : 4996)
 #endif
 
-extern "C" 
+extern "C"
 {
 	#define __STDC_CONSTANT_MACROS
 	#define __STDC_LIMIT_MACROS
@@ -58,155 +57,110 @@ extern "C"
 	#include <libswscale/swscale.h>
 	#include <libavutil/avutil.h>
 	#include <libavfilter/avfilter.h>
+	#include <libavdevice/avdevice.h>
 }
 
 namespace caspar { namespace ffmpeg {
-	
-int ffmpeg_lock_callback(void **mutex, enum AVLockOp op) 
-{ 
+int ffmpeg_lock_callback(void **mutex, enum AVLockOp op)
+{
 	if(!mutex)
 		return 0;
 
 	auto my_mutex = reinterpret_cast<tbb::recursive_mutex*>(*mutex);
-	
-	switch(op) 
-	{ 
-		case AV_LOCK_CREATE: 
-		{ 
-			*mutex = new tbb::recursive_mutex(); 
-			break; 
-		} 
-		case AV_LOCK_OBTAIN: 
-		{ 
+
+	switch(op)
+	{
+		case AV_LOCK_CREATE:
+		{
+			*mutex = new tbb::recursive_mutex();
+			break;
+		}
+		case AV_LOCK_OBTAIN:
+		{
 			if(my_mutex)
-				my_mutex->lock(); 
-			break; 
-		} 
-		case AV_LOCK_RELEASE: 
-		{ 
+				my_mutex->lock();
+			break;
+		}
+		case AV_LOCK_RELEASE:
+		{
 			if(my_mutex)
-				my_mutex->unlock(); 
-			break; 
-		} 
-		case AV_LOCK_DESTROY: 
-		{ 
+				my_mutex->unlock();
+			break;
+		}
+		case AV_LOCK_DESTROY:
+		{
 			delete my_mutex;
 			*mutex = nullptr;
-			break; 
-		} 
-	} 
-	return 0; 
-} 
+			break;
+		}
+	}
+	return 0;
+}
 
 static void sanitize(uint8_t *line)
 {
-    while(*line)
+	while(*line)
 	{
-        if(*line < 0x08 || (*line > 0x0D && *line < 0x20))
-            *line='?';
-        line++;
-    }
+		if(*line < 0x08 || (*line > 0x0D && *line < 0x20))
+			*line='?';
+		line++;
+	}
 }
 
 void log_callback(void* ptr, int level, const char* fmt, va_list vl)
 {
-    static int print_prefix=1;
-    //static int count;
-    static char prev[1024];
-    char line[8192];
-    //static int is_atty;
-    AVClass* avc= ptr ? *(AVClass**)ptr : NULL;
-    if(level > av_log_get_level())
-        return;
-    line[0]=0;
-	
-#undef fprintf
-    if(print_prefix && avc) 
+	static boost::thread_specific_ptr<bool> print_prefix_tss;
+	auto print_prefix = print_prefix_tss.get();
+
+	if (!print_prefix)
 	{
-        if (avc->parent_log_context_offset) 
+		print_prefix = new bool(true);
+		print_prefix_tss.reset(print_prefix);
+	}
+
+	char line[1024];
+	AVClass* avc= ptr ? *(AVClass**)ptr : NULL;
+	if (level > AV_LOG_DEBUG)
+		return;
+	line[0]=0;
+
+#undef fprintf
+	if(*print_prefix && avc)
+	{
+		if (avc->parent_log_context_offset)
 		{
-            AVClass** parent= *(AVClass***)(((uint8_t*)ptr) + avc->parent_log_context_offset);
-            if(parent && *parent)
-                std::sprintf(line, "[%s @ %p] ", (*parent)->item_name(parent), parent);            
-        }
-        std::sprintf(line + strlen(line), "[%s @ %p] ", avc->item_name(ptr), ptr);
-    }
+			AVClass** parent= *(AVClass***)(((uint8_t*)ptr) + avc->parent_log_context_offset);
+			if(parent && *parent)
+				std::snprintf(line, sizeof(line), "[%s @ %p] ", (*parent)->item_name(parent), parent);
+		}
+		std::snprintf(line + strlen(line), sizeof(line) - strlen(line), "[%s @ %p] ", avc->item_name(ptr), ptr);
+	}
 
-    std::vsprintf(line + strlen(line), fmt, vl);
+	std::vsnprintf(line + strlen(line), sizeof(line) - strlen(line), fmt, vl);
 
-    print_prefix = strlen(line) && line[strlen(line)-1] == '\n';
-	
-    //if(print_prefix && !strcmp(line, prev)){
-    //    count++;
-    //    if(is_atty==1)
-    //        fprintf(stderr, "    Last message repeated %d times\r", count);
-    //    return;
-    //}
-    //if(count>0){
-    //    fprintf(stderr, "    Last message repeated %d times\n", count);
-    //    count=0;
-    //}
-    strcpy(prev, line);
-    sanitize((uint8_t*)line);
+	*print_prefix = strlen(line) && line[strlen(line)-1] == '\n';
 
-	auto len = strlen(line);
-	if(len > 0)
-		line[len-1] = 0;
-	
-	if(level == AV_LOG_DEBUG)
-		CASPAR_LOG(debug) << L"[ffmpeg] " << line;
-	else if(level == AV_LOG_INFO)
-		CASPAR_LOG(info) << L"[ffmpeg] " << line;
-	else if(level == AV_LOG_WARNING)
-		CASPAR_LOG(warning) << L"[ffmpeg] " << line;
-	else if(level == AV_LOG_ERROR)
-		CASPAR_LOG(error) << L"[ffmpeg] " << line;
-	else if(level == AV_LOG_FATAL)
-		CASPAR_LOG(fatal) << L"[ffmpeg] " << line;
-	else
-		CASPAR_LOG(trace) << L"[ffmpeg] " << line;
+	sanitize((uint8_t*)line);
 
-    //colored_fputs(av_clip(level>>3, 0, 6), line);
+	try
+	{
+		if (level == AV_LOG_VERBOSE)
+			CASPAR_LOG(debug) << L"[ffmpeg] " << line;
+		else if (level == AV_LOG_INFO)
+			CASPAR_LOG(info) << L"[ffmpeg] " << line;
+		else if (level == AV_LOG_WARNING)
+			CASPAR_LOG(warning) << L"[ffmpeg] " << line;
+		else if (level == AV_LOG_ERROR)
+			CASPAR_LOG(error) << L"[ffmpeg] " << line;
+		else if (level == AV_LOG_FATAL)
+			CASPAR_LOG(fatal) << L"[ffmpeg] " << line;
+		else
+			CASPAR_LOG(trace) << L"[ffmpeg] " << line;
+	}
+	catch (...)
+	{
+	}
 }
-
-//static int query_yadif_formats(AVFilterContext *ctx)
-//{
-//    static const int pix_fmts[] = {
-//        PIX_FMT_YUV444P,
-//        PIX_FMT_YUV422P,
-//        PIX_FMT_YUV420P,
-//        PIX_FMT_YUV410P,
-//        PIX_FMT_YUV411P,
-//        PIX_FMT_GRAY8,
-//        PIX_FMT_YUVJ444P,
-//        PIX_FMT_YUVJ422P,
-//        PIX_FMT_YUVJ420P,
-//        AV_NE( PIX_FMT_GRAY16BE, PIX_FMT_GRAY16LE ),
-//        PIX_FMT_YUV440P,
-//        PIX_FMT_YUVJ440P,
-//        AV_NE( PIX_FMT_YUV444P16BE, PIX_FMT_YUV444P16LE ),
-//        AV_NE( PIX_FMT_YUV422P16BE, PIX_FMT_YUV422P16LE ),
-//        AV_NE( PIX_FMT_YUV420P16BE, PIX_FMT_YUV420P16LE ),
-//        PIX_FMT_YUVA420P,
-//        PIX_FMT_NONE
-//    };
-//    avfilter_set_common_pixel_formats(ctx, avfilter_make_format_list(pix_fmts));
-//
-//    return 0;
-//}
-//
-//#pragma warning (push)
-//#pragma warning (disable : 4706)
-//void fix_yadif_filter_format_query()
-//{
-//	AVFilter** filter = nullptr;
-//    while((filter = av_filter_next(filter)) && *filter)
-//	{
-//		if(strstr((*filter)->name, "yadif") != 0)
-//			(*filter)->query_formats = query_yadif_formats;
-//	}
-//}
-//#pragma warning (pop)
 
 std::wstring make_version(unsigned int ver)
 {
@@ -254,6 +208,11 @@ bool& get_quiet_logging_for_thread()
 	return *local;
 }
 
+void enable_quiet_logging_for_thread()
+{
+	get_quiet_logging_for_thread() = true;
+}
+
 bool is_logging_quiet_for_thread()
 {
 	return get_quiet_logging_for_thread();
@@ -286,18 +245,17 @@ void init(core::module_dependencies dependencies)
 	av_lockmgr_register(ffmpeg_lock_callback);
 	av_log_set_callback(log_for_thread);
 
-    avfilter_register_all();
+	avfilter_register_all();
 	//fix_yadif_filter_format_query();
 	av_register_all();
-    avformat_network_init();
-    avcodec_register_all();
+	avformat_network_init();
+	avcodec_register_all();
+	avdevice_register_all();
 
 	auto info_repo = dependencies.media_info_repo;
-	
-	dependencies.consumer_registry->register_consumer_factory(L"FFmpeg Consumer", create_consumer, describe_consumer);
-	dependencies.consumer_registry->register_consumer_factory(L"Streaming Consumer",  create_streaming_consumer, describe_streaming_consumer);
-	dependencies.consumer_registry->register_preconfigured_consumer_factory(L"file", create_preconfigured_consumer);
-	dependencies.consumer_registry->register_preconfigured_consumer_factory(L"stream", create_preconfigured_streaming_consumer);
+
+	dependencies.consumer_registry->register_consumer_factory(L"FFmpeg Consumer", create_ffmpeg_consumer, describe_ffmpeg_consumer);
+	dependencies.consumer_registry->register_preconfigured_consumer_factory(L"ffmpeg", create_preconfigured_ffmpeg_consumer);
 	dependencies.producer_registry->register_producer_factory(L"FFmpeg Producer", boost::bind(&create_producer, _1, _2, info_repo), describe_producer);
 	dependencies.producer_registry->register_thumbnail_producer(boost::bind(&create_thumbnail_frame, _1, _2, info_repo));
 
@@ -331,8 +289,7 @@ void init(core::module_dependencies dependencies)
 void uninit()
 {
 	avfilter_uninit();
-    avformat_network_deinit();
+	avformat_network_deinit();
 	av_lockmgr_register(nullptr);
 }
-
 }}

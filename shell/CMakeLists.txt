@@ -13,7 +13,7 @@ if (MSVC)
 			shell.rc
 			windows_specific.cpp
 	)
-elseif (CMAKE_COMPILER_IS_GNUCXX)
+else ()
 	set(OS_SPECIFIC_SOURCES
 			linux_specific.cpp
 	)
@@ -36,15 +36,13 @@ set(HEADERS
 add_executable(casparcg ${SOURCES} ${HEADERS} ${OS_SPECIFIC_SOURCES})
 add_precompiled_header(casparcg stdafx.h FORCEINCLUDE)
 
-add_executable(generate_docs generate_docs.cpp included_modules.h)
-target_link_libraries(generate_docs
-		protocol
-		accelerator
+#add_executable(generate_docs generate_docs.cpp included_modules.h)
+#target_link_libraries(generate_docs
+#		protocol
+#		accelerator
 
-		"${CASPARCG_MODULE_PROJECTS}"
-
-		reroute
-)
+#		"${CASPARCG_MODULE_PROJECTS}"
+#)
 
 
 include_directories(..)
@@ -60,6 +58,8 @@ if (MSVC)
 	)
 endif ()
 
+MESSAGE( ${Boost_LIBRARIES} )
+
 target_link_libraries(casparcg
 		accelerator
 		common
@@ -67,13 +67,11 @@ target_link_libraries(casparcg
 		protocol
 
 		"${CASPARCG_MODULE_PROJECTS}"
-
-		reroute
 )
 
 add_custom_target(casparcg_copy_dependencies ALL)
 
-casparcg_add_runtime_dependency("${LIBERATION_FONTS_BIN_PATH}/LiberationSans-Regular.ttf")
+#casparcg_add_runtime_dependency("${LIBERATION_FONTS_BIN_PATH}/LiberationSans-Regular.ttf")
 casparcg_add_runtime_dependency("${CMAKE_CURRENT_SOURCE_DIR}/casparcg.config")
 
 set(OUTPUT_FOLDER "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}")

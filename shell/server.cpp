@@ -44,6 +44,7 @@
 #include <core/producer/text/text_producer.h>
 #include <core/producer/color/color_producer.h>
 #include <core/consumer/output.h>
+#include <core/consumer/syncto/syncto_consumer.h>
 #include <core/mixer/mixer.h>
 #include <core/mixer/image/image_mixer.h>
 #include <core/thumbnail_generator.h>
@@ -108,12 +109,15 @@ std::shared_ptr<boost::asio::io_service> create_running_io_service()
 				CASPAR_LOG_CURRENT_EXCEPTION();
 			}
 		}
+
+		CASPAR_LOG(info) << "[asio] Global io_service uninitialized.";
 	});
 
 	return std::shared_ptr<boost::asio::io_service>(
 			service.get(),
 			[service, work, thread](void*) mutable
 			{
+				CASPAR_LOG(info) << "[asio] Shutting down global io_service.";
 				work.reset();
 				service->stop();
 				if (thread->get_id() != boost::this_thread::get_id())
@@ -146,7 +150,7 @@ struct server::impl : boost::noncopyable
 	std::shared_ptr<thumbnail_generator>				thumbnail_generator_;
 	std::promise<bool>&									shutdown_server_now_;
 
-	explicit impl(std::promise<bool>& shutdown_server_now)		
+	explicit impl(std::promise<bool>& shutdown_server_now)
 		: accelerator_(env::properties().get(L"configuration.accelerator", L"auto"))
 		, media_info_repo_(create_in_memory_media_info_repository())
 		, producer_registry_(spl::make_shared<core::frame_producer_registry>(help_repo_))
@@ -167,7 +171,9 @@ struct server::impl : boost::noncopyable
 
 		initialize_modules(dependencies);
 		core::text::init(dependencies);
+		core::init_cg_proxy_as_producer(dependencies);
 		core::scene::init(dependencies);
+		core::syncto::init(dependencies);
 		help_repo_->register_item({ L"producer" }, L"Color Producer", &core::describe_color_producer);
 	}
 
@@ -212,7 +218,7 @@ struct server::impl : boost::noncopyable
 		destroy_producers_synchronously();
 		destroy_consumers_synchronously();
 		channels_.clear();
-		
+
 		while (weak_io_service.lock())
 			boost::this_thread::sleep_for(boost::chrono::milliseconds(100));
 
@@ -248,10 +254,14 @@ struct server::impl : boost::noncopyable
 	}
 
 	void setup_channels(const boost::property_tree::wptree& pt)
-	{   
+	{
 		using boost::property_tree::wptree;
+
+		std::vector<wptree> xml_channels;
+
 		for (auto& xml_channel : pt | witerate_children(L"configuration.channels") | welement_context_iteration)
 		{
+			xml_channels.push_back(xml_channel.second);
 			ptree_verify_element_name(xml_channel, L"channel");
 
 			auto format_desc_str = xml_channel.second.get(L"video-mode", L"PAL");
@@ -267,17 +277,24 @@ struct server::impl : boost::noncopyable
 			auto channel_id = static_cast<int>(channels_.size() + 1);
 			auto channel = spl::make_shared<video_channel>(channel_id, format_desc, *channel_layout, accelerator_.create_image_mixer(channel_id));
 
+			channel->monitor_output().attach_parent(monitor_subject_);
+			channel->mixer().set_straight_alpha_output(xml_channel.second.get(L"straight-alpha-output", false));
+			channels_.push_back(channel);
+		}
+
+		for (auto& channel : channels_)
+		{
 			core::diagnostics::scoped_call_context save;
 			core::diagnostics::call_context::for_thread().video_channel = channel->index();
 
-			for (auto& xml_consumer : xml_channel.second | witerate_children(L"consumers") | welement_context_iteration)
+			for (auto& xml_consumer : xml_channels.at(channel->index() - 1) | witerate_children(L"consumers") | welement_context_iteration)
 			{
 				auto name = xml_consumer.first;
 
 				try
 				{
 					if (name != L"<xmlcomment>")
-						channel->output().add(consumer_registry_->create_consumer(name, xml_consumer.second, &channel->stage()));
+						channel->output().add(consumer_registry_->create_consumer(name, xml_consumer.second, &channel->stage(), channels_));
 				}
 				catch (const user_error& e)
 				{
@@ -288,11 +305,7 @@ struct server::impl : boost::noncopyable
 				{
 					CASPAR_LOG_CURRENT_EXCEPTION();
 				}
-			}		
-
-		    channel->monitor_output().attach_parent(monitor_subject_);
-			channel->mixer().set_straight_alpha_output(xml_channel.second.get(L"straight-alpha-output", false));
-			channels_.push_back(channel);
+			}
 		}
 
 		// Dummy diagnostics channel
@@ -309,14 +322,16 @@ struct server::impl : boost::noncopyable
 	}
 
 	void setup_osc(const boost::property_tree::wptree& pt)
-	{		
+	{
 		using boost::property_tree::wptree;
 		using namespace boost::asio::ip;
 
 		monitor_subject_->attach_parent(osc_client_->sink());
-		
+
 		auto default_port =
 				pt.get<unsigned short>(L"configuration.osc.default-port", 6250);
+		auto disable_send_to_amcp_clients =
+				pt.get(L"configuration.osc.disable-send-to-amcp-clients", false);
 		auto predefined_clients =
 				pt.get_child_optional(L"configuration.osc.predefined-clients");
 
@@ -337,7 +352,7 @@ struct server::impl : boost::noncopyable
 			}
 		}
 
-		if (primary_amcp_server_)
+		if (!disable_send_to_amcp_clients && primary_amcp_server_)
 			primary_amcp_server_->add_client_lifecycle_object_factory(
 					[=] (const std::string& ipv4_address)
 							-> std::pair<std::wstring, std::shared_ptr<void>>
@@ -363,9 +378,9 @@ struct server::impl : boost::noncopyable
 
 		polling_filesystem_monitor_factory monitor_factory(io_service_, scan_interval_millis);
 		thumbnail_generator_.reset(new thumbnail_generator(
-			monitor_factory, 
+			monitor_factory,
 			env::media_folder(),
-			env::thumbnails_folder(),
+			env::thumbnail_folder(),
 			pt.get(L"configuration.thumbnails.width", 256),
 			pt.get(L"configuration.thumbnails.height", 144),
 			core::video_format_desc(pt.get(L"configuration.thumbnails.video-mode", L"720p2500")),
@@ -374,9 +389,10 @@ struct server::impl : boost::noncopyable
 			&image::write_cropped_png,
 			media_info_repo_,
 			producer_registry_,
+			cg_registry_,
 			pt.get(L"configuration.thumbnails.mipmap", true)));
 	}
-		
+
 	void setup_controllers(const boost::property_tree::wptree& pt)
 	{
 		amcp_command_repo_ = spl::make_shared<amcp::amcp_command_repository>(
@@ -399,7 +415,7 @@ struct server::impl : boost::noncopyable
 			auto protocol = ptree_get<std::wstring>(xml_controller.second, L"protocol");
 
 			if(name == L"tcp")
-			{					
+			{
 				auto port = ptree_get<unsigned int>(xml_controller.second, L"port");
 				auto asyncbootstrapper = spl::make_shared<IO::AsyncEventServer>(
 						io_service_,
@@ -411,7 +427,7 @@ struct server::impl : boost::noncopyable
 					primary_amcp_server_ = asyncbootstrapper;
 			}
 			else
-				CASPAR_LOG(warning) << "Invalid controller: " << name;	
+				CASPAR_LOG(warning) << "Invalid controller: " << name;
 		}
 	}
 
@@ -446,7 +462,10 @@ struct server::impl : boost::noncopyable
 					if (running_)
 					{
 						if (boost::filesystem::is_regular_file(iter->path()))
+						{
+							CASPAR_LOG(trace) << L"Retrieving information for file " << iter->path().wstring();
 							media_info_repo_->get(iter->path().wstring());
+						}
 					}
 					else
 					{

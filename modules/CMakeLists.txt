@@ -1,6 +1,7 @@
 cmake_minimum_required (VERSION 2.6)
 project ("modules")
 
+add_subdirectory(reroute)
 add_subdirectory(ffmpeg)
 add_subdirectory(oal)
 
@@ -10,8 +11,8 @@ endif ()
 
 add_subdirectory(decklink)
 add_subdirectory(screen)
-add_subdirectory(html)
-add_subdirectory(psd)
+#add_subdirectory(html)
+#add_subdirectory(psd)
 
 if (MSVC)
 	add_subdirectory(flash)
@@ -19,5 +20,3 @@ if (MSVC)
 endif ()
 
 add_subdirectory(image)
-add_subdirectory(reroute)
-

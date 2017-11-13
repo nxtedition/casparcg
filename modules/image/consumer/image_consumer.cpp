@@ -41,8 +41,6 @@
 
 #include <tbb/concurrent_queue.h>
 
-#include <asmlib.h>
-
 #include <FreeImage.h>
 
 #include <vector>
@@ -106,14 +104,14 @@ public:
 			try
 			{
 				auto filename2 = filename;
-				
+
 				if (filename2.empty())
 					filename2 = env::media_folder() +  boost::posix_time::to_iso_wstring(boost::posix_time::second_clock::local_time()) + L".tga";
 				else
 					filename2 = env::media_folder() + filename2 + L".tga";
 
 				auto bitmap = std::shared_ptr<FIBITMAP>(FreeImage_Allocate(static_cast<int>(frame.width()), static_cast<int>(frame.height()), 32), FreeImage_Unload);
-				A_memcpy(FreeImage_GetBits(bitmap.get()), frame.image_data().begin(), frame.image_data().size());
+				std::memcpy(FreeImage_GetBits(bitmap.get()), frame.image_data().begin(), frame.image_data().size());
 				FreeImage_FlipVertical(bitmap.get());
 #ifdef WIN32
 				FreeImage_SaveU(FIF_TARGA, bitmap.get(), filename2.c_str(), 0);
@@ -135,7 +133,7 @@ public:
 	{
 		return L"image[]";
 	}
-	
+
 	std::wstring name() const override
 	{
 		return L"image";
@@ -176,7 +174,8 @@ void describe_consumer(core::help_sink& sink, const core::help_repository& repo)
 	sink.example(L">> ADD 1 IMAGE", L"creating media/20130228T210946.png if the current time is 2013-02-28 21:09:46.");
 }
 
-spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>& params, core::interaction_sink*)
+spl::shared_ptr<core::frame_consumer> create_consumer(
+		const std::vector<std::wstring>& params, core::interaction_sink*, std::vector<spl::shared_ptr<core::video_channel>> channels)
 {
 	if (params.size() < 1 || !boost::iequals(params.at(0), L"IMAGE"))
 		return core::frame_consumer::empty();

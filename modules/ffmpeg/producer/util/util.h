@@ -26,12 +26,15 @@
 
 #include <core/video_format.h>
 #include <core/frame/pixel_format.h>
-#include <core/mixer/audio/audio_mixer.h>
+#include <core/frame/audio_channel_layout.h>
+#include <core/frame/frame.h>
 #include <core/fwd.h>
 
 #include <boost/rational.hpp>
 
 #include <array>
+#include <vector>
+#include <utility>
 
 #if defined(_MSC_VER)
 #pragma warning (push)
@@ -52,7 +55,9 @@ struct AVRational;
 struct AVCodecContext;
 
 namespace caspar { namespace ffmpeg {
-		
+
+typedef std::vector<std::pair<std::string, std::string>> ffmpeg_options;
+
 // Utils
 
 core::field_mode					get_mode(const AVFrame& frame);
@@ -60,7 +65,7 @@ core::mutable_frame					make_frame(const void* tag, const spl::shared_ptr<AVFram
 spl::shared_ptr<AVFrame>			make_av_frame(core::mutable_frame& frame);
 spl::shared_ptr<AVFrame>			make_av_frame(std::array<uint8_t*, 4> data, const core::pixel_format_desc& pix_desc);
 
-core::pixel_format_desc				pixel_format_desc(PixelFormat pix_fmt, int width, int height);
+core::pixel_format_desc				pixel_format_desc(AVPixelFormat pix_fmt, int width, int height);
 
 spl::shared_ptr<AVPacket> create_packet();
 spl::shared_ptr<AVFrame>  create_frame();
@@ -70,6 +75,11 @@ spl::shared_ptr<AVFormatContext> open_input(const std::wstring& filename);
 
 bool is_sane_fps(AVRational time_base);
 AVRational fix_time_base(AVRational time_base);
+
+std::shared_ptr<core::mutable_audio_buffer>	flush_audio();
+std::shared_ptr<core::mutable_audio_buffer>	empty_audio();
+std::shared_ptr<AVFrame>					flush_video();
+std::shared_ptr<AVFrame>					empty_video();
 
 double read_fps(AVFormatContext& context, double fail_value);
 boost::rational<int> read_framerate(AVFormatContext& context, const boost::rational<int>& fail_value);
@@ -83,6 +93,8 @@ bool try_get_duration(const std::wstring filename, std::int64_t& duration, boost
 core::audio_channel_layout get_audio_channel_layout(int num_channels, std::uint64_t layout, const std::wstring& channel_layout_spec);
 
 // av_get_default_channel_layout does not work for layouts not predefined in ffmpeg. This is needed to support > 8 channels.
-std::int64_t create_channel_layout_bitmask(int num_channels);
+std::uint64_t create_channel_layout_bitmask(int num_channels);
+
+std::vector<int> find_audio_cadence(const boost::rational<int>& framerate);
 
 }}

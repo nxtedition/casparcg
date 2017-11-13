@@ -1,12 +1,13 @@
 cmake_minimum_required (VERSION 2.6)
 project ("modules")
 
+add_subdirectory(reroute)
 add_subdirectory(ffmpeg)
 add_subdirectory(oal)
 
 if (MSVC)
 	add_subdirectory(bluefish)
-endif ()
+endif ()	
 
 add_subdirectory(decklink)
 add_subdirectory(screen)
@@ -19,5 +20,4 @@ if (MSVC)
 endif ()
 
 add_subdirectory(image)
-add_subdirectory(reroute)
 

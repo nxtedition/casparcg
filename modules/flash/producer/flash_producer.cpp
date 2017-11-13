@@ -49,8 +49,6 @@
 #include <common/diagnostics/graph.h>
 #include <common/prec_timer.h>
 #include <common/array.h>
-#include <common/memset.h>
-#include <common/memcpy.h>
 
 #include <boost/filesystem.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -299,10 +297,10 @@ public:
 			desc.planes.push_back(core::pixel_format_desc::plane(width_, height_, 4));
 			auto frame = frame_factory_->create_frame(this, desc, core::audio_channel_layout::invalid());
 
-			fast_memset(bmp_.data(), 0, width_ * height_ * 4);
+			std::memset(bmp_.data(), 0, width_ * height_ * 4);
 			ax_->DrawControl(bmp_);
 		
-			fast_memcpy(frame.image_data(0).begin(), bmp_.data(), width_*height_*4);
+			std::memcpy(frame.image_data(0).begin(), bmp_.data(), width_*height_*4);
 			head_ = core::draw_frame(std::move(frame));	
 		}		
 
@@ -625,7 +623,7 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
 	auto filename = env::template_folder() + L"\\" + template_host.filename;
 	
 	if(!boost::filesystem::exists(filename))
-		CASPAR_THROW_EXCEPTION(file_not_found() << boost::errinfo_file_name(u8(filename)));	
+		CASPAR_THROW_EXCEPTION(file_not_found() << msg_info(L"Could not open flash movie " + filename));	
 
 	return create_destroy_proxy(spl::make_shared<flash_producer>(dependencies.frame_factory, dependencies.format_desc, filename, template_host.width, template_host.height));
 }

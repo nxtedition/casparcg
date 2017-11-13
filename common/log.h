@@ -39,20 +39,23 @@
 #include <memory>
 
 namespace caspar { namespace log {
-	
+
 namespace internal{
 void init();
 std::wstring get_call_stack();
+std::string current_exception_diagnostic_information();
 }
+
+const char* remove_source_prefix(const char* file);
 
 template<typename T>
 inline void replace_nonprintable(std::basic_string<T, std::char_traits<T>, std::allocator<T>>& str, T with)
 {
 	std::locale loc;
 	std::replace_if(str.begin(), str.end(), [&](T c)->bool {
-		return 
-			(!std::isprint(c, loc) 
-			&& c != '\r' 
+		return
+			(!std::isprint(c, loc)
+			&& c != '\r'
 			&& c != '\n')
 			|| c > static_cast<T>(127);
 	}, with);
@@ -100,12 +103,12 @@ BOOST_LOG_INLINE_GLOBAL_LOGGER_INIT(logger, caspar_logger)
 	catch(...){}
 
 #define CASPAR_LOG_CURRENT_EXCEPTION() try{\
-		CASPAR_LOG(error) << caspar::u16(boost::current_exception_diagnostic_information()) << L"Caught at (" << caspar::get_thread_info().name << L"):\n" << caspar::get_call_stack();\
+		CASPAR_LOG(error) << caspar::u16(::caspar::log::internal::current_exception_diagnostic_information()) << L"Caught at (" << caspar::get_thread_info().name << L"):\n" << caspar::get_call_stack();\
 	}\
 	catch(...){}
 
 #define CASPAR_LOG_CURRENT_EXCEPTION_AT_LEVEL(lvl) try{\
-		CASPAR_LOG(lvl) << caspar::u16(boost::current_exception_diagnostic_information()) << L"Caught at (" << caspar::get_thread_info().name << L"):\n" << caspar::get_call_stack();\
+		CASPAR_LOG(lvl) << caspar::u16(::caspar::log::internal::current_exception_diagnostic_information()) << L"Caught at (" << caspar::get_thread_info().name << L"):\n" << caspar::get_call_stack();\
 	}\
 	catch(...){}
 
@@ -119,4 +122,3 @@ void print_child(
 		const boost::property_tree::wptree& tree);
 
 }}
-

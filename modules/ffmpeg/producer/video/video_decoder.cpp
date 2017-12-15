@@ -172,6 +172,7 @@ bool video_decoder::empty() const { return impl_->empty(); }
 int video_decoder::width() const{return impl_->width_;}
 int video_decoder::height() const{return impl_->height_;}
 uint32_t video_decoder::nb_frames() const{return impl_->nb_frames();}
+int video_decoder::stream_index() const{return impl_->index_;}
 uint32_t video_decoder::file_frame_number() const{return static_cast<uint32_t>(impl_->file_frame_number_);}
 bool	video_decoder::is_progressive() const{return impl_->is_progressive_;}
 std::wstring video_decoder::print() const{return impl_->print();}

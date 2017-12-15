@@ -55,16 +55,19 @@ struct audio_input_pad
 	int						sample_rate;
 	AVSampleFormat			sample_fmt;
 	std::uint64_t			audio_channel_layout;
+	double					trim;
 
 	audio_input_pad(
 			boost::rational<int> time_base,
 			int sample_rate,
 			AVSampleFormat sample_fmt,
-			std::uint64_t audio_channel_layout)
+			std::uint64_t audio_channel_layout,
+			double trim = 0)
 		: time_base(std::move(time_base))
 		, sample_rate(sample_rate)
 		, sample_fmt(sample_fmt)
 		, audio_channel_layout(audio_channel_layout)
+		, trim(trim)
 	{
 	}
 };

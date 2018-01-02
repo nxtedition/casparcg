@@ -111,7 +111,7 @@ std::unique_ptr<audio_filter> create_amerge_filter(std::vector<audio_input_pad> 
 	if (input_pads.size() > 1)
 	{
 		for (int i = 0; i < input_pads.size(); ++i)
-			amerge += L"[a:" + boost::lexical_cast<std::wstring>(i) + L"]," + "atrim=start=" + boost::lexical_cast<std::wstring>(input_pads[i].trim);
+			amerge += L"[a:" + boost::lexical_cast<std::wstring>(i) + L"]";
 
 		amerge += L"amerge=inputs=" + boost::lexical_cast<std::wstring>(input_pads.size());
 	}
@@ -122,10 +122,6 @@ std::unique_ptr<audio_filter> create_amerge_filter(std::vector<audio_input_pad> 
 	{
 		afilter = amerge;
 		afilter += L"[aout:0]";
-	}
-	else
-	{
-		afilter = "atrim=start_sample=" + boost::lexical_cast<std::wstring>(input_pads[0].trim);
 	}
 
 	return std::unique_ptr<audio_filter>(new audio_filter(input_pads, output_pads, u8(afilter)));

@@ -109,11 +109,11 @@ struct frame_producer_base::impl
 	draw_frame receive()
 	{
 		if(paused_)
-			return self_.last_frame();
+			return draw_frame::still(self_.last_frame());
 
 		auto frame = self_.receive_impl();
 		if(frame == draw_frame::late())
-			return self_.last_frame();
+			return draw_frame::still(self_.last_frame());
 
 		++frame_number_;
 

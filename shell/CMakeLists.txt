@@ -10,7 +10,6 @@ configure_file("${PROJECT_SOURCE_DIR}/included_modules.tmpl" "${PROJECT_SOURCE_D
 if (MSVC)
 	set(OS_SPECIFIC_SOURCES
 			resource.h
-			shell.rc
 			windows_specific.cpp
 	)
 elseif (CMAKE_COMPILER_IS_GNUCXX)

@@ -166,7 +166,7 @@ std::vector<int> find_audio_cadence(const boost::rational<int>& framerate, bool 
 	{
 		auto diff = boost::abs(framerate - format_framerate);
 
-		if (diff < closest_framerate_diff)
+		if (diff.denominator() > 0 && diff < closest_framerate_diff)
 		{
 			closest_framerate_diff = diff;
 			closest_framerate = format_framerate;

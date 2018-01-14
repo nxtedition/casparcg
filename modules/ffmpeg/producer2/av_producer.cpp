@@ -80,7 +80,7 @@ class Decoder
     std::shared_ptr<AVCodecContext> avctx_;
     int                             stream_index_ = -1;
 
-    packets_t                         packets_;
+    packets_t                       packets_;
     frames_t                        frames_;
     std::thread                     thread_;
 
@@ -147,6 +147,8 @@ public:
 
                         // TODO
                         frame->pts = frame->best_effort_timestamp;
+
+                        CASPAR_VERIFY(frame->pts != AV_NOPTS_VALUE);
 
                         frames_.push(std::move(frame));
                     }
@@ -374,6 +376,8 @@ public:
         {
             int ret;
 
+            int64_t pts = AV_NOPTS_VALUE;
+
             try {
                 while (true) {
                     const auto frame = alloc_frame();
@@ -385,6 +389,15 @@ public:
                         break;
                     } else {
                         FF_RET(ret, "av_buffersink_get_frame");
+
+                        CASPAR_VERIFY(frame->pts != AV_NOPTS_VALUE);
+
+                        if (pts != AV_NOPTS_VALUE && frame->pts < pts) {
+                            continue;
+                        }
+
+                        pts = frame->pts;
+
                         frames_.push(std::move(frame));
                     }
                 }
@@ -589,10 +602,6 @@ struct AVProducer::Impl
                 if (!video) {
                     break;
                 }
-
-                // TODO do we need this?
-                // if (video_stream_->pts != AV_NOPTS_VALUE && pts < video_stream_->pts)
-                //     break;
 			};
         }
 
@@ -619,10 +628,6 @@ struct AVProducer::Impl
                 if (!frame) {
 					break;
                 }
-
-                // // TODO do we need this?
-                // if (audio_stream_->pts != AV_NOPTS_VALUE && pts < audio_stream_->pts)
-                //     break;
 
                 // TODO compensate to video pts?
 

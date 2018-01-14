@@ -63,11 +63,6 @@ std::shared_ptr<AVPacket> alloc_packet()
     return packet;
 }
 
-boost::rational<int> q2r(const AVRational& value)
-{
-    return boost::rational<int>(value.num, value.den);
-}
-
 // TODO variable framerate input?
 // TODO amerge multiple audio streams
 // TODO secondary video stream is alpha
@@ -252,15 +247,7 @@ public:
 
             // TODO auto letterbox
 
-            const auto frame_rate = q2r(decoder_->framerate);
-
-            if (frame_rate == format_desc.framerate && format_desc.field_count > 1) {
-                filter_spec += (boost::format(",scale=%d:%d:interl=-1")
-                    % format_desc.width % format_desc.height
-                ).str();
-            } else {
-            filter_spec += (boost::format(",idet,bwdif=mode=%s:parity=auto:deint=interlaced")
-                % (frame_rate == format_desc.framerate ? "send_frame" : "send_field")
+            filter_spec += (boost::format(",bwdif=mode=send_field:parity=auto:deint=interlaced")
             ).str();
 
             filter_spec += (boost::format(",fps=fps=%d/%d")

@@ -67,7 +67,7 @@ std::shared_ptr<AVPacket> alloc_packet()
 // TODO amerge multiple audio streams
 // TODO secondary video stream is alpha
 // TODO timeout with retry?
-// TODO handle pts discontinuities
+// TODO AVFMT_TS_DISCONT
 // TODO seek
 // TODO loop
 // TODO duration

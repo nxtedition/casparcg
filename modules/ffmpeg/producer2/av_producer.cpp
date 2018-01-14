@@ -247,7 +247,7 @@ public:
 
             // TODO auto letterbox
 
-            filter_spec += (boost::format(",bwdif=mode=send_field:parity=auto:deint=interlaced")
+            filter_spec += (boost::format(",bwdif=mode=send_field:parity=auto:deint=all")
             ).str();
 
             filter_spec += (boost::format(",fps=fps=%d/%d")

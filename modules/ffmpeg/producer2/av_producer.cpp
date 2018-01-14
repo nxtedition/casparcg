@@ -148,7 +148,7 @@ public:
                         // TODO
                         frame->pts = frame->best_effort_timestamp;
 
-                        frames_.push(frame);
+                        frames_.push(std::move(frame));
                     }
                 }
             } catch (tbb::user_abort&) {
@@ -636,10 +636,10 @@ struct AVProducer::Impl
 
 				const auto next_pts = av_rescale(
                     frame->pts,
-                    static_cast<std::int64_t>(tb.num) * 
+                    static_cast<std::int64_t>(audio_graph.time_base().num) * 
                     static_cast<std::int64_t>(frame->sample_rate) * 
                     static_cast<std::int64_t>(audio->sample_rate), 
-                    tb.den
+                    audio_graph.time_base().den
                 );
 				FF(swr_next_pts(swr_.get(), next_pts));
 				FF(swr_convert_frame(swr_.get(), nullptr, frame.get()));

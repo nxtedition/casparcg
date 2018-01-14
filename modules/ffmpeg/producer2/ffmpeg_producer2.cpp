@@ -199,8 +199,10 @@ public:
 					file_frame_number_ += 1;
 					buffer_.push(std::move(*frame));
 					graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
-				} else if (loop_) {
+				} else if (loop_ && file_frame_number_ > 0) {
 					producer.reset();
+				} else {
+					break;
 				}
 			}
 		} catch (tbb::user_abort&) {
@@ -366,8 +368,8 @@ public:
 		info.add(L"loop", loop_);
 		info.add(L"file-frame-number", file_frame_number());
 		info.add(L"file-nb-frames", file_frame_count());
-		info.add(L"frame-number", frame_number_);
-		info.add(L"nb-frames", frame_count_);
+		info.add(L"frame-number", frame_number());
+		info.add(L"nb-frames", frame_count());
 		return info;
 	}
 

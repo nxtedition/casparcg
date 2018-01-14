@@ -23,6 +23,9 @@ public:
 
 	boost::rational<int64_t> duration() const;
 
+    int width() const;
+    int heigth() const;
+
 private:
     struct Impl;
     std::shared_ptr<Impl> impl_;

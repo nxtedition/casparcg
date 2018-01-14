@@ -434,7 +434,17 @@ public:
 
     AVRational time_base() const
     {
-        return av_buffersink_get_time_base(sink_);
+        return sink_ ? av_buffersink_get_time_base(sink_) : AVRational { 0, 1 };
+    }
+
+    int width () const
+    {
+        return av_buffersink_get_w(sink_);
+    }
+
+    int height () const
+    {
+        return av_buffersink_get_h(sink_);
     }
 
     explicit operator bool() const 
@@ -577,11 +587,21 @@ struct AVProducer::Impl
         return impl->abort_request_->load() ? 1 : 0;
     }
 
+    int width() const
+    {
+        return video_graph_.width();
+    }
+
+    int height() const
+    {
+        return video_graph_.height();
+    }
+
     boost::rational<int64_t> duration() const
     {
         return ic_->duration == AV_NOPTS_VALUE
             ? boost::rational<int64_t>(0, 1);
-            : boost::rational<int64_t>(ic_->duration - (start_pts_ != AV_NOPTS_VALUE ? start_pts_ : 0), AV_TIME_BASE);
+            : boost::rational<int64_t>(std::max(0, ic_->duration - (start_pts_ != AV_NOPTS_VALUE ? start_pts_ : 0)), AV_TIME_BASE);
 	}
 
     boost::optional<core::draw_frame> next() 
@@ -715,6 +735,16 @@ boost::optional<core::draw_frame> AVProducer::next()
 boost::rational<int64_t> AVProducer::duration() const
 {
 	return impl_->duration();
+}
+
+int AVProducer::width() const
+{
+    return impl_->width();
+}
+
+int AVProducer::height() const
+{
+    return impl_->height();
 }
 
 }  // namespace ffmpeg

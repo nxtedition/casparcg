@@ -11,20 +11,33 @@ namespace ffmpeg2 {
 
 class AVProducer {
 public:
-    AVProducer(const std::shared_ptr<core::frame_factory>& frame_factory,
-                  const core::video_format_desc& format_desc,
-                  const std::string& filename,
-                  const boost::optional<std::string> vfilter = boost::none,
-                  const boost::optional<std::string> afilter = boost::none,
-				  const boost::optional<int64_t> start = boost::none
-		);
+    AVProducer(std::shared_ptr<core::frame_factory> frame_factory,
+               core::video_format_desc format_desc,
+               std::string filename,
+               boost::optional<std::string> vfilter = boost::none,
+               boost::optional<std::string> afilter = boost::none,
+               boost::optional<int64_t> start = boost::none,
+               boost::optional<int64_t> duration = boost::none,
+               boost::optional<bool> loop = boost::none);
 
-    boost::optional<core::draw_frame> next();
+    core::draw_frame next();
 
-	boost::rational<int64_t> duration() const;
+    AVProducer& seek(int64_t time);
+    int64_t time() const;
+
+    AVProducer& loop(bool loop);
+    bool loop() const;
+
+    AVProducer& start(int64_t start);
+    int64_t start() const;
+
+    AVProducer& duration(int64_t duration);
+    int64_t duration() const;
 
     int width() const;
     int heigth() const;
+
+    void abort();
 
 private:
     struct Impl;

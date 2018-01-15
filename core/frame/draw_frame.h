@@ -68,6 +68,8 @@ public:
 	bool operator==(const draw_frame& other) const;
 	bool operator!=(const draw_frame& other) const;
 
+	explicit operator bool() const;
+
 	// Properties
 
 	const core::frame_transform&	transform() const;

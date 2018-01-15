@@ -165,6 +165,7 @@ public:
                 info.time = frame_timer.elapsed();
                 info.number = to_frames(producer_.time());
                 info.count = to_frames(producer_.duration());
+                info.frame = frame;
 
                 buffer_.push(std::move(info));
 			}

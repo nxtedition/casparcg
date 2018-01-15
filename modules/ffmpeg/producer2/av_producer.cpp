@@ -161,12 +161,12 @@ public:
                         frames_.push(std::move(frame));
                     }
                 }
+                frames_.push(nullptr);
             } catch (tbb::user_abort&) {
                 return;
             } catch (...) {
                 CASPAR_LOG_CURRENT_EXCEPTION();
             }
-            frames_.push(nullptr);
         });    
     }
 
@@ -410,12 +410,12 @@ public:
                         frames_.push(std::move(frame));
                     }
                 }
+                frames_.push(nullptr);
             } catch (tbb::user_abort&) {
                 return;
             } catch (...) {
                 CASPAR_LOG_CURRENT_EXCEPTION();
             }
-            frames_.push(nullptr);
         });
     }
 

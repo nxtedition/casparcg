@@ -319,6 +319,8 @@ public:
                 AV_PIX_FMT_YUV422P,
                 AV_PIX_FMT_YUVA444P,
                 AV_PIX_FMT_YUVA422P,
+                // NOTE CasparCG does not properly handle interlaced vertical chrome subsampling.
+                // Use only YUV444 and YUV422 formats.
                 AV_PIX_FMT_NONE
             };
             FF(av_opt_set_int_list(sink_, "pix_fmts", pix_fmts, -1, AV_OPT_SEARCH_CHILDREN));

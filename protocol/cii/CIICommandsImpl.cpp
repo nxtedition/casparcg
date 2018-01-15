@@ -35,6 +35,7 @@
 #include <boost/locale.hpp>
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/algorithm/string/split.hpp>
+#include <boost/algorithm/string/case_conv.hpp>
 #include <boost/lexical_cast.hpp>
 
 namespace caspar { namespace protocol { namespace cii {
@@ -141,8 +142,8 @@ void MiscellaneousCommand::Setup(const std::vector<std::wstring>& parameters)
 	// VIDEO MODE V\5\14\MODE
 	if((parameters.size() > 3) && parameters[1] == L"5" && parameters[2] == L"14")
 	{
-		std::wstring value = parameters[3];
-		std::transform(value.begin(), value.end(), value.begin(), toupper);
+        std::wstring value = parameters[3];
+        boost::to_upper(value);
 
 		this->pCIIStrategy_->GetChannel()->video_format_desc(core::video_format_desc(value));
 	}

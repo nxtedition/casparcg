@@ -35,7 +35,7 @@ public:
     int64_t duration() const;
 
     int width() const;
-    int heigth() const;
+    int height() const;
 
     void abort();
 

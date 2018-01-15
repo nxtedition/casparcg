@@ -25,6 +25,8 @@
 #include "CLKProtocolStrategy.h"
 #include "clk_commands.h"
 
+#include <boost/algorithm/string/case_conv.hpp>
+
 #include <string>
 #include <algorithm>
 #include <locale>
@@ -107,10 +109,7 @@ public:
 			}
 			else
 			{
-				std::transform(
-					command_name_.begin(), command_name_.end(), 
-					command_name_.begin(), 
-					toupper);
+                boost::to_upper(command_name_);
 
 				try
 				{

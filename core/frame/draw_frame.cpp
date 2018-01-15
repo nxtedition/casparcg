@@ -127,7 +127,7 @@ void draw_frame::accept(frame_visitor& visitor) const{impl_->accept(visitor);}
 int64_t draw_frame::get_and_record_age_millis() { return impl_->get_and_record_age_millis(*this); }
 bool draw_frame::operator==(const draw_frame& other)const{return *impl_ == *other.impl_;}
 bool draw_frame::operator!=(const draw_frame& other)const{return !(*this == other);}
-bool draw_frame::operator bool() const() { return impl_->frame_; }
+draw_frame::operator bool() const { return impl_->frame_ != nullptr; }
 
 draw_frame draw_frame::interlace(draw_frame frame1, draw_frame frame2, core::field_mode mode)
 {

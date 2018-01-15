@@ -82,10 +82,10 @@ std::wstring get_relative_or_original(
 
 struct Info
 {
-	double time;
+	double time = 0.0;
     core::draw_frame frame = core::draw_frame::late();
-	int64_t number;
-	int64_t count;
+	int64_t number = 0;
+	int64_t count = 0;
 };
 
 struct ffmpeg_producer : public core::frame_producer_base
@@ -124,9 +124,9 @@ public:
 					u8(filename), 
 					u8(vfilter), 
 					u8(afilter), 
-					std::move(start), 
-					std::move(duration), 
-					std::move(loop))
+					start, 
+					duration, 
+					loop)
 		, thread_([this] { run(); })
 	{
         buffer_.set_capacity(2);
@@ -135,6 +135,12 @@ public:
 			constraints_.width.set(producer_.width());
 			constraints_.height.set(producer_.height());
 		}
+
+        {
+            std::lock_guard<std::mutex> lock(info_mutex_);
+            info_.number = to_frames(producer_.time());
+            info_.count = to_frames(producer_.duration());
+        }
 		
 		diagnostics::register_graph(graph_);
 		graph_->set_color("frame-time", diagnostics::color(0.1f, 1.0f, 0.1f));
@@ -185,8 +191,19 @@ public:
 	{
 		return av_rescale_q(frames, AVRational{ format_desc_.duration, format_desc_.time_scale }, AVRational{ 1, AV_TIME_BASE });
 	}
-
+ 
 	// frame_producer
+
+    core::draw_frame last_frame() override
+    {
+        std::lock_guard<std::mutex> lock(info_mutex_);
+
+        if (info_.frame == core::draw_frame::late()) {
+            buffer_.try_pop(info_);
+        }
+
+        return info_.frame;
+    }
 
 	core::draw_frame receive_impl() override
 	{
@@ -282,7 +299,13 @@ public:
 
 			producer_.seek(seek);
 
-			result = boost::lexical_cast<std::wstring>(to_frames(seek));
+            {
+                std::lock_guard<std::mutex> lock(info_mutex_);
+                info_.number = to_frames(seek);
+                info_.frame = core::draw_frame::late();
+            }
+
+            result = boost::lexical_cast<std::wstring>(to_frames(seek));
 		} else {
 			CASPAR_THROW_EXCEPTION(invalid_argument());
 		}

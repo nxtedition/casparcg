@@ -47,6 +47,7 @@ extern "C" {
 #include <string>
 #include <cinttypes>
 #include <thread>
+#include <condition_variable>
 
 namespace caspar {
 namespace ffmpeg2 {
@@ -74,8 +75,7 @@ std::shared_ptr<AVPacket> alloc_packet()
 // TODO secondary video stream is alpha
 // TODO timeout with retry?
 // TODO AVFMT_TS_DISCONT
-// TODO seek
-// TODO loop
+// TODO filter preset
 // TODO ic_->duration accuracy
 // TODO ic_->start_time accuracy
 // TODO min_pts && max_pts
@@ -148,8 +148,7 @@ public:
                         packets_.pop(packet);
                         FF(avcodec_send_packet(avctx_.get(), packet.get()));
                     } else if (ret == AVERROR_EOF) {
-                        // avcodec_flush_framess(avctx_.get());
-                        break;
+                        avcodec_flush_buffers(avctx_.get());
                     } else {
                         FF_RET(ret, "avcodec_receive_frame");
 
@@ -161,7 +160,6 @@ public:
                         frames_.push(std::move(frame));
                     }
                 }
-                frames_.push(nullptr);
             } catch (tbb::user_abort&) {
                 return;
             } catch (...) {
@@ -481,10 +479,15 @@ struct AVProducer::Impl
     std::unique_ptr<Graph>                      video_graph_;
     std::unique_ptr<Graph>                      audio_graph_;
 
+    std::atomic<int64_t>                        seek_ = AV_NOPTS_VALUE;
     std::atomic<int64_t>                        time_ = AV_NOPTS_VALUE;
 	std::atomic<int64_t>                        start_ = AV_NOPTS_VALUE;
     std::atomic<int64_t>                        duration_ = AV_NOPTS_VALUE;
     std::atomic<bool>                           loop_ = false;
+
+    bool                                        eof_;
+    std::mutex                                  eof_mutex_;
+    std::condition_variable                     eof_cond_;
 
 	std::vector<int>                            audio_cadence_;
 	
@@ -544,45 +547,39 @@ struct AVProducer::Impl
         }
 
         if (start_ != AV_NOPTS_VALUE) {
-            auto ts = (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0) + start_;
-
-            if (!(ic_->iformat->flags & AVFMT_SEEK_TO_PTS)) {
-                for (auto i = 0ULL; i < ic_->nb_streams; ++i) {
-                    if (ic_->streams[i]->codecpar->video_delay) {
-                        ts -= 3 * AV_TIME_BASE / 23;
-                        break;
-                    }
-                }
-            }
-
-            FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
+            seek_to_start(false);
         }
 
         thread_ = std::thread([this]
         {  
             int ret;
-
+ 
             try {
                 while (true) {
+                    {
+                        std::unique_lock<std::mutex> lock(eof_mutex_);
+                        eof_cond_.wait(lock, [&] { return !eof_ || abort_request_; });
+                    }
+
                     const auto packet = alloc_packet();
                     ret = av_read_frame(ic_.get(), packet.get());
 
                     if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
-                        video_graph_->push(nullptr);
-                        audio_graph_->push(nullptr);
-                        // TODO loop
-                        break;
-                    }
-
-                    if (ret == AVERROR(EAGAIN)) {
+                        if (loop_) {
+                            seek_to_start(true);
+                        } else {
+                            std::unique_lock<std::mutex> lock(eof_mutex_);
+                            eof_ = true;
+                        }
+                    } else if (ret == AVERROR(EAGAIN)) {
                         boost::this_thread::sleep(boost::posix_time::milliseconds(100));
                         continue;
-                    }
-                    
-                    FF_RET(ret, "av_read_frame");
+                    } else {
+                        FF_RET(ret, "av_read_frame");
 
-                    video_graph_->push(packet);
-                    audio_graph_->push(packet);
+                        video_graph_->push(packet);
+                        audio_graph_->push(packet);
+                    }                    
                 }
             } catch (tbb::user_abort&) {
                 return;
@@ -613,10 +610,32 @@ struct AVProducer::Impl
         return impl->abort_request_.load() ? 1 : 0;
     }
 
-    void seek(int64_t time)
+    void seek_to_start(bool flush)
     {
-        CASPAR_THROW_EXCEPTION(not_implemented());
-        // TODO
+        auto start = start_ == AV_NOPTS_VALUE ? start_.load() : 0;
+        seek((ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0) + start, flush);
+    }
+
+    void seek(int64_t ts, bool flush = true)
+    {
+        seek_ = ts;
+        time_ = ts;
+        
+        if (!(ic_->iformat->flags & AVFMT_SEEK_TO_PTS)) {
+            for (auto i = 0ULL; i < ic_->nb_streams; ++i) {
+                if (ic_->streams[i]->codecpar->video_delay) {
+                    ts -= 3 * AV_TIME_BASE / 23;
+                    break;
+                }
+            }
+        }
+  
+        FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
+
+        if (flush) {
+            video_graph_->push(nullptr);
+            audio_graph_->push(nullptr);
+        }
     }
 
     int64_t time() const
@@ -680,7 +699,7 @@ struct AVProducer::Impl
 		std::shared_ptr<AVFrame> video;
 		std::shared_ptr<AVFrame> audio;
 
-        const auto start = start_.load();
+        const auto start = seek_.load();
         const auto start_pts = (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0) + 
                                (start != AV_NOPTS_VALUE ? start : 0);
     
@@ -721,7 +740,7 @@ struct AVProducer::Impl
 				if (!swr_) {
                     const auto first_pts = video
                         ? av_rescale_q(video->pts, video_graph_->time_base(), AVRational{ 1, frame->sample_rate })
-                        : av_rescale_q(start_pts, TIME_BASE_Q, AVRational{ 1, frame->sample_rate });
+                        : av_rescale_q(seek_, TIME_BASE_Q, AVRational{ 1, frame->sample_rate });
 
 					swr_.reset(swr_alloc(), [](SwrContext* ptr) { swr_free(&ptr); });
 					FF(swr_config_frame(swr_.get(), audio.get(), frame.get()));

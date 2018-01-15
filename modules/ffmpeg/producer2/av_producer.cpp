@@ -271,6 +271,7 @@ public:
             //     ).str();
             // }
 
+            // TODO Move to GPU
             if (format_desc.field_count == 2) {
                 filter_spec += (boost::format(",scale=%d:%d,interlace=scan=")
                     % format_desc.width % format_desc.height

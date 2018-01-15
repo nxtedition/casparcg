@@ -83,6 +83,7 @@ std::wstring get_relative_or_original(
 struct Info
 {
 	double time;
+    core::draw_frame frame = core::draw_frame::late();
 	int64_t number;
 	int64_t count;
 };
@@ -103,7 +104,7 @@ struct ffmpeg_producer : public core::frame_producer_base
 	const spl::shared_ptr<diagnostics::graph>			graph_;
 	core::constraints									constraints_;
 
-	tbb::concurrent_bounded_queue<core::draw_frame>		frames_;
+	tbb::concurrent_bounded_queue<Info>		            buffer_;
 	boost::thread										thread_;
 public:
 	explicit ffmpeg_producer(
@@ -128,7 +129,7 @@ public:
 					std::move(loop))
 		, thread_([this] { run(); })
 	{
-		frames_.set_capacity(2);
+        buffer_.set_capacity(2);
 
 		if (producer_.width() > 0 && producer_.height() > 0) {
 			constraints_.width.set(producer_.width());
@@ -145,7 +146,7 @@ public:
 	~ffmpeg_producer()
 	{
 		producer_.abort();
-		frames_.abort();
+        buffer_.abort();
 		thread_.join();
 	}
 
@@ -158,17 +159,14 @@ public:
 				auto frame = producer_.next();
 
 				graph_->set_value("frame-time", frame_timer.elapsed() * boost::rational_cast<double>(format_desc_.framerate) * 0.5);
-				graph_->set_value("buffer-count", static_cast<double>(frames_.size()) / static_cast<double>(frames_.capacity()));
+				graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
 
-				{
-					std::lock_guard<std::mutex> lock(info_mutex_);
-							
-					info_.time = frame_timer.elapsed();
-					info_.number = to_frames(producer_.time());
-					info_.count = to_frames(producer_.duration());
-				}
+                Info info;							
+                info.time = frame_timer.elapsed();
+                info.number = to_frames(producer_.time());
+                info.count = to_frames(producer_.duration());
 
-				frames_.push(std::move(frame));
+                buffer_.push(std::move(info));
 			}
 		} catch (tbb::user_abort&) {
 			return;
@@ -191,29 +189,30 @@ public:
 
 	core::draw_frame receive_impl() override
 	{
-		auto frame = core::draw_frame::late();
+        Info info;
 
-		if (frames_.try_pop(frame)) {			
-			graph_->set_value("buffer-count", static_cast<double>(frames_.size()) / static_cast<double>(frames_.capacity()));
+		if (buffer_.try_pop(info)) {
+			graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
 		} else {
 			graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
 		}
 
 		{
 			std::lock_guard<std::mutex> lock(info_mutex_);
-
-			monitor_subject_
-				<< core::monitor::message("/profiler/time") % info_.time % (1.0 / format_desc_.fps)
-				<< core::monitor::message("/file/time") % (info_.number / format_desc_.fps) % (info_.count / format_desc_.fps)
-				<< core::monitor::message("/file/frame") % static_cast<int32_t>(info_.number) % static_cast<int32_t>(info_.count)
-				<< core::monitor::message("/file/fps") % format_desc_.fps
-				<< core::monitor::message("/file/path") % path_relative_to_media_
-				<< core::monitor::message("/loop") % producer_.loop();
+            info_ = info;
 		}
+
+        monitor_subject_
+            << core::monitor::message("/profiler/time") % info.time % (1.0 / format_desc_.fps)
+            << core::monitor::message("/file/time") % (info.number / format_desc_.fps) % (info.count / format_desc_.fps)
+            << core::monitor::message("/file/frame") % static_cast<int32_t>(info.number) % static_cast<int32_t>(info.count)
+            << core::monitor::message("/file/fps") % format_desc_.fps
+            << core::monitor::message("/file/path") % path_relative_to_media_
+            << core::monitor::message("/loop") % producer_.loop();
 		
 		graph_->set_text(print());
 		
-		return frame;
+		return info.frame;
 	}
 	
 	core::constraints& pixel_constraints() override

@@ -154,18 +154,12 @@ public:
 
 		if (!thumbnail_mode_)
 		{
-			auto video_stream = video_decoder_ ? input_.context()->streams[video_decoder->stream_index()] : nullptr;
-			auto video_start_time = video_stream ? video_stream->start_time * av_q2d(video_stream->time_base) : 0.0;
-
 			for (unsigned stream_index = 0; stream_index < input_.context()->nb_streams; ++stream_index)
 			{
 				auto stream = input_.context()->streams[stream_index];
 
 				if (stream->codec->codec_type != AVMediaType::AVMEDIA_TYPE_AUDIO)
 					continue;
-
-				auto start_time = stream->start_time * av_q2d(stream->time_base);
-				auto trim = std::max(0.0, video_start_time - start_time);
 
 				try
 				{
@@ -174,8 +168,7 @@ public:
 							boost::rational<int>(1, format_desc.audio_sample_rate),
 							format_desc.audio_sample_rate,
 							AVSampleFormat::AV_SAMPLE_FMT_S32,
-							audio_decoders_.back()->ffmpeg_channel_layout(),
-							trim);
+							audio_decoders_.back()->ffmpeg_channel_layout());
 					CASPAR_LOG(info) << print() << L" " << audio_decoders_.back()->print();
 				}
 				catch (averror_stream_not_found&)

@@ -54,7 +54,6 @@ public:
 	uint32_t					nb_frames() const;
 	uint32_t					file_frame_number() const;
 	bool						is_progressive() const;
-	int							stream_index() const;
 
 	std::wstring				print() const;
 

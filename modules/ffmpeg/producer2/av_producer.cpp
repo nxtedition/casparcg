@@ -671,7 +671,6 @@ struct AVProducer::Impl
                         }
                     } else if (ret == AVERROR(EAGAIN)) {
                         boost::this_thread::sleep(boost::posix_time::milliseconds(100));
-                        continue;
                     } else {
                         FF_RET(ret, "av_read_frame");
 

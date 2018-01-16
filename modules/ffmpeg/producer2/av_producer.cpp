@@ -150,7 +150,7 @@ public:
                         packets_.pop(packet);
                         FF(avcodec_send_packet(avctx_.get(), packet.get()));
                     } else if (ret == AVERROR_EOF) {
-                        avcodec_flush_buffers(avctx_.get());
+                        break;
                     } else {
                         FF_RET(ret, "avcodec_receive_frame");
 
@@ -584,6 +584,8 @@ struct AVProducer::Impl
 	int64_t                                     start_ = AV_NOPTS_VALUE;
     std::atomic<int64_t>                        duration_ = AV_NOPTS_VALUE;
     std::atomic<bool>                           loop_ = false;
+    std::string                                 afilter_;
+    std::string                                 vfilter_;
 
     std::atomic<bool>                           eof_ = false;
     std::mutex                                  eof_mutex_;
@@ -594,6 +596,7 @@ struct AVProducer::Impl
 	std::shared_ptr<SwrContext>                 swr_;
 
     std::atomic<bool>                           abort_request_ = false;
+    std::mutex                                  mutex_;
     std::thread                                 thread_;
 
     Impl(
@@ -611,6 +614,8 @@ struct AVProducer::Impl
         , start_(start)
         , duration_(duration)
         , loop_(loop)
+        , vfilter_(vfilter)
+        , afilter_(afilter)
         , audio_cadence_(format_desc_.audio_cadence)
     {
         {
@@ -635,19 +640,7 @@ struct AVProducer::Impl
             ic_->streams[i]->discard = AVDISCARD_ALL;
         }
 
-        const auto video_stream_index = av_find_best_stream(ic_.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-        if (video_stream_index >= 0) {
-            video_graph_.reset(new Graph(ic_.get(), AVMEDIA_TYPE_VIDEO, vfilter, format_desc));
-        } else {
-            video_graph_.reset(new Graph());
-        }
-
-        const auto audio_stream_index = av_find_best_stream(ic_.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
-        if (audio_stream_index >= 0) {   
-            audio_graph_.reset(new Graph(ic_.get(), AVMEDIA_TYPE_AUDIO, afilter, format_desc));
-        } else {
-            audio_graph_.reset(new Graph());
-        }
+        reset();
 
         if (start_ != AV_NOPTS_VALUE) {
             seek_to_start(false);
@@ -665,6 +658,8 @@ struct AVProducer::Impl
                     if (abort_request_) {
                         return;
                     }
+
+                    std::lock_guard<std::mutex> lock(mutex_);
 
                     const auto packet = alloc_packet();
                     const auto ret = av_read_frame(ic_.get(), packet.get());
@@ -698,6 +693,12 @@ struct AVProducer::Impl
         thread_.join();
     }
 
+    static int interrupt_cb(void* ctx)
+    {
+        const auto impl = reinterpret_cast<Impl*>(ctx);
+        return impl->abort_request_.load() ? 1 : 0;
+    }
+
     void abort()
     {
         abort_request_ = true;
@@ -706,10 +707,23 @@ struct AVProducer::Impl
         eof_cond_.notify_all();
     }
 
-    static int interrupt_cb(void* ctx)
+    void reset()
     {
-        const auto impl = reinterpret_cast<Impl*>(ctx);
-        return impl->abort_request_.load() ? 1 : 0;
+        swr_.reset();
+
+        const auto video_stream_index = av_find_best_stream(ic_.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+        if (video_stream_index >= 0) {
+            video_graph_.reset(new Graph(ic_.get(), AVMEDIA_TYPE_VIDEO, vfilter_, format_desc_));
+        } else {
+            video_graph_.reset(new Graph());
+        }
+
+        const auto audio_stream_index = av_find_best_stream(ic_.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+        if (audio_stream_index >= 0) {
+            audio_graph_.reset(new Graph(ic_.get(), AVMEDIA_TYPE_AUDIO, afilter_, format_desc_));
+        } else {
+            audio_graph_.reset(new Graph());
+        }
     }
 
     void seek_to_start(bool flush)
@@ -719,6 +733,8 @@ struct AVProducer::Impl
 
     void seek(int64_t ts, bool flush = true)
     {
+        std::lock_guard<std::mutex> lock(mutex_);
+
         seek_ = ts;
         time_ = ts;
 
@@ -739,10 +755,7 @@ struct AVProducer::Impl
         FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
 
         if (flush) {
-            // TODO proper flush
-            swr_.reset();
-            video_graph_->push(nullptr);
-            audio_graph_->push(nullptr);
+            reset();
         }
     }
 

@@ -150,7 +150,7 @@ public:
                         packets_.pop(packet);
                         FF(avcodec_send_packet(avctx_.get(), packet.get()));
                     } else if (ret == AVERROR_EOF) {
-                        break;
+                        avcodec_flush_buffers(avctx_.get());
                     } else {
                         FF_RET(ret, "avcodec_receive_frame");
 
@@ -643,7 +643,7 @@ struct AVProducer::Impl
         reset();
 
         if (start_ != AV_NOPTS_VALUE) {
-            seek_to_start(false);
+            seek(start_ == AV_NOPTS_VALUE ? start_ : 0, false);
         }
 
         thread_ = std::thread([this]
@@ -666,7 +666,9 @@ struct AVProducer::Impl
 
                     if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
                         if (loop_) {
-                            seek_to_start(true);
+                            video_graph_->push(nullptr);
+                            audio_graph_->push(nullptr);
+                            seek(start_ == AV_NOPTS_VALUE ? start_ : 0, false);
                         } else {
                             eof_ = true;
                         }
@@ -726,15 +728,8 @@ struct AVProducer::Impl
         }
     }
 
-    void seek_to_start(bool flush)
-    {
-        seek(start_ == AV_NOPTS_VALUE ? start_ : 0, flush);
-    }
-
     void seek(int64_t ts, bool flush = true)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-
         seek_ = ts;
         time_ = ts;
 

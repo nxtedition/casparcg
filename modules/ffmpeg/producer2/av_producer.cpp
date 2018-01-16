@@ -49,6 +49,7 @@ extern "C" {
 #include <cinttypes>
 #include <thread>
 #include <condition_variable>
+#include <set>
 
 namespace caspar {
 namespace ffmpeg2 {
@@ -368,6 +369,8 @@ public:
  
         // inputs
         {
+			std::set<AVStream*> used_streams;
+
             for (auto cur = inputs; cur; cur = cur->next) {
                 const auto type = avfilter_pad_get_type(cur->filter_ctx->input_pads, cur->pad_idx);
                 if (type != AVMEDIA_TYPE_VIDEO && type != AVMEDIA_TYPE_AUDIO) {
@@ -378,10 +381,11 @@ public:
                 }
 
                 // TODO find stream based on link name
+				// TODO share stream decoders between graphs
                 AVStream* st = nullptr;
                 for (auto i = 0ULL; i < ic->nb_streams; ++i) {
                     st = ic->streams[i];
-                    if (st->codecpar->codec_type == type && st->discard == AVDISCARD_ALL) {
+                    if (st->codecpar->codec_type == type && used_streams.find(st) == used_streams.end()){
                         break;
                     }
                 }
@@ -392,6 +396,8 @@ public:
                         << msg_info_t((boost::format("cannot find matching stream for input pad %d on filter %s") % cur->pad_idx % cur->filter_ctx->name).str())
                     );
                 }
+
+				used_streams.insert(st);
 
                 st->discard = AVDISCARD_DEFAULT;
                 

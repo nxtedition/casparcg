@@ -377,6 +377,7 @@ public:
                     );
                 }
 
+                // TODO find stream based on link name
                 AVStream* st = nullptr;
                 for (auto i = 0ULL; i < ic->nb_streams; ++i) {
                     st = ic->streams[i];
@@ -646,9 +647,7 @@ struct AVProducer::Impl
         }
 
         thread_ = std::thread([this]
-        {  
-            int ret;
- 
+        { 
             try {
                 while (true) {
                     {
@@ -661,7 +660,7 @@ struct AVProducer::Impl
                     }
 
                     const auto packet = alloc_packet();
-                    ret = av_read_frame(ic_.get(), packet.get());
+                    const auto ret = av_read_frame(ic_.get(), packet.get());
 
                     if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
                         if (loop_) {

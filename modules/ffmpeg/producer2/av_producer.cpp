@@ -138,19 +138,26 @@ public:
 
         thread_ = std::thread([this]
         {
-            int ret;
+            bool flush = true;
 
             try {
                 while (true) {
                     const auto frame = alloc_frame();
-                    ret = avcodec_receive_frame(avctx_.get(), frame.get());
+                    const auto ret = avcodec_receive_frame(avctx_.get(), frame.get());
 
                     if (ret == AVERROR(EAGAIN)) {
                         std::shared_ptr<AVPacket> packet;
                         packets_.pop(packet);
+                        if (!packet) {
+                            flush = false;
+                        }
                         FF(avcodec_send_packet(avctx_.get(), packet.get()));
                     } else if (ret == AVERROR_EOF) {
-                        avcodec_flush_buffers(avctx_.get());
+                        if (flush) {
+                            avcodec_flush_buffers(avctx_.get());
+                        } else {
+                            frames_.push(nullptr);
+                        }
                     } else {
                         FF_RET(ret, "avcodec_receive_frame");
 
@@ -312,6 +319,24 @@ public:
             }
 
             FF(avfilter_graph_create_filter(&sink_, avfilter_get_by_name("abuffersink"), "out", nullptr, nullptr, graph_.get()));
+#ifdef _MSC_VER
+#pragma warning (push)
+#pragma warning (disable: 4245)
+#endif
+            const AVSampleFormat sample_fmts[] = {
+                AV_SAMPLE_FMT_S32,
+                AV_SAMPLE_FMT_NONE
+            };
+            FF(av_opt_set_int_list(sink_, "sample_fmts", sample_fmts, -1, AV_OPT_SEARCH_CHILDREN));
+
+            const int sample_rates[] = {
+                48000,
+                -1
+            };
+            FF(av_opt_set_int_list(sink_, "sample_rates", sample_rates, -1, AV_OPT_SEARCH_CHILDREN));
+#ifdef _MSC_VER
+#pragma warning (pop)
+#endif
         } else {
             CASPAR_THROW_EXCEPTION(ffmpeg_error_t()
                 << boost::errinfo_errno(EINVAL)
@@ -667,10 +692,12 @@ struct AVProducer::Impl
 
                         if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
                             if (loop_) {
-                                video_graph_->push(nullptr);
-                                audio_graph_->push(nullptr);
+                                video_graph_->push(alloc_packet());
+                                audio_graph_->push(alloc_packet());
                                 seek_internal(start_ == AV_NOPTS_VALUE ? start_ : 0, false);
                             } else {
+                                video_graph_->push(nullptr);
+                                audio_graph_->push(nullptr);
                                 eof_ = true;
                             }
 

@@ -571,7 +571,11 @@ public:
 
 			auto frame = core::const_frame::empty();
 
-			frame_buffer_.pop(frame);
+			if (!frame_buffer_.try_pop(frame)) {
+				graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
+				frame_buffer_.pop(frame);
+			}
+
 			ready_for_new_frames_.release();
 
 			if (!is_running_)

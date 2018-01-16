@@ -848,7 +848,7 @@ struct AVProducer::Impl
 				if (!swr_) {
                     const auto first_pts = video
                         ? av_rescale_q(video->pts, video_graph_->time_base(), AVRational{ 1, frame->sample_rate })
-                        : av_rescale_q(seek_, TIME_BASE_Q, AVRational{ 1, frame->sample_rate });
+                        : av_rescale_q(seek_pts, TIME_BASE_Q, AVRational{ 1, frame->sample_rate });
 
 					swr_.reset(swr_alloc(), [](SwrContext* ptr) { swr_free(&ptr); });
 					FF(swr_config_frame(swr_.get(), audio.get(), frame.get()));

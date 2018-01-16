@@ -715,14 +715,16 @@ struct AVProducer::Impl
     void seek_to_start(bool flush)
     {
         const auto start = start_ == AV_NOPTS_VALUE ? start_.load() : 0;
-        seek((ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0) + start, flush);
+        seek(start, flush);
     }
 
     void seek(int64_t ts, bool flush = true)
     {
         seek_ = ts;
         time_ = ts;
-        
+
+        ts = (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0);
+
         if (!(ic_->iformat->flags & AVFMT_SEEK_TO_PTS)) {
             for (auto i = 0ULL; i < ic_->nb_streams; ++i) {
                 if (ic_->streams[i]->codecpar->video_delay) {

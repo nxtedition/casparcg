@@ -739,6 +739,7 @@ struct AVProducer::Impl
         FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
 
         if (flush) {
+            swr_.reset();
             video_graph_->push(nullptr);
             audio_graph_->push(nullptr);
         }
@@ -809,14 +810,9 @@ struct AVProducer::Impl
 
         const auto seek = seek_.load();
         const auto seek_pts = ic_pts + (seek != AV_NOPTS_VALUE ? seek : 0);
-
-        const auto start = seek_.load();
-        const auto start_pts = ic_pts + (start != AV_NOPTS_VALUE ? start : 0);
     
         if (video_graph_) {
-            const auto first_pts = av_rescale_q(seek_pts, TIME_BASE_Q, video_graph_->time_base());
-
-			while (!video || video->pts < first_pts) {
+			while (!video || video->pts < av_rescale_q(seek_pts, TIME_BASE_Q, video_graph_->time_base())) {
 				video = video_graph_->pop();
 
                 if (!video) {
@@ -848,13 +844,13 @@ struct AVProducer::Impl
                 // TODO compensate to video pts?
 
 				if (!swr_) {
-                    const auto first_pts = video
+                    const auto first_pts2 = video
                         ? av_rescale_q(video->pts, video_graph_->time_base(), AVRational{ 1, frame->sample_rate })
                         : av_rescale_q(seek_pts, TIME_BASE_Q, AVRational{ 1, frame->sample_rate });
 
 					swr_.reset(swr_alloc(), [](SwrContext* ptr) { swr_free(&ptr); });
 					FF(swr_config_frame(swr_.get(), audio.get(), frame.get()));
-                    FF(av_opt_set_int(swr_.get(), "first_pts", first_pts, AV_OPT_SEARCH_CHILDREN));
+                    FF(av_opt_set_int(swr_.get(), "first_pts", first_pts2, AV_OPT_SEARCH_CHILDREN));
 					FF(av_opt_set_int(swr_.get(), "async", 2000, AV_OPT_SEARCH_CHILDREN));
 					FF(swr_init(swr_.get()));
 				}
@@ -905,9 +901,9 @@ struct AVProducer::Impl
             frame.audio_data() = core::mutable_audio_buffer(beg, end);
 		}
 
-        if (duration_ != AV_NOPTS_VALUE && time_ != AV_NOPTS_VALUE && time_ > duration_) {
-            return core::draw_frame();
-        }
+        // TODO should use seek_ from current seek
+        const auto start = seek_.load();
+        const auto start_pts = ic_pts + (start != AV_NOPTS_VALUE ? start : 0);
 
         if (video) {
             time_ = av_rescale_q(video->pts, video_graph_->time_base(), TIME_BASE_Q) - start_pts;

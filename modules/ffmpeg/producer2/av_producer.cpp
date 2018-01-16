@@ -579,9 +579,9 @@ struct AVProducer::Impl
     std::unique_ptr<Graph>                      video_graph_;
     std::unique_ptr<Graph>                      audio_graph_;
 
-    std::atomic<int64_t>                        seek_ = AV_NOPTS_VALUE;
-    std::atomic<int64_t>                        time_ = AV_NOPTS_VALUE;
-	std::atomic<int64_t>                        start_ = AV_NOPTS_VALUE;
+    int64_t                                     seek_ = AV_NOPTS_VALUE;
+    int64_t                                     time_ = AV_NOPTS_VALUE;
+	int64_t                                     start_ = AV_NOPTS_VALUE;
     std::atomic<int64_t>                        duration_ = AV_NOPTS_VALUE;
     std::atomic<bool>                           loop_ = false;
 
@@ -714,7 +714,7 @@ struct AVProducer::Impl
 
     void seek_to_start(bool flush)
     {
-        seek(start_ == AV_NOPTS_VALUE ? start_.load() : 0, flush);
+        seek(start_ == AV_NOPTS_VALUE ? start_ : 0, flush);
     }
 
     void seek(int64_t ts, bool flush = true)
@@ -739,6 +739,7 @@ struct AVProducer::Impl
         FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
 
         if (flush) {
+            // TODO proper flush
             swr_.reset();
             video_graph_->push(nullptr);
             audio_graph_->push(nullptr);
@@ -777,9 +778,8 @@ struct AVProducer::Impl
 
     int64_t duration() const
     {
-        const auto start = start_.load();
         return duration_ == AV_NOPTS_VALUE && ic_->duration != AV_NOPTS_VALUE
-            ? std::max<int64_t>(0, ic_->duration - (start != AV_NOPTS_VALUE ? start : 0))
+            ? std::max<int64_t>(0, ic_->duration - (start_ != AV_NOPTS_VALUE ? start_ : 0))
             : duration_;
     }
 
@@ -807,9 +807,7 @@ struct AVProducer::Impl
 		std::shared_ptr<AVFrame> audio;
 
         const auto ic_pts = ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0;
-
-        const auto seek = seek_.load();
-        const auto seek_pts = ic_pts + (seek != AV_NOPTS_VALUE ? seek : 0);
+        const auto seek_pts = ic_pts + (seek_ != AV_NOPTS_VALUE ? seek_ : 0);
     
         if (video_graph_) {
 			while (!video || video->pts < av_rescale_q(seek_pts, TIME_BASE_Q, video_graph_->time_base())) {
@@ -844,13 +842,13 @@ struct AVProducer::Impl
                 // TODO compensate to video pts?
 
 				if (!swr_) {
-                    const auto first_pts2 = video
+                    const auto first_pts = video
                         ? av_rescale_q(video->pts, video_graph_->time_base(), AVRational{ 1, frame->sample_rate })
                         : av_rescale_q(seek_pts, TIME_BASE_Q, AVRational{ 1, frame->sample_rate });
 
 					swr_.reset(swr_alloc(), [](SwrContext* ptr) { swr_free(&ptr); });
 					FF(swr_config_frame(swr_.get(), audio.get(), frame.get()));
-                    FF(av_opt_set_int(swr_.get(), "first_pts", first_pts2, AV_OPT_SEARCH_CHILDREN));
+                    FF(av_opt_set_int(swr_.get(), "first_pts", first_pts, AV_OPT_SEARCH_CHILDREN));
 					FF(av_opt_set_int(swr_.get(), "async", 2000, AV_OPT_SEARCH_CHILDREN));
 					FF(swr_init(swr_.get()));
 				}
@@ -901,9 +899,7 @@ struct AVProducer::Impl
             frame.audio_data() = core::mutable_audio_buffer(beg, end);
 		}
 
-        // TODO should use seek_ from current seek
-        const auto start = seek_.load();
-        const auto start_pts = ic_pts + (start != AV_NOPTS_VALUE ? start : 0);
+        const auto start_pts = ic_pts + (start_ != AV_NOPTS_VALUE ? start_ : 0);
 
         if (video) {
             time_ = av_rescale_q(video->pts, video_graph_->time_base(), TIME_BASE_Q) - start_pts;

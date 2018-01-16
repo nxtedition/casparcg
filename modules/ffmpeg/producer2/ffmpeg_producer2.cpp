@@ -157,35 +157,40 @@ public:
 		thread_.join();
 	}
 
-    Info next()
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        boost::timer frame_timer;
-
-        if (seek_ >= 0) {
-            producer_.seek(seek_);
-        }
-
-        // TODO yield lock on blocking
-        auto frame = producer_.next();
-
-        graph_->set_value("frame-time", frame_timer.elapsed() * boost::rational_cast<double>(format_desc_.framerate) * 0.5);
-        graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
-
-        Info info;
-        info.time = frame_timer.elapsed();
-        info.number = to_frames(producer_.time());
-        info.count = to_frames(producer_.duration());
-        info.frame = frame;
-        return info;
-    }
-
 	void run()
 	{
 		try {
 			while (true) {
-                buffer_.push(next());
+                Info info;
+                {
+                    boost::timer frame_timer;
+
+                    auto frame = producer_.next();
+
+                    graph_->set_value("frame-time", frame_timer.elapsed() * boost::rational_cast<double>(format_desc_.framerate) * 0.5);
+                    graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
+
+                    info.time = frame_timer.elapsed();
+                    info.number = to_frames(producer_.time());
+                    info.count = to_frames(producer_.duration());
+                    info.frame = frame;
+                }
+
+                auto seek = -1;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    seek = seek_;
+                    seek_ = -1;
+                }
+
+                if (seek >= 0) {
+                    producer_.seek(seek_);
+                    while (buffer_.try_pop(info))
+                        ;
+                }  else {
+                    buffer_.push(std::move(info));
+                }
+
 			}
 		} catch (tbb::user_abort&) {
 			return;
@@ -218,14 +223,12 @@ public:
 	core::draw_frame receive_impl() override
 	{
         Info info;
-        {
-            if (buffer_.try_pop(info)) {
-                graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
-                info_ = info;
-            }
-            else {
-                graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
-            }
+        if (buffer_.try_pop(info)) {
+            graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
+
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            info_ = info;
 
             monitor_subject_
                 << core::monitor::message("/profiler/time") % info_.time % (1.0 / format_desc_.fps)
@@ -234,8 +237,10 @@ public:
                 << core::monitor::message("/file/fps") % format_desc_.fps
                 << core::monitor::message("/file/path") % path_relative_to_media_
                 << core::monitor::message("/loop") % producer_.loop();
+        } else {
+            graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
         }
-		
+
 		graph_->set_text(print());
 		
 		return info.frame;

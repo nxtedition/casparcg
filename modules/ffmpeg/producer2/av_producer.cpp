@@ -832,11 +832,13 @@ struct AVProducer::Impl
 
     int width() const
     {
+        // TODO thread-safety
         return video_graph_->width();
     }
 
     int height() const
     {
+        // TODO thread-safety
         return video_graph_->height();
     }
 

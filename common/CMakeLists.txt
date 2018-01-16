@@ -130,6 +130,7 @@ else ()
 	target_link_libraries(common
 		${Boost_LIBRARIES}
 		${TBB_LIBRARIES}
+		${TBB_MALLOC_LIBRARIES}
 		${SFML_LIBRARIES}
 		${GLEW_LIBRARIES}
 		${OPENGL_gl_LIBRARY}

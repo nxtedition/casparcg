@@ -579,7 +579,7 @@ struct AVProducer::Impl
     std::atomic<int64_t>                        duration_ = AV_NOPTS_VALUE;
     std::atomic<bool>                           loop_ = false;
 
-    bool                                        eof_ = false;
+    std::atomic<bool>                           eof_ = false;
     std::mutex                                  eof_mutex_;
     std::condition_variable                     eof_cond_;
 
@@ -613,6 +613,7 @@ struct AVProducer::Impl
 
             // TODO check if filename is http
 			FF(av_dict_set(&options, "reconnect", "1", 0)); // HTTP reconnect
+            // TODO timeout?
             FF(av_dict_set(&options, "rw_timeout", "5000000", 0)); // 5 second IO timeout
 
 			AVFormatContext* ic = nullptr;
@@ -666,7 +667,6 @@ struct AVProducer::Impl
                         if (loop_) {
                             seek_to_start(true);
                         } else {
-                            std::unique_lock<std::mutex> lock(eof_mutex_);
                             eof_ = true;
                         }
                     } else if (ret == AVERROR(EAGAIN)) {
@@ -727,11 +727,7 @@ struct AVProducer::Impl
             }
         }
 
-        {
-            std::unique_lock<std::mutex> lock(eof_mutex_);
-            eof_ = false;
-        }
-
+        eof_ = false;
         eof_cond_.notify_all();
   
         FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));

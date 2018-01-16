@@ -208,8 +208,6 @@ public:
 
     core::draw_frame last_frame() override
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-
         if (info_.frame == core::draw_frame::late()) {
             buffer_.try_pop(info_);
         }
@@ -221,8 +219,6 @@ public:
 	{
         Info info;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
-
             if (buffer_.try_pop(info)) {
                 graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
                 info_ = info;

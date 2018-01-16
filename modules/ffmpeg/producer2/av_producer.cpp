@@ -573,7 +573,8 @@ struct AVProducer::Impl
     const std::shared_ptr<core::frame_factory>  frame_factory_;
 	const core::video_format_desc               format_desc_;
     const std::string                           filename_;
-	
+
+    std::mutex                                  mutex_;
     std::shared_ptr<AVFormatContext>            ic_;
 
     std::unique_ptr<Graph>                      video_graph_;
@@ -596,7 +597,6 @@ struct AVProducer::Impl
 	std::shared_ptr<SwrContext>                 swr_;
 
     std::atomic<bool>                           abort_request_ = false;
-    std::mutex                                  mutex_;
     std::thread                                 thread_;
 
     Impl(
@@ -643,7 +643,7 @@ struct AVProducer::Impl
         reset();
 
         if (start_ != AV_NOPTS_VALUE) {
-            seek(start_ == AV_NOPTS_VALUE ? start_ : 0, false);
+            seek_internal(start_ == AV_NOPTS_VALUE ? start_ : 0, false);
         }
 
         thread_ = std::thread([this]
@@ -659,27 +659,33 @@ struct AVProducer::Impl
                         return;
                     }
 
-                    std::lock_guard<std::mutex> lock(mutex_);
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
 
-                    const auto packet = alloc_packet();
-                    const auto ret = av_read_frame(ic_.get(), packet.get());
+                        const auto packet = alloc_packet();
+                        const auto ret = av_read_frame(ic_.get(), packet.get());
 
-                    if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
-                        if (loop_) {
-                            video_graph_->push(nullptr);
-                            audio_graph_->push(nullptr);
-                            seek(start_ == AV_NOPTS_VALUE ? start_ : 0, false);
-                        } else {
-                            eof_ = true;
+                        if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
+                            if (loop_) {
+                                video_graph_->push(nullptr);
+                                audio_graph_->push(nullptr);
+                                seek_internal(start_ == AV_NOPTS_VALUE ? start_ : 0, false);
+                            } else {
+                                eof_ = true;
+                            }
+
+                            continue;
+                        } else if (ret != AVERROR(EAGAIN)) {
+                            FF_RET(ret, "av_read_frame");
+
+                            video_graph_->push(packet);
+                            audio_graph_->push(packet);
+
+                            continue;
                         }
-                    } else if (ret == AVERROR(EAGAIN)) {
-                        boost::this_thread::sleep(boost::posix_time::milliseconds(100));
-                    } else {
-                        FF_RET(ret, "av_read_frame");
+                    }
 
-                        video_graph_->push(packet);
-                        audio_graph_->push(packet);
-                    }                    
+                    boost::this_thread::sleep(boost::posix_time::milliseconds(100));
                 }
             } catch (tbb::user_abort&) {
                 return;
@@ -701,14 +707,6 @@ struct AVProducer::Impl
         return impl->abort_request_.load() ? 1 : 0;
     }
 
-    void abort()
-    {
-        abort_request_ = true;
-        video_graph_->abort();
-        audio_graph_->abort();
-        eof_cond_.notify_all();
-    }
-
     void reset()
     {
         swr_.reset();
@@ -728,12 +726,12 @@ struct AVProducer::Impl
         }
     }
 
-    void seek(int64_t ts, bool flush = true)
+    void seek_internal(int64_t ts, bool flush)
     {
         seek_ = ts;
         time_ = ts;
 
-        ts = (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0);
+        ts += (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0);
 
         if (!(ic_->iformat->flags & AVFMT_SEEK_TO_PTS)) {
             for (auto i = 0ULL; i < ic_->nb_streams; ++i) {
@@ -743,15 +741,29 @@ struct AVProducer::Impl
                 }
             }
         }
-
-        eof_ = false;
-        eof_cond_.notify_all();
   
         FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
 
         if (flush) {
             reset();
         }
+
+        eof_ = false;
+        eof_cond_.notify_all();
+    }
+ 
+    void abort()
+    {
+        abort_request_ = true;
+        video_graph_->abort();
+        audio_graph_->abort();
+        eof_cond_.notify_all();
+    }
+
+    void seek(int64_t ts)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        seek_internal(ts, true);
     }
 
     int64_t time() const

@@ -43,12 +43,12 @@
 #include <tbb/concurrent_queue.h>
 #include <tbb/atomic.h>
 
-#include <boost/thread.hpp>
 #include <boost/timer.hpp>
 
 #include <atomic>
 #include <future>
 #include <queue>
+#include <thread>
 
 namespace caspar { namespace ffmpeg2 {
 
@@ -104,8 +104,11 @@ struct ffmpeg_producer : public core::frame_producer_base
 	const spl::shared_ptr<diagnostics::graph>			graph_;
 	core::constraints									constraints_;
 
+    std::mutex                                          seek_mutex_;
+    int64_t                                             seek_ = -1;
+
 	tbb::concurrent_bounded_queue<Info>		            buffer_;
-	boost::thread										thread_;
+	std::thread										    thread_;
 public:
 	explicit ffmpeg_producer(
 			spl::shared_ptr<core::frame_factory> frame_factory,
@@ -127,7 +130,6 @@ public:
 					start, 
 					duration, 
 					loop)
-		, thread_([this] { run(); })
 	{
         buffer_.set_capacity(2);
 
@@ -136,17 +138,16 @@ public:
 			constraints_.height.set(producer_.height());
 		}
 
-        {
-            std::lock_guard<std::mutex> lock(info_mutex_);
-            info_.number = to_frames(producer_.time());
-            info_.count = to_frames(producer_.duration());
-        }
+        info_.number = to_frames(producer_.time());
+        info_.count = to_frames(producer_.duration());
 		
 		diagnostics::register_graph(graph_);
 		graph_->set_color("frame-time", diagnostics::color(0.1f, 1.0f, 0.1f));
 		graph_->set_color("underflow", diagnostics::color(0.6f, 0.3f, 0.9f));
 		graph_->set_color("buffer-count", diagnostics::color(0.7f, 0.4f, 0.4f));
 		graph_->set_text(print());
+
+        thread_ = std::thread([this] { run(); });
 	}
 
 	~ffmpeg_producer()
@@ -160,7 +161,13 @@ public:
 	{
 		try {
 			while (true) {
-				boost::timer frame_timer;
+                boost::timer frame_timer;
+
+                std::lock_guard<std::mutex> lock(seek_mutex_);
+
+                if (seek_ >= 0) {
+                    producer_.seek(seek_);
+                }
 
 				auto frame = producer_.next();
 
@@ -280,9 +287,11 @@ public:
 
 			result = boost::lexical_cast<std::wstring>(to_frames(producer_.duration()));
 		} else if (boost::iequals(cmd, L"seek") && !value.empty()) {
+            std::lock_guard<std::mutex> lock(info_mutex_);
+
 			int64_t seek;
 			if (boost::iequals(value, L"rel")) {
-				seek = producer_.time();
+				seek = from_frames(info_.number);
 			} else if (boost::iequals(value, L"in")) {
 				seek = producer_.start();
 			} else if (boost::iequals(value, L"out")) {
@@ -297,13 +306,18 @@ public:
 				seek += from_frames(boost::lexical_cast<std::int64_t>(params.at(2)));
 			}
 
-			producer_.seek(seek);
-
             {
-                std::lock_guard<std::mutex> lock(info_mutex_);
-                info_.number = to_frames(seek);
-                info_.frame = core::draw_frame::late();
+                std::lock_guard<std::mutex> seek_lock(seek_mutex_);
+
+                seek_ = seek;
+
+                Info info;
+                while (buffer_.try_pop(info))
+                    ;
             }
+
+            info_.number = to_frames(seek);
+            info_.frame = core::draw_frame::late();
 
             result = boost::lexical_cast<std::wstring>(to_frames(seek));
 		} else {

@@ -714,8 +714,7 @@ struct AVProducer::Impl
 
     void seek_to_start(bool flush)
     {
-        const auto start = start_ == AV_NOPTS_VALUE ? start_.load() : 0;
-        seek(start, flush);
+        seek(start_ == AV_NOPTS_VALUE ? start_.load() : 0, flush);
     }
 
     void seek(int64_t ts, bool flush = true)

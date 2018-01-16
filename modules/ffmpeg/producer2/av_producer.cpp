@@ -804,12 +804,15 @@ struct AVProducer::Impl
 		std::shared_ptr<AVFrame> video;
 		std::shared_ptr<AVFrame> audio;
 
+        const auto seek = seek_.load();
+        const auto seek_pts = (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0) +
+                               (seek != AV_NOPTS_VALUE ? seek : 0);
         const auto start = seek_.load();
-        const auto start_pts = (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0) + 
-                               (start != AV_NOPTS_VALUE ? start : 0);
+        const auto start_pts = (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0) +
+            (start != AV_NOPTS_VALUE ? start : 0);
     
         if (video_graph_) {
-            const auto first_pts = av_rescale_q(start_pts, TIME_BASE_Q, video_graph_->time_base());
+            const auto first_pts = av_rescale_q(seek_pts, TIME_BASE_Q, video_graph_->time_base());
 
 			while (!video || video->pts < first_pts) {
 				video = video_graph_->pop();

@@ -691,26 +691,26 @@ struct AVProducer::Impl
                         return;
                     }
 
-                    std::lock_guard<std::mutex> lock(mutex_);
-
                     const auto packet = alloc_packet();
-                    const auto ret = av_read_frame(ic_.get(), packet.get());
 
-                    if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
-                        video_graph_->push(nullptr);
-                        audio_graph_->push(nullptr);
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
 
-                        if (loop_) {
-                            seek_internal(start_);
+                        const auto ret = av_read_frame(ic_.get(), packet.get());
+
+                        if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
+                            if (loop_) {
+                                seek_internal(start_);
+                            } else {
+                                paused_ = true;
+                            }
                         } else {
-                            paused_ = true;
+                            FF_RET(ret, "av_read_frame");
                         }
-                    } else if (ret != AVERROR(EAGAIN)) {
-                        FF_RET(ret, "av_read_frame");
-
-                        video_graph_->push(packet);
-                        audio_graph_->push(packet);
                     }
+
+                    video_graph_->push(packet);
+                    audio_graph_->push(packet);
                 }
             } catch (tbb::user_abort&) {
                 return;

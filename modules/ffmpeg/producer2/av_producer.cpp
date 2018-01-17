@@ -72,9 +72,6 @@ std::shared_ptr<AVPacket> alloc_packet()
     return packet;
 }
 
-// TODO variable framerate input?
-// TODO amerge multiple audio streams
-// TODO secondary video stream is alpha
 // TODO timeout with retry?
 // TODO AVFMT_TS_DISCONT
 // TODO filter preset
@@ -511,6 +508,7 @@ public:
                             }
                         }
                     } else if (ret == AVERROR_EOF) {
+                        // TODO Does this work? i.e. will filter reset with next non null frame?
                         frames_.push(nullptr);
                     } else {
                         FF_RET(ret, "av_buffersink_get_frame");
@@ -608,10 +606,7 @@ struct AVProducer::Impl
     std::atomic<bool>                           paused_ = false;
     std::mutex                                  paused_mutex_;
     std::condition_variable                     paused_cond_;
-
-    std::shared_ptr<AVFrame>                    video_;
-    std::shared_ptr<AVFrame>                    audio_;
-
+ 
 	std::vector<int>                            audio_cadence_;
 	
 	std::shared_ptr<SwrContext>                 swr_;
@@ -905,18 +900,10 @@ struct AVProducer::Impl
 			FF(swr_convert_frame(swr_.get(), audio.get(), nullptr));
         }
 
-        if (!video) {
-            // NOTE: If audio is longer than video duplicate the last frame.
-            video = video_;
-        }
- 
         if (!video && !audio) {
             return core::draw_frame::late();
         }
-
-        video_ = video;
-        audio_ = audio;
-
+        
         const auto pix_desc = video
             ? ffmpeg2::pixel_format_desc(static_cast<AVPixelFormat>(video->format), video->width, video->height)
             : core::pixel_format_desc(core::pixel_format::invalid);

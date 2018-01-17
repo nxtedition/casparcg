@@ -861,8 +861,6 @@ struct AVProducer::Impl
                 frame = audio_graph_->pop();
 
                 if (!frame) {
-                    FF(swr_convert_frame(swr_.get(), audio.get(), nullptr));
-                    swr_.reset();
 					break;
                 }
 

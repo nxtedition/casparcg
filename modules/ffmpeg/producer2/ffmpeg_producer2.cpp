@@ -307,16 +307,17 @@ public:
         if (buffer_.try_pop(info)) {
             graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
 
-            std::lock_guard<std::mutex> lock(info_mutex_);
-
-            info_ = info;
+            {
+                std::lock_guard<std::mutex> lock(info_mutex_);
+                info_ = info;
+            }
 
             monitor_subject_
-                << core::monitor::message("/file/time") % (info_.number / format_desc_.fps) % (info_.count / format_desc_.fps)
-                << core::monitor::message("/file/frame") % static_cast<int32_t>(info_.number) % static_cast<int32_t>(info_.count)
+                << core::monitor::message("/file/time") % (info.number / format_desc_.fps) % (info.count / format_desc_.fps)
+                << core::monitor::message("/file/frame") % static_cast<int32_t>(info.number) % static_cast<int32_t>(info.count)
                 << core::monitor::message("/file/fps") % format_desc_.fps
                 << core::monitor::message("/file/path") % path_relative_to_media_
-                << core::monitor::message("/loop") % info_.loop;
+                << core::monitor::message("/loop") % info.loop;
         } else {
             graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
         }

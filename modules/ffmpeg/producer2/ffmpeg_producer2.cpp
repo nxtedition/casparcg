@@ -182,7 +182,7 @@ public:
                 if (seek_) {
                     producer_.seek(*seek_);
                     seek_.reset();
-                } else {
+                } else if (frame) {
                     Info info;
                     info.frame = frame;
                     info.number = to_frames(producer_.time());
@@ -227,43 +227,35 @@ public:
             }
 
             result = boost::lexical_cast<std::wstring>(producer_.loop());
-        }
-        else if (boost::iequals(cmd, L"in") || boost::iequals(cmd, L"start")) {
+        } else if (boost::iequals(cmd, L"in") || boost::iequals(cmd, L"start")) {
             if (!value.empty()) {
                 producer_.start(from_frames(boost::lexical_cast<std::int64_t>(value)));
             }
 
             result = boost::lexical_cast<std::wstring>(to_frames(producer_.start()));
-        }
-        else if (boost::iequals(cmd, L"out")) {
+        } else if (boost::iequals(cmd, L"out")) {
             if (!value.empty()) {
                 producer_.duration(from_frames(boost::lexical_cast<std::int64_t>(value)) - producer_.start());
             }
 
             result = boost::lexical_cast<std::wstring>(to_frames(producer_.start() + producer_.duration()));
-        }
-        else if (boost::iequals(cmd, L"length")) {
+        } else if (boost::iequals(cmd, L"length")) {
             if (!value.empty()) {
                 producer_.duration(from_frames(boost::lexical_cast<std::int64_t>(value)));
             }
 
             result = boost::lexical_cast<std::wstring>(to_frames(producer_.duration()));
-        }
-        else if (boost::iequals(cmd, L"seek") && !value.empty()) {
+        } else if (boost::iequals(cmd, L"seek") && !value.empty()) {
             int64_t seek;
             if (boost::iequals(value, L"rel")) {
                 seek = from_frames(info_.number);
-            }
-            else if (boost::iequals(value, L"in")) {
+            } else if (boost::iequals(value, L"in")) {
                 seek = producer_.start();
-            }
-            else if (boost::iequals(value, L"out")) {
+            } else if (boost::iequals(value, L"out")) {
                 seek = producer_.start() + producer_.duration();
-            }
-            else if (boost::iequals(value, L"end")) {
+            } else if (boost::iequals(value, L"end")) {
                 seek = producer_.duration();
-            }
-            else {
+            } else {
                 seek = from_frames(boost::lexical_cast<std::int64_t>(value));
             }
 
@@ -277,13 +269,13 @@ public:
 
             {
                 std::lock_guard<std::mutex> info_lock(info_mutex_);
+
                 info_.number = to_frames(seek);
                 info_.frame = core::draw_frame::late();
             }
 
             result = boost::lexical_cast<std::wstring>(info_.number);
-        }
-        else {
+        } else {
             CASPAR_THROW_EXCEPTION(invalid_argument());
         }
 
@@ -294,6 +286,8 @@ public:
 
     core::draw_frame last_frame() override
     {
+        std::lock_guard<std::mutex> lock(info_mutex_);
+
         if (info_.frame == core::draw_frame::late()) {
             buffer_.try_pop(info_);
         }

@@ -89,16 +89,13 @@ class Decoder
 
     std::shared_ptr<AVCodecContext> avctx_;
     int                             stream_index_ = -1;
-
-    std::atomic<bool>               eof_ = false;
-
+    
     packets_t                       packets_;
     frames_t                        frames_;
     std::thread                     thread_;
 
 public:
     Decoder()
-        : eof_(true)
     {
 
     }
@@ -141,8 +138,6 @@ public:
 
         thread_ = std::thread([this]
         {
-            bool flush = true;
-
             try {
                 while (true) {
                     const auto frame = alloc_frame();
@@ -151,16 +146,10 @@ public:
                     if (ret == AVERROR(EAGAIN)) {
                         std::shared_ptr<AVPacket> packet;
                         packets_.pop(packet);
-                        if (!packet) {
-                            flush = false;
-                        }
                         FF(avcodec_send_packet(avctx_.get(), packet.get()));
                     } else if (ret == AVERROR_EOF) {
-                        if (flush) {
-                            avcodec_flush_buffers(avctx_.get());
-                        } else {
-                            break;
-                        }
+                        avcodec_flush_buffers(avctx_.get());
+                        frames_.push(nullptr);
                     } else {
                         FF_RET(ret, "avcodec_receive_frame");
 
@@ -172,9 +161,6 @@ public:
                         frames_.push(std::move(frame));
                     }
                 }
-
-                eof_ = true;
-                frames_.push(nullptr);
             } catch (tbb::user_abort&) {
                 return;
             } catch (...) {
@@ -218,7 +204,7 @@ public:
 
     explicit operator bool() const 
     { 
-        return eof_.load(); 
+        return avctx_ != nullptr;
     }
 };
 
@@ -232,15 +218,12 @@ class Graph
     streams_t                       streams_;
 
 	AVFilterContext*                sink_ = nullptr;
-
-    std::atomic<bool>               eof_ = false;
-
+    
     frames_t                        frames_;
     std::thread                     thread_;
     
 public:
     Graph()
-        : eof_(true)
     {
 
     }
@@ -528,15 +511,13 @@ public:
                             }
                         }
                     } else if (ret == AVERROR_EOF) {
-                        break;
+                        // TODO What now?
                     } else {
                         FF_RET(ret, "av_buffersink_get_frame");
 
                         frames_.push(std::move(av_frame));
                     }
                 }
-                eof_ = true;
-                frames_.push(nullptr);
             } catch (tbb::user_abort&) {
                 return;
             } catch (...) {
@@ -599,7 +580,7 @@ public:
 
     explicit operator bool() const 
     { 
-        return eof_.load();
+        return graph_ != nullptr;
     }
 };
 
@@ -617,15 +598,19 @@ struct AVProducer::Impl
 
     int64_t                                     seek_ = AV_NOPTS_VALUE;
     int64_t                                     time_ = AV_NOPTS_VALUE;
-	int64_t                                     start_ = AV_NOPTS_VALUE;
-    std::atomic<int64_t>                        duration_ = AV_NOPTS_VALUE;
+    int64_t                                     duration_ = AV_NOPTS_VALUE;
+
+	std::atomic<int64_t>                        start_ = AV_NOPTS_VALUE;
     std::atomic<bool>                           loop_ = false;
     std::string                                 afilter_;
     std::string                                 vfilter_;
 
-    std::atomic<bool>                           eof_ = false;
-    std::mutex                                  eof_mutex_;
-    std::condition_variable                     eof_cond_;
+    std::atomic<bool>                           paused_ = false;
+    std::mutex                                  paused_mutex_;
+    std::condition_variable                     paused_cond_;
+
+    std::shared_ptr<AVFrame>                    video_;
+    std::shared_ptr<AVFrame>                    audio_;
 
 	std::vector<int>                            audio_cadence_;
 	
@@ -675,7 +660,6 @@ struct AVProducer::Impl
             ic_->streams[i]->discard = AVDISCARD_ALL;
         }
 
-
         const auto video_stream_index = av_find_best_stream(ic_.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
         if (video_stream_index >= 0) {
             video_graph_.reset(new Graph(ic_.get(), AVMEDIA_TYPE_VIDEO, vfilter_, format_desc_));
@@ -699,43 +683,34 @@ struct AVProducer::Impl
             try {
                 while (true) {
                     {
-                        std::unique_lock<std::mutex> lock(eof_mutex_);
-                        eof_cond_.wait(lock, [&] { return !eof_ || abort_request_; });
+                        std::unique_lock<std::mutex> lock(paused_mutex_);
+                        paused_cond_.wait(lock, [&] { return !paused_ || abort_request_; });
                     }
 
                     if (abort_request_) {
                         return;
                     }
 
-                    {
-                        std::lock_guard<std::mutex> lock(mutex_);
+                    std::lock_guard<std::mutex> lock(mutex_);
 
-                        const auto packet = alloc_packet();
-                        const auto ret = av_read_frame(ic_.get(), packet.get());
+                    const auto packet = alloc_packet();
+                    const auto ret = av_read_frame(ic_.get(), packet.get());
 
-                        if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
-                            if (loop_) {
-                                video_graph_->push(alloc_packet());
-                                audio_graph_->push(alloc_packet());
-                                seek_internal(start_);
-                            } else {
-                                video_graph_->push(nullptr);
-                                audio_graph_->push(nullptr);
-                                eof_ = true;
-                            }
+                    if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
+                        video_graph_->push(nullptr);
+                        audio_graph_->push(nullptr);
 
-                            continue;
-                        } else if (ret != AVERROR(EAGAIN)) {
-                            FF_RET(ret, "av_read_frame");
-
-                            video_graph_->push(packet);
-                            audio_graph_->push(packet);
-
-                            continue;
+                        if (loop_) {
+                            seek_internal(start_);
+                        } else {
+                            paused_ = true;
                         }
-                    }
+                    } else if (ret != AVERROR(EAGAIN)) {
+                        FF_RET(ret, "av_read_frame");
 
-                    boost::this_thread::sleep(boost::posix_time::milliseconds(100));
+                        video_graph_->push(packet);
+                        audio_graph_->push(packet);
+                    }
                 }
             } catch (tbb::user_abort&) {
                 return;
@@ -783,23 +758,27 @@ struct AVProducer::Impl
     void abort()
     {
         abort_request_ = true;
+
         video_graph_->abort();
         audio_graph_->abort();
-        eof_cond_.notify_all();
+
+        paused_ = false;
+        paused_cond_.notify_all();
     }
 
     void seek(int64_t ts)
     {
+        // TODO Can we cancel pending av_read_frame?
+
         std::lock_guard<std::mutex> lock(mutex_);
 
         seek_internal(ts);
+
         video_graph_->push(nullptr);
         audio_graph_->push(nullptr);
 
-        if (eof_) {
-            eof_ = false;
-            eof_cond_.notify_all();
-        }
+        paused_ = false;
+        paused_cond_.notify_all();
     }
 
     int64_t time() const
@@ -809,7 +788,6 @@ struct AVProducer::Impl
 
     void loop(bool loop)
     {
-        // TODO thread-safety
         loop_ = loop;
     }
 
@@ -820,7 +798,6 @@ struct AVProducer::Impl
 
     void start(int64_t start)
     {
-        // TODO thread-safety
         start_ = start;
     }
 
@@ -831,15 +808,13 @@ struct AVProducer::Impl
 
     void duration(int64_t duration)
     {
-        // TODO thread-safety
         duration_ = duration;
     }
 
     int64_t duration() const
     {
-        // TODO thread-safety
         return duration_ == AV_NOPTS_VALUE && ic_->duration != AV_NOPTS_VALUE
-            ? std::max<int64_t>(0, ic_->duration - (start_ != AV_NOPTS_VALUE ? start_ : 0))
+            ? std::max<int64_t>(0, ic_->duration - (start_ != AV_NOPTS_VALUE ? start_.load() : 0))
             : duration_;
     }
 
@@ -856,11 +831,11 @@ struct AVProducer::Impl
     core::draw_frame next() 
 	{
         if (!video_graph_ && !audio_graph_) {
-            return core::draw_frame();
+            return core::draw_frame::late();
         }
 
         if (time_ != AV_NOPTS_VALUE && duration_ != AV_NOPTS_VALUE && time_ >= duration_) {
-            return core::draw_frame();
+            return core::draw_frame::late();
         }
 
 		std::shared_ptr<AVFrame> video;
@@ -927,9 +902,17 @@ struct AVProducer::Impl
 			FF(swr_convert_frame(swr_.get(), audio.get(), nullptr));
         }
 
-        if (!video && !audio) {
-            return core::draw_frame();
+        if (!video) {
+            // NOTE: If audio is longer than video duplicate the last frame.
+            video = video_;
         }
+ 
+        if (!video && !audio) {
+            return core::draw_frame::late();
+        }
+
+        video_ = video;
+        audio_ = audio;
 
         const auto pix_desc = video
             ? ffmpeg2::pixel_format_desc(static_cast<AVPixelFormat>(video->format), video->width, video->height)
@@ -959,7 +942,7 @@ struct AVProducer::Impl
             frame.audio_data() = core::mutable_audio_buffer(beg, end);
 		}
 
-        const auto start_pts = ic_pts + (start_ != AV_NOPTS_VALUE ? start_ : 0);
+        const auto start_pts = ic_pts + (start_ != AV_NOPTS_VALUE ? start_.load() : 0);
 
         if (video) {
             time_ = av_rescale_q(video->pts, video_graph_->time_base(), TIME_BASE_Q) - start_pts;

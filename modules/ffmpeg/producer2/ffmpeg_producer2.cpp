@@ -92,6 +92,9 @@ struct Info
 
 struct ffmpeg_producer : public core::frame_producer_base
 {
+    typedef std::packaged_task<std::wstring()>                      task_t;
+    typedef tbb::concurrent_bounded_queue<std::shared_ptr<task_t>>  tasks_t;
+
 	const std::wstring 									filename_;
 	const std::wstring 									path_relative_to_media_ = get_relative_or_original(filename_, env::media_folder());
 	spl::shared_ptr<core::frame_factory> 				frame_factory_;
@@ -100,7 +103,6 @@ struct ffmpeg_producer : public core::frame_producer_base
     mutable std::mutex									info_mutex_;
 	Info												info_;
 
-    mutable std::mutex									producer_mutex_;
 	AVProducer											producer_;
 
 	core::monitor::subject  							monitor_subject_;
@@ -108,6 +110,8 @@ struct ffmpeg_producer : public core::frame_producer_base
 	core::constraints									constraints_;
 
     boost::optional<int64_t>                            seek_;
+
+    tasks_t                                             tasks_;
 
 	tbb::concurrent_bounded_queue<Info>		            buffer_;
 	std::thread										    thread_;
@@ -163,33 +167,33 @@ public:
 	{
 		try {
 			while (true) {
-                Info info;
-                {
-                    std::lock_guard<std::mutex> producer_lock(producer_mutex_);
+                boost::timer frame_timer;
 
-                    boost::timer frame_timer;
+                const auto frame = producer_.next();
 
-                    const auto frame = producer_.next();
+                graph_->set_value("frame-time", frame_timer.elapsed() * boost::rational_cast<double>(format_desc_.framerate) * 0.5);
+                graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
 
-                    graph_->set_value("frame-time", frame_timer.elapsed() * boost::rational_cast<double>(format_desc_.framerate) * 0.5);
-                    graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
-
-                    if (seek_) {
-                        producer_.seek(*seek_);
-                        seek_.reset();
-                    } else {
-                        std::lock_guard<std::mutex> info_lock(info_mutex_);
-
-                        info.frame = frame;
-                        info.number = to_frames(producer_.time());
-                        info.count = to_frames(producer_.duration());
-                        info.loop = producer_.loop();
-                        info.width = producer_.width();
-                        info.height = producer_.height();
-                    }
+                std::shared_ptr<task_t> task;
+                while (tasks_.try_pop(task)) {
+                    (*task)();
                 }
-                buffer_.push(std::move(info));
-			}
+
+                if (seek_) {
+                    producer_.seek(*seek_);
+                    seek_.reset();
+                } else {
+                    Info info;
+                    info.frame = frame;
+                    info.number = to_frames(producer_.time());
+                    info.count = to_frames(producer_.duration());
+                    info.loop = producer_.loop();
+                    info.width = producer_.width();
+                    info.height = producer_.height();
+
+                    buffer_.push(std::move(info));
+                }
+            }
 		} catch (tbb::user_abort&) {
 			return;
 		} catch (...) {
@@ -206,6 +210,85 @@ public:
 	{
 		return av_rescale_q(frames, AVRational{ format_desc_.duration, format_desc_.time_scale }, AVRational{ 1, AV_TIME_BASE });
 	}
+
+    std::wstring call_internal(const std::vector<std::wstring>& params)
+    {
+        std::wstring result;
+
+        std::wstring cmd = params.at(0);
+        std::wstring value;
+        if (params.size() > 1) {
+            value = params.at(1);
+        }
+
+        if (boost::iequals(cmd, L"loop")) {
+            if (!value.empty()) {
+                producer_.loop(boost::lexical_cast<bool>(value));
+            }
+
+            result = boost::lexical_cast<std::wstring>(producer_.loop());
+        }
+        else if (boost::iequals(cmd, L"in") || boost::iequals(cmd, L"start")) {
+            if (!value.empty()) {
+                producer_.start(from_frames(boost::lexical_cast<std::int64_t>(value)));
+            }
+
+            result = boost::lexical_cast<std::wstring>(to_frames(producer_.start()));
+        }
+        else if (boost::iequals(cmd, L"out")) {
+            if (!value.empty()) {
+                producer_.duration(from_frames(boost::lexical_cast<std::int64_t>(value)) - producer_.start());
+            }
+
+            result = boost::lexical_cast<std::wstring>(to_frames(producer_.start() + producer_.duration()));
+        }
+        else if (boost::iequals(cmd, L"length")) {
+            if (!value.empty()) {
+                producer_.duration(from_frames(boost::lexical_cast<std::int64_t>(value)));
+            }
+
+            result = boost::lexical_cast<std::wstring>(to_frames(producer_.duration()));
+        }
+        else if (boost::iequals(cmd, L"seek") && !value.empty()) {
+            int64_t seek;
+            if (boost::iequals(value, L"rel")) {
+                seek = from_frames(info_.number);
+            }
+            else if (boost::iequals(value, L"in")) {
+                seek = producer_.start();
+            }
+            else if (boost::iequals(value, L"out")) {
+                seek = producer_.start() + producer_.duration();
+            }
+            else if (boost::iequals(value, L"end")) {
+                seek = producer_.duration();
+            }
+            else {
+                seek = from_frames(boost::lexical_cast<std::int64_t>(value));
+            }
+
+            if (params.size() > 2) {
+                seek += from_frames(boost::lexical_cast<std::int64_t>(params.at(2)));
+            }
+
+            seek_ = seek;
+            while (buffer_.try_pop(info_))
+                ;
+
+            {
+                std::lock_guard<std::mutex> info_lock(info_mutex_);
+                info_.number = to_frames(seek);
+                info_.frame = core::draw_frame::late();
+            }
+
+            result = boost::lexical_cast<std::wstring>(info_.number);
+        }
+        else {
+            CASPAR_THROW_EXCEPTION(invalid_argument());
+        }
+
+        return result;
+    }
  
 	// frame_producer
 
@@ -257,72 +340,9 @@ public:
 
 	std::future<std::wstring> call(const std::vector<std::wstring>& params) override
 	{
-        std::lock_guard<std::mutex> info_lock(info_mutex_);
-        std::lock_guard<std::mutex> producer_lock(producer_mutex_);
-
-		std::wstring result;
-
-		std::wstring cmd = params.at(0);
-		std::wstring value;
-		if (params.size() > 1) {
-			value = params.at(1);
-		}
-
-		if (boost::iequals(cmd, L"loop")) {
-			if (!value.empty()) {
-				producer_.loop(boost::lexical_cast<bool>(value));
-			}
-
-			result = boost::lexical_cast<std::wstring>(producer_.loop());
-		} else if (boost::iequals(cmd, L"in") || boost::iequals(cmd, L"start")) {
-			if (!value.empty()) {
-				producer_.start(from_frames(boost::lexical_cast<std::int64_t>(value)));
-			}
-
-			result = boost::lexical_cast<std::wstring>(to_frames(producer_.start()));
-		} else if (boost::iequals(cmd, L"out")) {
-			if (!value.empty()) {
-				producer_.duration(from_frames(boost::lexical_cast<std::int64_t>(value)) - producer_.start());
-			}
-
-			result = boost::lexical_cast<std::wstring>(to_frames(producer_.start() + producer_.duration()));
-		} else if (boost::iequals(cmd, L"length")) {
-			if (!value.empty()) {
-				producer_.duration(from_frames(boost::lexical_cast<std::int64_t>(value)));
-			}
-
-			result = boost::lexical_cast<std::wstring>(to_frames(producer_.duration()));
-		} else if (boost::iequals(cmd, L"seek") && !value.empty()) {
-			int64_t seek;
-			if (boost::iequals(value, L"rel")) {
-				seek = from_frames(info_.number);
-			} else if (boost::iequals(value, L"in")) {
-				seek = producer_.start();
-			} else if (boost::iequals(value, L"out")) {
-				seek = producer_.start() + producer_.duration();
-			} else if (boost::iequals(value, L"end")) {
-				seek = producer_.duration();
-			} else {
-				seek = from_frames(boost::lexical_cast<std::int64_t>(value));
-			}
-
-			if (params.size() > 2) {
-				seek += from_frames(boost::lexical_cast<std::int64_t>(params.at(2)));
-			}
-
-            seek_ = seek;
-            while (buffer_.try_pop(info_))
-                ;
-
-            info_.number = to_frames(seek);
-            info_.frame = core::draw_frame::late();
-
-            result = boost::lexical_cast<std::wstring>(info_.number);
-		} else {
-			CASPAR_THROW_EXCEPTION(invalid_argument());
-		}
-
-		return make_ready_future(std::move(result));
+        auto task = std::make_shared<task_t>([=]() -> std::wstring { return call_internal(params); });
+        tasks_.push(task);
+        return task->get_future();
 	}
 
 	boost::property_tree::wptree info() const override

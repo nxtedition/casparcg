@@ -90,12 +90,15 @@ class Decoder
     std::shared_ptr<AVCodecContext> avctx_;
     int                             stream_index_ = -1;
 
+    std::atomic<bool>               eof_ = false;
+
     packets_t                       packets_;
     frames_t                        frames_;
     std::thread                     thread_;
 
 public:
     Decoder()
+        : eof_(true)
     {
 
     }
@@ -156,7 +159,7 @@ public:
                         if (flush) {
                             avcodec_flush_buffers(avctx_.get());
                         } else {
-                            frames_.push(nullptr);
+                            break;
                         }
                     } else {
                         FF_RET(ret, "avcodec_receive_frame");
@@ -169,6 +172,9 @@ public:
                         frames_.push(std::move(frame));
                     }
                 }
+
+                eof_ = true;
+                frames_.push(nullptr);
             } catch (tbb::user_abort&) {
                 return;
             } catch (...) {
@@ -212,7 +218,7 @@ public:
 
     explicit operator bool() const 
     { 
-        return avctx_ != nullptr; 
+        return eof_.load(); 
     }
 };
 
@@ -227,11 +233,14 @@ class Graph
 
 	AVFilterContext*                sink_ = nullptr;
 
+    std::atomic<bool>               eof_ = false;
+
     frames_t                        frames_;
     std::thread                     thread_;
-
+    
 public:
     Graph()
+        : eof_(true)
     {
 
     }
@@ -526,6 +535,7 @@ public:
                         frames_.push(std::move(av_frame));
                     }
                 }
+                eof_ = true;
                 frames_.push(nullptr);
             } catch (tbb::user_abort&) {
                 return;
@@ -589,7 +599,7 @@ public:
 
     explicit operator bool() const 
     { 
-        return graph_ != nullptr;
+        return eof_.load();
     }
 };
 
@@ -665,10 +675,23 @@ struct AVProducer::Impl
             ic_->streams[i]->discard = AVDISCARD_ALL;
         }
 
-        reset();
+
+        const auto video_stream_index = av_find_best_stream(ic_.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+        if (video_stream_index >= 0) {
+            video_graph_.reset(new Graph(ic_.get(), AVMEDIA_TYPE_VIDEO, vfilter_, format_desc_));
+        } else {
+            video_graph_.reset(new Graph());
+        }
+
+        const auto audio_stream_index = av_find_best_stream(ic_.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+        if (audio_stream_index >= 0) {
+            audio_graph_.reset(new Graph(ic_.get(), AVMEDIA_TYPE_AUDIO, afilter_, format_desc_));
+        } else {
+            audio_graph_.reset(new Graph());
+        }
 
         if (start_ != AV_NOPTS_VALUE) {
-            seek_internal(start_ == AV_NOPTS_VALUE ? start_ : 0, false);
+            seek_internal(start_);
         }
 
         thread_ = std::thread([this]
@@ -694,7 +717,7 @@ struct AVProducer::Impl
                             if (loop_) {
                                 video_graph_->push(alloc_packet());
                                 audio_graph_->push(alloc_packet());
-                                seek_internal(start_ == AV_NOPTS_VALUE ? start_ : 0, false);
+                                seek_internal(start_);
                             } else {
                                 video_graph_->push(nullptr);
                                 audio_graph_->push(nullptr);
@@ -734,27 +757,12 @@ struct AVProducer::Impl
         return impl->abort_request_.load() ? 1 : 0;
     }
 
-    void reset()
+    void seek_internal(int64_t ts)
     {
-        swr_.reset();
-
-        const auto video_stream_index = av_find_best_stream(ic_.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-        if (video_stream_index >= 0) {
-            video_graph_.reset(new Graph(ic_.get(), AVMEDIA_TYPE_VIDEO, vfilter_, format_desc_));
-        } else {
-            video_graph_.reset(new Graph());
+        if (ts == AV_NOPTS_VALUE) {
+            ts = 0;
         }
 
-        const auto audio_stream_index = av_find_best_stream(ic_.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
-        if (audio_stream_index >= 0) {
-            audio_graph_.reset(new Graph(ic_.get(), AVMEDIA_TYPE_AUDIO, afilter_, format_desc_));
-        } else {
-            audio_graph_.reset(new Graph());
-        }
-    }
-
-    void seek_internal(int64_t ts, bool flush)
-    {
         seek_ = ts;
         time_ = ts;
 
@@ -770,15 +778,8 @@ struct AVProducer::Impl
         }
   
         FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
-
-        if (flush) {
-            reset();
-        }
-
-        eof_ = false;
-        eof_cond_.notify_all();
     }
- 
+
     void abort()
     {
         abort_request_ = true;
@@ -790,7 +791,15 @@ struct AVProducer::Impl
     void seek(int64_t ts)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        seek_internal(ts, true);
+
+        seek_internal(ts);
+        video_graph_->push(nullptr);
+        audio_graph_->push(nullptr);
+
+        if (eof_) {
+            eof_ = false;
+            eof_cond_.notify_all();
+        }
     }
 
     int64_t time() const
@@ -800,6 +809,7 @@ struct AVProducer::Impl
 
     void loop(bool loop)
     {
+        // TODO thread-safety
         loop_ = loop;
     }
 
@@ -810,6 +820,7 @@ struct AVProducer::Impl
 
     void start(int64_t start)
     {
+        // TODO thread-safety
         start_ = start;
     }
 
@@ -820,11 +831,13 @@ struct AVProducer::Impl
 
     void duration(int64_t duration)
     {
+        // TODO thread-safety
         duration_ = duration;
     }
 
     int64_t duration() const
     {
+        // TODO thread-safety
         return duration_ == AV_NOPTS_VALUE && ic_->duration != AV_NOPTS_VALUE
             ? std::max<int64_t>(0, ic_->duration - (start_ != AV_NOPTS_VALUE ? start_ : 0))
             : duration_;
@@ -832,13 +845,11 @@ struct AVProducer::Impl
 
     int width() const
     {
-        // TODO thread-safety
         return video_graph_->width();
     }
 
     int height() const
     {
-        // TODO thread-safety
         return video_graph_->height();
     }
 

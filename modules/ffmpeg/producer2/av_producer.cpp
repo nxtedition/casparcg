@@ -693,6 +693,8 @@ struct AVProducer::Impl
 
                         const auto ret = av_read_frame(ic_.get(), packet.get());
 
+                        // TODO AVERROR(EAGAIN)?
+
                         if (ret == AVERROR_EOF || avio_feof(ic_->pb)) {
                             if (loop_) {
                                 seek_internal(start_);
@@ -733,22 +735,12 @@ struct AVProducer::Impl
             ts = 0;
         }
 
-        seek_ = ts;
-        time_ = ts;
-
-        if (!(ic_->iformat->flags & AVFMT_SEEK_TO_PTS)) {
-            for (auto i = 0ULL; i < ic_->nb_streams; ++i) {
-                if (ic_->streams[i]->codecpar->video_delay) {
-                    ts -= 3 * AV_TIME_BASE / 23;
-                    break;
-                }
-            }
-        }
-
         if (ic_->start_time != AV_NOPTS_VALUE) {
             ts += ic_->start_time, ic_->start_time;
         }
- 
+
+        time_ = ts;
+        seek_ = ts;
   
         FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
     }
@@ -781,7 +773,7 @@ struct AVProducer::Impl
 
     int64_t time() const
     {
-        return time_;
+        return time_ - (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0);
     }
 
     void loop(bool loop)
@@ -838,12 +830,9 @@ struct AVProducer::Impl
 
 		std::shared_ptr<AVFrame> video;
 		std::shared_ptr<AVFrame> audio;
-
-        const auto ic_pts = ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0;
-        const auto seek_pts = ic_pts + (seek_ != AV_NOPTS_VALUE ? seek_ : 0);
     
         if (video_graph_) {
-			while (!video || video->pts < av_rescale_q(seek_pts, TIME_BASE_Q, video_graph_->time_base())) {
+			while (!video || video->pts < av_rescale_q(seek_, TIME_BASE_Q, video_graph_->time_base())) {
 				video = video_graph_->pop();
 
                 if (!video) {
@@ -877,7 +866,7 @@ struct AVProducer::Impl
 				if (!swr_) {
                     const auto first_pts = video
                         ? av_rescale_q(video->pts, video_graph_->time_base(), AVRational{ 1, frame->sample_rate })
-                        : av_rescale_q(seek_pts, TIME_BASE_Q, AVRational{ 1, frame->sample_rate });
+                        : av_rescale_q(seek_, TIME_BASE_Q, AVRational{ 1, frame->sample_rate });
 
 					swr_.reset(swr_alloc(), [](SwrContext* ptr) { swr_free(&ptr); });
 					FF(swr_config_frame(swr_.get(), audio.get(), frame.get()));
@@ -931,13 +920,11 @@ struct AVProducer::Impl
             const auto end = beg + audio->nb_samples * audio->channels;
             frame.audio_data() = core::mutable_audio_buffer(beg, end);
 		}
-
-        const auto start_pts = ic_pts + (start_ != AV_NOPTS_VALUE ? start_.load() : 0);
-
+ 
         if (video) {
-            time_ = av_rescale_q(video->pts, video_graph_->time_base(), TIME_BASE_Q) - start_pts;
+            time_ = av_rescale_q(video->pts, video_graph_->time_base(), TIME_BASE_Q);
         } else if (audio) {
-            time_ = av_rescale_q(audio->pts, audio_graph_->time_base(), TIME_BASE_Q) - start_pts;
+            time_ = av_rescale_q(audio->pts, audio_graph_->time_base(), TIME_BASE_Q);
         }
 
         return core::draw_frame(std::move(frame));

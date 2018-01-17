@@ -286,6 +286,7 @@ public:
 
     core::draw_frame last_frame() override
     {
+        // TODO return late?
         std::lock_guard<std::mutex> lock(info_mutex_);
 
         if (info_.frame == core::draw_frame::late()) {
@@ -342,19 +343,23 @@ public:
 
 	boost::property_tree::wptree info() const override
 	{
-        std::lock_guard<std::mutex> lock(info_mutex_);
+        Info info;
+        {
+            std::lock_guard<std::mutex> lock(info_mutex_);
+            info = info_;
+        }
 
-		boost::property_tree::wptree info;
-		info.add(L"type", L"ffmpeg-producer");
-		info.add(L"filename", filename_);
-		info.add(L"width", info_.width);
-		info.add(L"height", info_.height);
-		info.add(L"progressive", format_desc_.field_mode == core::field_mode::progressive);
-		info.add(L"fps", format_desc_.fps);
-		info.add(L"loop", info_.loop);
-		info.add(L"file-frame-number", info_.number);
-		info.add(L"file-nb-frames", info_.count);
-		return info;
+		boost::property_tree::wptree pt;
+        pt.add(L"type", L"ffmpeg-producer");
+        pt.add(L"filename", filename_);
+        pt.add(L"width", info.width);
+        pt.add(L"height", info.height);
+        pt.add(L"progressive", format_desc_.field_mode == core::field_mode::progressive);
+        pt.add(L"fps", format_desc_.fps);
+        pt.add(L"loop", info.loop);
+        pt.add(L"file-frame-number", info.number);
+        pt.add(L"file-nb-frames", info.count);
+        return pt;
 	}
 
 	std::wstring print() const override

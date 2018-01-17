@@ -212,6 +212,10 @@ class Graph
 
     std::shared_ptr<AVFilterGraph>  graph_;
 
+    AVMediaType                     media_type_;
+    core::video_format_desc         format_desc_;
+    std::string                     filter_spec_;
+
     streams_t                       streams_;
 
 	AVFilterContext*                sink_ = nullptr;
@@ -229,13 +233,44 @@ public:
 				   AVMediaType					  media_type,
                    std::string                    filter_spec,
                    const core::video_format_desc& format_desc)
+        : media_type_(media_type)
+        , format_desc_(format_desc)
+        , filter_spec_(filter_spec)
     {
         frames_.set_capacity(2);
+
+        if (media_type == AVMEDIA_TYPE_VIDEO) {
+            if (filter_spec.empty()) {
+                filter_spec = "null";
+            }
+
+            filter_spec += (boost::format(",bwdif=mode=send_field:parity=auto:deint=all")
+                            ).str();
+
+            filter_spec += (boost::format(",fps=fps=%d/%d")
+                            % (format_desc.framerate.numerator() * format_desc.field_count) % format_desc.framerate.denominator()
+                            ).str();
+
+            if (format_desc.field_count == 2) {
+                filter_spec += (boost::format(",scale=%d:%d,interlace=scan=")
+                                % format_desc.width % format_desc.height
+                                % (format_desc.field_mode == core::field_mode::upper ? "tff" : "bff")
+                                ).str();
+            }
+        } else if (media_type == AVMEDIA_TYPE_AUDIO) {
+            if (filter_spec.empty()) {
+                filter_spec = "anull";
+            }
+        }
+
+        streams_.clear();
+        graph_ = nullptr;
+        sink_ = nullptr;
 
         AVFilterInOut* outputs = nullptr;
         AVFilterInOut* inputs = nullptr;
 
-        CASPAR_SCOPE_EXIT 
+        CASPAR_SCOPE_EXIT
         {
             avfilter_inout_free(&inputs);
             avfilter_inout_free(&outputs);
@@ -247,35 +282,7 @@ public:
             FF_RET(AVERROR(ENOMEM), "avfilter_graph_alloc");
         }
 
-        if (media_type == AVMEDIA_TYPE_VIDEO) {
-            if (filter_spec.empty()) {
-                filter_spec = "null";
-            }
-
-            // TODO auto letterbox
-
-            filter_spec += (boost::format(",bwdif=mode=send_field:parity=auto:deint=all")
-            ).str();
-
-            filter_spec += (boost::format(",fps=fps=%d/%d")
-                % (format_desc.framerate.numerator() * format_desc.field_count) % format_desc.framerate.denominator()
-            ).str();
-
-            // TODO Do we need this?
-            // if (first_pts_ != AV_NOPTS_VALUE) {
-            //     filter_spec += (boost::format(":start_time=%f")
-            //         % av_q2d(AVRational{ first_pts_, AV_TIME_BASE })
-            //     ).str();
-            // }
-
-            // TODO Move to GPU
-            if (format_desc.field_count == 2) {
-                filter_spec += (boost::format(",scale=%d:%d,interlace=scan=")
-                    % format_desc.width % format_desc.height
-                    % (format_desc.field_mode == core::field_mode::upper ? "tff" : "bff")
-                ).str();
-            }
-
+        if (media_type_ == AVMEDIA_TYPE_VIDEO) {
             FF(avfilter_graph_create_filter(&sink_, avfilter_get_by_name("buffersink"), "out", nullptr, nullptr, graph_.get()));
 
 #ifdef _MSC_VER
@@ -302,11 +309,7 @@ public:
 #ifdef _MSC_VER
 #pragma warning (pop)
 #endif
-        } else if (media_type == AVMEDIA_TYPE_AUDIO) {
-            if (filter_spec.empty()) {
-                filter_spec = "anull";
-            }
-
+        } else if (media_type_ == AVMEDIA_TYPE_AUDIO) {
             FF(avfilter_graph_create_filter(&sink_, avfilter_get_by_name("abuffersink"), "out", nullptr, nullptr, graph_.get()));
 #ifdef _MSC_VER
 #pragma warning (push)
@@ -328,8 +331,8 @@ public:
 #endif
         } else {
             CASPAR_THROW_EXCEPTION(ffmpeg_error_t()
-                << boost::errinfo_errno(EINVAL)
-                << msg_info_t("invalid output media type")
+                                   << boost::errinfo_errno(EINVAL)
+                                   << msg_info_t("invalid output media type")
             );
         }
 
@@ -340,7 +343,8 @@ public:
             if (!graph) {
                 FF_RET(AVERROR(ENOMEM), "avfilter_graph_alloc");
             }
-            CASPAR_SCOPE_EXIT{
+            CASPAR_SCOPE_EXIT
+            {
                 avfilter_graph_free(&graph);
                 avfilter_inout_free(&inputs);
                 avfilter_inout_free(&outputs);
@@ -380,62 +384,62 @@ public:
         }
 
         FF(avfilter_graph_parse2(graph_.get(), filter_spec.c_str(), &inputs, &outputs));
- 
+
         // inputs
         {
-			std::set<AVStream*> used_streams;
+            std::set<AVStream*> used_streams;
 
             for (auto cur = inputs; cur; cur = cur->next) {
                 const auto type = avfilter_pad_get_type(cur->filter_ctx->input_pads, cur->pad_idx);
                 if (type != AVMEDIA_TYPE_VIDEO && type != AVMEDIA_TYPE_AUDIO) {
                     CASPAR_THROW_EXCEPTION(ffmpeg_error_t()
-                        << boost::errinfo_errno(EINVAL)
-                        << msg_info_t("only video and audio filters supported")
+                                           << boost::errinfo_errno(EINVAL)
+                                           << msg_info_t("only video and audio filters supported")
                     );
                 }
 
                 // TODO find stream based on link name
-				// TODO share stream decoders between graphs
+                // TODO share stream decoders between graphs
                 AVStream* st = nullptr;
                 for (auto i = 0ULL; i < ic->nb_streams; ++i) {
                     st = ic->streams[i];
-                    if (st->codecpar->codec_type == type && used_streams.find(st) == used_streams.end()){
+                    if (st->codecpar->codec_type == type && used_streams.find(st) == used_streams.end()) {
                         break;
                     }
                 }
 
                 if (!st) {
                     CASPAR_THROW_EXCEPTION(ffmpeg_error_t()
-                        << boost::errinfo_errno(EINVAL)
-                        << msg_info_t((boost::format("cannot find matching stream for input pad %d on filter %s") % cur->pad_idx % cur->filter_ctx->name).str())
+                                           << boost::errinfo_errno(EINVAL)
+                                           << msg_info_t((boost::format("cannot find matching stream for input pad %d on filter %s") % cur->pad_idx % cur->filter_ctx->name).str())
                     );
                 }
 
-				used_streams.insert(st);
+                used_streams.insert(st);
 
                 st->discard = AVDISCARD_DEFAULT;
-                
+
                 if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
                     const auto decoder = std::make_shared<Decoder>(st);
                     AVFilterContext* source = nullptr;
 
                     auto args_str = (boost::format("video_size=%dx%d:pix_fmt=%d:time_base=%d/%d")
-                        % (*decoder)->width % (*decoder)->height
-                        % (*decoder)->pix_fmt
-                        % (*decoder)->pkt_timebase.num % (*decoder)->pkt_timebase.den
-                    ).str();
+                                     % (*decoder)->width % (*decoder)->height
+                                     % (*decoder)->pix_fmt
+                                     % (*decoder)->pkt_timebase.num % (*decoder)->pkt_timebase.den
+                                     ).str();
                     const auto name_str = (boost::format("in%d") % st->index).str();
 
                     if ((*decoder)->sample_aspect_ratio.num > 0 && (*decoder)->sample_aspect_ratio.den > 0) {
                         args_str += (boost::format(":sar=%d/%d")
-                            % (*decoder)->sample_aspect_ratio.num % (*decoder)->sample_aspect_ratio.den
-                        ).str();
+                                     % (*decoder)->sample_aspect_ratio.num % (*decoder)->sample_aspect_ratio.den
+                                     ).str();
                     }
 
                     if ((*decoder)->framerate.num > 0 && (*decoder)->framerate.den > 0) {
                         args_str += (boost::format(":frame_rate=%d/%d")
-                            % (*decoder)->framerate.num % (*decoder)->framerate.den
-                        ).str();
+                                     % (*decoder)->framerate.num % (*decoder)->framerate.den
+                                     ).str();
                     }
 
                     FF(avfilter_graph_create_filter(&source, avfilter_get_by_name("buffer"), name_str.c_str(), args_str.c_str(), nullptr, graph_.get()));
@@ -447,11 +451,11 @@ public:
                     AVFilterContext* source = nullptr;
 
                     const auto args_str = (boost::format("time_base=%d/%d:sample_rate=%d:sample_fmt=%s:channel_layout=%#x")
-                        % (*decoder)->pkt_timebase.num % (*decoder)->pkt_timebase.den
-                        % (*decoder)->sample_rate
-                        % av_get_sample_fmt_name((*decoder)->sample_fmt)
-                        % (*decoder)->channel_layout
-                    ).str();
+                                           % (*decoder)->pkt_timebase.num % (*decoder)->pkt_timebase.den
+                                           % (*decoder)->sample_rate
+                                           % av_get_sample_fmt_name((*decoder)->sample_fmt)
+                                           % (*decoder)->channel_layout
+                                           ).str();
                     const auto name_str = (boost::format("in%d") % st->index).str();
 
                     FF(avfilter_graph_create_filter(&source, avfilter_get_by_name("abuffer"), name_str.c_str(), args_str.c_str(), nullptr, graph_.get()));
@@ -460,8 +464,8 @@ public:
                     streams_.push_back(std::make_pair(source, std::move(decoder)));
                 } else {
                     CASPAR_THROW_EXCEPTION(ffmpeg_error_t()
-                        << boost::errinfo_errno(EINVAL)
-                        << msg_info_t("invalid filter input media type")
+                                           << boost::errinfo_errno(EINVAL)
+                                           << msg_info_t("invalid filter input media type")
                     );
                 }
             }
@@ -473,15 +477,15 @@ public:
 
             if (!cur || cur->next) {
                 CASPAR_THROW_EXCEPTION(ffmpeg_error_t()
-                    << boost::errinfo_errno(EINVAL)
-                    << msg_info_t("invalid filter graph output count")
+                                       << boost::errinfo_errno(EINVAL)
+                                       << msg_info_t("invalid filter graph output count")
                 );
             }
- 
-            if (avfilter_pad_get_type(cur->filter_ctx->output_pads, cur->pad_idx) != media_type) {
+
+            if (avfilter_pad_get_type(cur->filter_ctx->output_pads, cur->pad_idx) != media_type_) {
                 CASPAR_THROW_EXCEPTION(ffmpeg_error_t()
-                    << boost::errinfo_errno(EINVAL)
-                    << msg_info_t("invalid filter output media type")
+                                       << boost::errinfo_errno(EINVAL)
+                                       << msg_info_t("invalid filter output media type")
                 );
             }
 
@@ -490,7 +494,7 @@ public:
 
         FF(avfilter_graph_config(graph_.get(), nullptr));
 
-        thread_ = std::thread([this]
+        thread_ = std::thread([this, ic]
         {
             try {
                 while (true) {
@@ -508,7 +512,6 @@ public:
                             }
                         }
                     } else if (ret == AVERROR_EOF) {
-                        // TODO Does this work? i.e. will filter reset with next non null frame?
                         frames_.push(nullptr);
                     } else {
                         FF_RET(ret, "av_buffersink_get_frame");
@@ -529,10 +532,12 @@ public:
         abort();
         thread_.join();
     }
-
+ 
     void abort()
     {
         frames_.abort();
+
+        // TODO mutex ?
         for (auto& stream : streams_) {
             stream.second->abort();
         }
@@ -540,6 +545,7 @@ public:
 
     void push(const std::shared_ptr<AVPacket>& packet) 
     {
+        // TODO mutex ?
         if (*this) {
 			for (auto& stream : streams_) {
 				stream.second->push(packet);
@@ -558,26 +564,31 @@ public:
 
     AVRational time_base() const
     {
+        // TODO mutex
         return sink_ ? av_buffersink_get_time_base(sink_) : AVRational { 0, 1 };
     }
 
     int width () const
     {
+        // TODO mutex
         return sink_ ? av_buffersink_get_w(sink_) : 0;
     }
 
     int height () const
     {
+        // TODO mutex
         return sink_ ? av_buffersink_get_h(sink_) : 0;
     }
 
     int64_t channel_layout() const
     {
+        // TODO mutex
         return sink_ ? av_buffersink_get_channel_layout(sink_) : 0;
     }
 
     explicit operator bool() const 
-    { 
+    {
+        // TODO mutex
         return graph_ != nullptr;
     }
 };
@@ -670,7 +681,20 @@ struct AVProducer::Impl
         }
 
         if (start_ != AV_NOPTS_VALUE) {
-            seek_internal(start_);
+            auto ts = start_.load();
+
+            if (ic_->start_time != AV_NOPTS_VALUE) {
+                ts += ic_->start_time, ic_->start_time;
+            }
+
+            time_ = ts;
+            seek_ = ts;
+
+            FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
+        } else if (ic_->start_time != AV_NOPTS_VALUE) {
+            // TODO do we need this?
+            //time_ = ic_->start_time;
+            //seek_ = ic_->start_time;
         }
 
         thread_ = std::thread([this]
@@ -701,6 +725,9 @@ struct AVProducer::Impl
                             } else {
                                 paused_ = true;
                             }
+                            //video_graph_->reset();
+                            //audio_graph_->reset();
+                            //swr_.reset();
                         } else {
                             FF_RET(ret, "av_read_frame");
                         }
@@ -743,8 +770,12 @@ struct AVProducer::Impl
         seek_ = ts;
   
         FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
+
+        paused_ = false;
+        paused_cond_.notify_all();
     }
 
+public:
     void abort()
     {
         abort_request_ = true;
@@ -759,16 +790,10 @@ struct AVProducer::Impl
     void seek(int64_t ts)
     {
         // TODO Can we cancel pending av_read_frame?
-
         std::lock_guard<std::mutex> lock(mutex_);
-
         seek_internal(ts);
-
-        video_graph_->push(nullptr);
-        audio_graph_->push(nullptr);
-
-        paused_ = false;
-        paused_cond_.notify_all();
+        //video_graph_->reset();
+        //audio_graph_->reset();
     }
 
     int64_t time() const
@@ -803,7 +828,7 @@ struct AVProducer::Impl
 
     int64_t duration() const
     {
-        // TODO look at video duration?
+        // TODO shortest?
         return duration_ == AV_NOPTS_VALUE && ic_->duration != AV_NOPTS_VALUE
             ? std::max<int64_t>(0, ic_->duration - (start_ != AV_NOPTS_VALUE ? start_.load() : 0))
             : duration_;
@@ -833,16 +858,22 @@ struct AVProducer::Impl
 		std::shared_ptr<AVFrame> audio;
     
         if (video_graph_) {
-			while (!video || video->pts < av_rescale_q(seek_, TIME_BASE_Q, video_graph_->time_base())) {
+			while (true) {
 				video = video_graph_->pop();
 
                 if (!video) {
+                    // TODO
+                    // drain audio
+                    while (audio_graph_->pop())
+                        ;
+                    swr_.reset();
+                } else if (video->pts >= av_rescale_q(seek_, TIME_BASE_Q, video_graph_->time_base())) {
                     break;
                 }
 			}
         }
 
-        if (audio_graph_) {                
+        if (audio_graph_) {
 			// Note: Uses 1 step rotated cadence for 1001 modes (1602, 1602, 1601, 1602, 1601)
 			// This cadence fills the audio mixer most optimally.
 			boost::range::rotate(audio_cadence_, std::end(audio_cadence_) - 1);
@@ -861,9 +892,10 @@ struct AVProducer::Impl
                 frame = audio_graph_->pop();
 
                 if (!frame) {
-					break;
+                    // TODO
+                    continue;
                 }
-
+ 
                 // TODO compensate to video pts?
 
 				if (!swr_) {
@@ -895,11 +927,6 @@ struct AVProducer::Impl
         if (!video && !audio) {
             return core::draw_frame::late();
         }
-
-        // video duration is master
-        if (video_graph_ && !video) {
-            return core::draw_frame::late();
-        }
         
         const auto pix_desc = video
             ? ffmpeg2::pixel_format_desc(static_cast<AVPixelFormat>(video->format), video->width, video->height)
@@ -927,6 +954,7 @@ struct AVProducer::Impl
 			const auto beg = reinterpret_cast<uint32_t*>(audio->data[0]);
             const auto end = beg + audio->nb_samples * audio->channels;
             frame.audio_data() = core::mutable_audio_buffer(beg, end);
+            frame.audio_data().resize(audio_cadence_[0], 0);
 		}
  
         if (video) {

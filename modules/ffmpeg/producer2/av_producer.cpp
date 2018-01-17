@@ -511,7 +511,7 @@ public:
                             }
                         }
                     } else if (ret == AVERROR_EOF) {
-                        // TODO What now?
+                        frames_.push(nullptr);
                     } else {
                         FF_RET(ret, "av_buffersink_get_frame");
 
@@ -741,8 +741,6 @@ struct AVProducer::Impl
         seek_ = ts;
         time_ = ts;
 
-        ts += (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0);
-
         if (!(ic_->iformat->flags & AVFMT_SEEK_TO_PTS)) {
             for (auto i = 0ULL; i < ic_->nb_streams; ++i) {
                 if (ic_->streams[i]->codecpar->video_delay) {
@@ -751,6 +749,11 @@ struct AVProducer::Impl
                 }
             }
         }
+
+        if (ic_->start_time != AV_NOPTS_VALUE) {
+            ts += ic_->start_time, ic_->start_time;
+        }
+ 
   
         FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
     }

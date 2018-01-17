@@ -803,6 +803,7 @@ struct AVProducer::Impl
 
     int64_t duration() const
     {
+        // TODO look at video duration?
         return duration_ == AV_NOPTS_VALUE && ic_->duration != AV_NOPTS_VALUE
             ? std::max<int64_t>(0, ic_->duration - (start_ != AV_NOPTS_VALUE ? start_.load() : 0))
             : duration_;
@@ -838,7 +839,7 @@ struct AVProducer::Impl
                 if (!video) {
                     break;
                 }
-			};
+			}
         }
 
         if (audio_graph_) {                
@@ -854,10 +855,14 @@ struct AVProducer::Impl
 			audio->nb_samples = audio_cadence_[0];
 			FF(av_frame_get_buffer(audio.get(), 0));
 
+            std::shared_ptr<AVFrame> frame;
+
 			while (!swr_ || swr_get_delay(swr_.get(), audio->sample_rate) < audio->nb_samples) {
-                const auto frame = audio_graph_->pop();
+                frame = audio_graph_->pop();
 
                 if (!frame) {
+                    FF(swr_convert_frame(swr_.get(), audio.get(), nullptr));
+                    swr_.reset();
 					break;
                 }
 
@@ -890,6 +895,11 @@ struct AVProducer::Impl
         }
 
         if (!video && !audio) {
+            return core::draw_frame::late();
+        }
+
+        // video duration is master
+        if (video_graph_ && !video) {
             return core::draw_frame::late();
         }
         

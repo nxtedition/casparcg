@@ -80,41 +80,20 @@ std::wstring get_relative_or_original(
 	return result;
 }
 
-struct Info
-{
-    core::draw_frame frame = core::draw_frame::late();
-	int64_t number = 0;
-	int64_t count = 0;
-    bool loop = false;
-    int width = 0;
-    int height = 0;
-};
-
 struct ffmpeg_producer : public core::frame_producer_base
 {
-    typedef std::packaged_task<std::wstring()>                      task_t;
-    typedef tbb::concurrent_bounded_queue<std::shared_ptr<task_t>>  tasks_t;
-
 	const std::wstring 									filename_;
 	const std::wstring 									path_relative_to_media_ = get_relative_or_original(filename_, env::media_folder());
 	spl::shared_ptr<core::frame_factory> 				frame_factory_;
 	core::video_format_desc								format_desc_;
-    
-    mutable std::mutex									mutex_;
-	Info												info_;
 
+    mutable std::mutex                                  producer_mutex_;
 	AVProducer											producer_;
-
+    
 	core::monitor::subject  							monitor_subject_;
-	const spl::shared_ptr<diagnostics::graph>			graph_;
 	core::constraints									constraints_;
 
-    boost::optional<int64_t>                            seek_;
-
-    tasks_t                                             tasks_;
-
-	tbb::concurrent_bounded_queue<Info>		            buffer_;
-	std::thread										    thread_;
+    core::draw_frame                                    last_frame_;
 public:
 	explicit ffmpeg_producer(
 			spl::shared_ptr<core::frame_factory> frame_factory,
@@ -137,88 +116,67 @@ public:
 					duration, 
 					loop)
 	{
-        buffer_.set_capacity(2);
-
 		if (producer_.width() > 0 && producer_.height() > 0) {
 			constraints_.width.set(producer_.width());
 			constraints_.height.set(producer_.height());
 		}
-
-        info_.number = to_frames(producer_.time());
-        info_.count = to_frames(producer_.duration());
-		
-		diagnostics::register_graph(graph_);
-		graph_->set_color("frame-time", diagnostics::color(0.1f, 1.0f, 0.1f));
-		graph_->set_color("underflow", diagnostics::color(0.6f, 0.3f, 0.9f));
-		graph_->set_color("buffer-count", diagnostics::color(0.7f, 0.4f, 0.4f));
-		graph_->set_text(print());
-
-        thread_ = std::thread([this] { run(); });
 	}
 
-	~ffmpeg_producer()
-	{
-		producer_.abort();
-        buffer_.abort();
-		thread_.join();
-	}
-
-	void run()
-	{
-		try {
-			while (true) {
-                boost::timer frame_timer;
-
-                auto frame = producer_.next();
-
-                graph_->set_value("frame-time", frame_timer.elapsed() * boost::rational_cast<double>(format_desc_.framerate) * 0.5);
-                graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
-
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-
-                    std::shared_ptr<task_t> task;
-                    while (tasks_.try_pop(task)) {
-                        (*task)();
-                    }
-                }
-
-                if (seek_) {
-                    producer_.seek(*seek_);
-                    seek_ = boost::none;
-                    while (buffer_.try_pop(info_))
-                        ;
-                } else {
-                    Info info;
-                    info.frame = frame;
-                    info.number = to_frames(producer_.time());
-                    info.count = to_frames(producer_.duration());
-                    info.loop = producer_.loop();
-                    info.width = producer_.width();
-                    info.height = producer_.height();
-
-                    buffer_.push(std::move(info));
-                }
-            }
-		} catch (tbb::user_abort&) {
-			return;
-		} catch (...) {
-			CASPAR_LOG_CURRENT_EXCEPTION();
-		}
-	}
-
-	int64_t to_frames(int64_t pts)
+	int64_t to_frames(int64_t pts) const
 	{
 		return av_rescale_q(pts, AVRational{ 1, AV_TIME_BASE }, AVRational{ format_desc_.duration, format_desc_.time_scale });
 	}
 
-	int64_t from_frames(int64_t frames)
+	int64_t from_frames(int64_t frames) const
 	{
 		return av_rescale_q(frames, AVRational{ format_desc_.duration, format_desc_.time_scale }, AVRational{ 1, AV_TIME_BASE });
 	}
+ 
+	// frame_producer
 
-    std::wstring call_internal(const std::vector<std::wstring>& params)
+    core::draw_frame last_frame() override
     {
+        std::lock_guard<std::mutex> lock(producer_mutex_);
+
+        return producer_.get() != core::draw_frame::late() ? producer_.get() : last_frame_;
+    }
+
+	core::draw_frame receive_impl() override
+	{
+        std::lock_guard<std::mutex> lock(producer_mutex_);
+
+        // TODO next is blocking
+        if (!producer_.next()) {
+            return core::draw_frame::late();
+        }
+
+        auto number = to_frames(producer_.time());
+        auto count = to_frames(producer_.duration());
+
+        monitor_subject_
+            << core::monitor::message("/file/time") % (number / format_desc_.fps) % (count / format_desc_.fps)
+            << core::monitor::message("/file/frame") % static_cast<int32_t>(number) % static_cast<int32_t>(count)
+            << core::monitor::message("/file/fps") % format_desc_.fps
+            << core::monitor::message("/file/path") % path_relative_to_media_
+            << core::monitor::message("/loop") % producer_.loop();
+		 
+		return last_frame_ = producer_.get();
+	}
+	
+	core::constraints& pixel_constraints() override
+	{
+		return constraints_;
+	}
+
+	uint32_t nb_frames() const override
+	{
+		return producer_.loop() ? std::numeric_limits<std::uint32_t>::max() : static_cast<uint32_t>(to_frames(producer_.time()));
+	}
+
+	std::future<std::wstring> call(const std::vector<std::wstring>& params) override
+	{
+        std::lock_guard<std::mutex> lock(producer_mutex_);
+
         std::wstring result;
 
         std::wstring cmd = params.at(0);
@@ -254,7 +212,7 @@ public:
         } else if (boost::iequals(cmd, L"seek") && !value.empty()) {
             int64_t seek;
             if (boost::iequals(value, L"rel")) {
-                seek = from_frames(info_.number);
+                seek = producer_.time();
             } else if (boost::iequals(value, L"in")) {
                 seek = producer_.start();
             } else if (boost::iequals(value, L"out")) {
@@ -269,95 +227,47 @@ public:
                 seek += from_frames(boost::lexical_cast<std::int64_t>(params.at(2)));
             }
 
-            seek_ = seek;
+            producer_.seek(seek);
 
-            result = boost::lexical_cast<std::wstring>(info_.number);
+            result = boost::lexical_cast<std::wstring>(seek);
         } else {
             CASPAR_THROW_EXCEPTION(invalid_argument());
         }
 
-        return result;
-    }
- 
-	// frame_producer
-
-    core::draw_frame last_frame() override
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        if (info_.frame == core::draw_frame::late()) {
-            buffer_.try_pop(info_);
-        }
-
-        return info_.frame;
-    }
-
-	core::draw_frame receive_impl() override
-	{
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        if (buffer_.try_pop(info_)) {
-            graph_->set_value("buffer-count", static_cast<double>(buffer_.size()) / static_cast<double>(buffer_.capacity()));
-
-            monitor_subject_
-                << core::monitor::message("/file/time") % (info_.number / format_desc_.fps) % (info_.count / format_desc_.fps)
-                << core::monitor::message("/file/frame") % static_cast<int32_t>(info_.number) % static_cast<int32_t>(info_.count)
-                << core::monitor::message("/file/fps") % format_desc_.fps
-                << core::monitor::message("/file/path") % path_relative_to_media_
-                << core::monitor::message("/loop") % info_.loop;
-        } else {
-            graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
-        }
-
-		graph_->set_text(print());
-		
-		return info_.frame;
-	}
-	
-	core::constraints& pixel_constraints() override
-	{
-		return constraints_;
-	}
-
-	uint32_t nb_frames() const override
-	{
-        std::lock_guard<std::mutex> lock(mutex_);
-
-		return info_.loop ? std::numeric_limits<std::uint32_t>::max() : static_cast<uint32_t>(info_.number);
-	}
-
-	std::future<std::wstring> call(const std::vector<std::wstring>& params) override
-	{
-        auto task = std::make_shared<task_t>([=]() -> std::wstring { return call_internal(params); });
-        tasks_.push(task);
-        return task->get_future();
+        std::promise<std::wstring> promise;
+        promise.set_value(result);
+        return promise.get_future();
 	}
 
 	boost::property_tree::wptree info() const override
 	{
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(producer_mutex_);
 
 		boost::property_tree::wptree pt;
         pt.add(L"type", L"ffmpeg-producer");
         pt.add(L"filename", filename_);
-        pt.add(L"width", info_.width);
-        pt.add(L"height", info_.height);
+        pt.add(L"width", producer_.width());
+        pt.add(L"height", producer_.height());
         pt.add(L"progressive", format_desc_.field_mode == core::field_mode::progressive);
         pt.add(L"fps", format_desc_.fps);
-        pt.add(L"loop", info_.loop);
-        pt.add(L"file-frame-number", info_.number);
-        pt.add(L"file-nb-frames", info_.count);
+        pt.add(L"loop", producer_.loop());
+        pt.add(L"file-frame-number", to_frames(producer_.time()));
+        pt.add(L"file-nb-frames", to_frames(producer_.duration()));
+
         return pt;
 	}
 
 	std::wstring print() const override
 	{
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(producer_mutex_);
+
+        auto number = to_frames(producer_.time());
+        auto count = to_frames(producer_.duration());
 
 		return L"ffmpeg[" + 
 			filename_ + L"|" + 
-			boost::lexical_cast<std::wstring>(info_.number) + L"/" + 
-			boost::lexical_cast<std::wstring>(info_.count) + 
+			boost::lexical_cast<std::wstring>(number) + L"/" + 
+			boost::lexical_cast<std::wstring>(count) + 
 			L"]";
 	}
 

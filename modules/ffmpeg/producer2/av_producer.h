@@ -24,7 +24,8 @@ public:
         boost::optional<int64_t> duration,
         boost::optional<bool> loop);
 
-    core::draw_frame next();
+    core::draw_frame get();
+    bool next();
 
     AVProducer& seek(int64_t time);
     int64_t time() const;
@@ -40,8 +41,6 @@ public:
 
     int width() const;
     int height() const;
-
-    void abort();
 private:
     struct Impl;
     std::shared_ptr<Impl> impl_;

@@ -58,8 +58,6 @@ if (MSVC)
 	)
 endif ()
 
-MESSAGE( ${Boost_LIBRARIES} )
-
 target_link_libraries(casparcg
 		accelerator
 		common

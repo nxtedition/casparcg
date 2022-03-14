@@ -21,6 +21,7 @@
 
 #include "frame_consumer.h"
 
+#include <common/assert.h>
 #include <common/except.h>
 #include <common/future.h>
 

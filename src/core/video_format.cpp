@@ -21,6 +21,8 @@
 
 #include "video_format.h"
 
+#include <common/enum_class.h>
+#include <common/except.h>
 #include <common/log.h>
 
 #include <boost/algorithm/string.hpp>

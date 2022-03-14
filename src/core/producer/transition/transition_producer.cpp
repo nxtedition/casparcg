@@ -30,6 +30,8 @@
 
 #include <future>
 
+#include <boost/regex.hpp>
+
 namespace caspar { namespace core {
 
 class transition_producer : public frame_producer

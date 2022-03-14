@@ -21,6 +21,8 @@
 
 #include "AsyncEventServer.h"
 
+#include <common/except.h>
+
 #include <algorithm>
 #include <array>
 #include <functional>

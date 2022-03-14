@@ -25,6 +25,7 @@
 
 #include "call_context.h"
 
+#include <common/diagnostics/graph.h>
 #include <common/executor.h>
 #include <common/timer.h>
 

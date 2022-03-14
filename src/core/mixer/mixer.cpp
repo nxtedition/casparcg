@@ -35,6 +35,7 @@
 
 #include <unordered_map>
 #include <vector>
+#include <queue>
 
 namespace caspar { namespace core {
 

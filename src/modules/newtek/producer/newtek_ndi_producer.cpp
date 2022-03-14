@@ -46,6 +46,8 @@
 #include <boost/regex.hpp>
 #include <boost/thread.hpp>
 
+#include <queue>
+
 #include <tbb/parallel_for.h>
 
 #include <ffmpeg/util/av_util.h>

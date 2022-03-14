@@ -68,6 +68,7 @@ extern "C" {
 #endif
 
 #include <boost/format.hpp>
+#include <boost/range/algorithm/rotate.hpp>
 
 #include "../decklink_api.h"
 

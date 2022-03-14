@@ -25,6 +25,7 @@
 #include "oscpack/OscOutboundPacketStream.h"
 
 #include <common/endian.h>
+#include <common/except.h>
 #include <common/utf.h>
 
 #include <core/monitor/monitor.h>
@@ -36,6 +37,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <map>
 
 using namespace boost::asio::ip;
 

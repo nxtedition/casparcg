@@ -20,8 +20,6 @@
  * Author: Helge Norberg, helge.norberg@svt.se
  */
 
-#include "../StdAfx.h"
-
 #include "client.h"
 
 #include "oscpack/OscOutboundPacketStream.h"

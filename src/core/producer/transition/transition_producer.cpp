@@ -19,8 +19,6 @@
  * Author: Robert Nagy, ronag89@gmail.com
  */
 
-#include "../../StdAfx.h"
-
 #include "transition_producer.h"
 
 #include "../../frame/draw_frame.h"

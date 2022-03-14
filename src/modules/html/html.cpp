@@ -63,7 +63,7 @@ void caspar_log(const CefRefPtr<CefBrowser>&        browser,
         auto msg = CefProcessMessage::Create(LOG_MESSAGE_NAME);
         msg->GetArgumentList()->SetInt(0, level);
         msg->GetArgumentList()->SetString(1, message);
-        browser->SendProcessMessage(PID_BROWSER, msg);
+        // browser->SendProcessMessage(PID_BROWSER, msg);
     }
 }
 
@@ -87,7 +87,7 @@ class remove_handler : public CefV8Handler
             return false;
         }
 
-        browser_->SendProcessMessage(PID_BROWSER, CefProcessMessage::Create(REMOVE_MESSAGE_NAME));
+        // browser_->SendProcessMessage(PID_BROWSER, CefProcessMessage::Create(REMOVE_MESSAGE_NAME));
 
         return true;
     }
@@ -199,21 +199,21 @@ class renderer_application
         }
     }
 
-    bool OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser,
-                                  CefProcessId                 source_process,
-                                  CefRefPtr<CefProcessMessage> message) override
-    {
-        if (message->GetName().ToString() == TICK_MESSAGE_NAME) {
-            for (auto& context : contexts_) {
-                CefRefPtr<CefV8Value>     ret;
-                CefRefPtr<CefV8Exception> exception;
-                context->Eval("tickAnimations()", CefString(), 1, ret, exception);
-            }
+    // bool OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser,
+    //                               CefProcessId                 source_process,
+    //                               CefRefPtr<CefProcessMessage> message) override
+    // {
+    //     if (message->GetName().ToString() == TICK_MESSAGE_NAME) {
+    //         for (auto& context : contexts_) {
+    //             CefRefPtr<CefV8Value>     ret;
+    //             CefRefPtr<CefV8Exception> exception;
+    //             context->Eval("tickAnimations()", CefString(), 1, ret, exception);
+    //         }
 
-            return true;
-        }
-        return false;
-    }
+    //         return true;
+    //     }
+    //     return false;
+    // }
 
     IMPLEMENT_REFCOUNTING(renderer_application);
 };

@@ -41,6 +41,7 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 #include <libavutil/samplefmt.h>
+#include <libavutil/channel_layout.h>
 }
 #ifdef _MSC_VER
 #pragma warning(pop)

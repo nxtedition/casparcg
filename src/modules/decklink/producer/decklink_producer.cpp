@@ -19,8 +19,6 @@
  * Author: Robert Nagy, ronag89@gmail.com
  */
 
-#include "../StdAfx.h"
-
 #include "decklink_producer.h"
 
 #include "../util/util.h"
@@ -45,6 +43,7 @@
 #include <tbb/concurrent_queue.h>
 
 #include <boost/algorithm/string.hpp>
+#include <boost/range/algorithm.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/range/adaptor/transformed.hpp>
 
@@ -289,7 +288,7 @@ class decklink_producer : public IDeckLinkInputCallback
 
     com_ptr<IDeckLink>                 decklink_   = get_device(device_index_);
     com_iface_ptr<IDeckLinkInput>      input_      = iface_cast<IDeckLinkInput>(decklink_);
-    com_iface_ptr<IDeckLinkAttributes> attributes_ = iface_cast<IDeckLinkAttributes>(decklink_);
+    com_iface_ptr<IDeckLinkProfileAttributes> attributes_ = iface_cast<IDeckLinkProfileAttributes>(decklink_);
 
     const std::wstring model_name_ = get_model_name(decklink_);
 

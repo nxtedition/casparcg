@@ -193,16 +193,16 @@ com_ptr<IDeckLinkDisplayMode> get_display_mode(const T& device, BMDDisplayMode f
 
     com_ptr<IDeckLinkDisplayMode> mode = wrap_raw<com_ptr>(m, true);
 
-    BMDDisplayModeSupport displayModeSupport;
+    //BMDDisplayModeSupport displayModeSupport;
 
-    if (FAILED(device->DoesSupportVideoMode(mode->GetDisplayMode(), pix_fmt, flag, &displayModeSupport, nullptr)))
-        CASPAR_THROW_EXCEPTION(caspar_exception()
-                               << msg_info(L"Could not determine whether device supports requested video format: " +
-                                           get_mode_name(mode)));
-    else if (displayModeSupport == bmdDisplayModeNotSupported)
-        CASPAR_LOG(info) << L"Device may not support video-format: " << get_mode_name(mode);
-    else if (displayModeSupport == bmdDisplayModeSupportedWithConversion)
-        CASPAR_LOG(warning) << L"Device supports video-format with conversion: " << get_mode_name(mode);
+    //if (FAILED(device->DoesSupportVideoMode(mode->GetDisplayMode(), pix_fmt, flag, &displayModeSupport, nullptr)))
+    //    CASPAR_THROW_EXCEPTION(caspar_exception()
+    //                           << msg_info(L"Could not determine whether device supports requested video format: " +
+    //                                       get_mode_name(mode)));
+    //else if (displayModeSupport == bmdDisplayModeNotSupported)
+    //    CASPAR_LOG(info) << L"Device may not support video-format: " << get_mode_name(mode);
+    //else if (displayModeSupport == bmdDisplayModeSupportedWithConversion)
+    //    CASPAR_LOG(warning) << L"Device supports video-format with conversion: " << get_mode_name(mode);
 
     return mode;
 }

@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+#include <common/memory.h>
+
 namespace caspar { namespace decklink {
 
 spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer_dependencies& dependencies,

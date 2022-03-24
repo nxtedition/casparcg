@@ -19,8 +19,6 @@
  * Author: Robert Nagy, ronag89@gmail.com
  */
 
-#include "../StdAfx.h"
-
 #include "decklink_consumer.h"
 
 #include "../decklink.h"
@@ -41,6 +39,7 @@
 #include <common/memshfl.h>
 #include <common/param.h>
 #include <common/timer.h>
+#include <common/scope_exit.h>
 
 #include <tbb/scalable_allocator.h>
 
@@ -54,6 +53,10 @@
 #include <thread>
 #include <mutex>
 #include <queue>
+
+#define __inline__
+#include <libklvanc/vanc.h>
+#include <libklvanc/vanc-scte_104.h>
 
 namespace caspar { namespace decklink {
 
@@ -105,7 +108,7 @@ void set_latency(const com_iface_ptr<Configuration>& config,
     }
 }
 
-void set_keyer(const com_iface_ptr<IDeckLinkAttributes>& attributes,
+void set_keyer(const com_iface_ptr<IDeckLinkProfileAttributes>& attributes,
                const com_iface_ptr<IDeckLinkKeyer>&      decklink_keyer,
                configuration::keyer_t                    keyer,
                const std::wstring&                       print)
@@ -132,6 +135,116 @@ void set_keyer(const com_iface_ptr<IDeckLinkAttributes>& attributes,
             CASPAR_LOG(info) << print << L" Enabled external keyer.";
     }
 }
+
+class decklink_scte104 : public IDeckLinkAncillaryPacket {
+    std::atomic<int> ref_count_{ 0 };
+    std::shared_ptr<klvanc_context_s> ctx_;
+    std::shared_ptr<klvanc_packet_scte_104_s> pkt_;
+    std::shared_ptr<void> data_;
+public:
+    decklink_scte104(std::shared_ptr<klvanc_context_s> ctx)
+        : ctx_(std::move(ctx))
+    {
+        {
+            klvanc_packet_scte_104_s* pkt;
+            klvanc_alloc_SCTE_104(0xffff, &pkt); // TODO: Check for failure.
+            pkt_.reset(pkt, klvanc_free_SCTE_104);
+        }
+
+        {
+            klvanc_multiple_operation_message_operation* op;
+
+            klvanc_SCTE_104_Add_MOM_Op(pkt_.get(), MO_SPLICE_NULL_REQUEST_DATA, &op);
+            klvanc_SCTE_104_Add_MOM_Op(pkt_.get(), MO_INSERT_TIME_DESCRIPTOR, &op);
+
+            op->time_data.TAI_seconds = 1490808516; /* Wed Mar 29 13:28:36 EDT 2017 */
+            op->time_data.TAI_ns = 500000000;
+            op->time_data.UTC_offset = 500; /* Nonsensical value? */
+        }
+    }
+
+    // IUnknown
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, LPVOID*) override { return E_NOINTERFACE; }
+
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++ref_count_; }
+
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        if (--ref_count_ == 0) {
+            delete this;
+
+            return 0;
+        }
+
+        return ref_count_;
+    }
+
+    // IDeckLinkAncillaryPacket
+
+    HRESULT STDMETHODCALLTYPE GetBytes(BMDAncillaryPacketFormat format,  const void** data,  unsigned int *size)  override
+    {
+        if (format == bmdAncillaryPacketFormatUInt8) {
+            uint8_t* bytes;
+            uint16_t bytesCount;
+
+            klvanc_convert_SCTE_104_to_packetBytes(
+                ctx_.get(),
+                pkt_.get(),
+                &bytes,
+                &bytesCount
+            ); // TODO: Check for failure.
+
+            void* ptr = reinterpret_cast<void*>(bytes);
+
+            *data = data;
+            *size = bytesCount;
+
+            data_.reset(ptr, free);
+        } else if (format == bmdAncillaryPacketFormatUInt16) {
+            uint16_t* bytes;
+            uint16_t bytesCount;
+
+            klvanc_convert_SCTE_104_to_words(
+                ctx_.get(),
+                pkt_.get(),
+                &bytes,
+                &bytesCount
+            ); // TODO: Check for failure.
+
+            void* ptr = reinterpret_cast<void*>(bytes);
+
+            *data = data;
+            *size = bytesCount;
+
+            data_.reset(ptr, free);
+        } else {
+            return E_FAIL;
+        }
+
+        return S_OK;
+    }
+
+    unsigned char STDMETHODCALLTYPE GetDID(void) override
+    {
+        return 0x41;
+    }
+
+    unsigned char STDMETHODCALLTYPE GetSDID(void) override
+    {
+        return 0x07;
+    }
+
+    unsigned int STDMETHODCALLTYPE GetLineNumber(void) override
+    {
+        return 0;
+    }
+
+    unsigned char STDMETHODCALLTYPE GetDataStreamIndex(void) override
+    {
+        return 0;
+    }
+};
 
 class decklink_frame : public IDeckLinkVideoFrame
 {
@@ -195,7 +308,7 @@ struct key_video_context : public IDeckLinkVideoOutputCallback
     com_ptr<IDeckLink>                    decklink_      = get_device(config_.key_device_index());
     com_iface_ptr<IDeckLinkOutput>        output_        = iface_cast<IDeckLinkOutput>(decklink_);
     com_iface_ptr<IDeckLinkKeyer>         keyer_         = iface_cast<IDeckLinkKeyer>(decklink_, true);
-    com_iface_ptr<IDeckLinkAttributes>    attributes_    = iface_cast<IDeckLinkAttributes>(decklink_);
+    com_iface_ptr<IDeckLinkProfileAttributes>    attributes_    = iface_cast<IDeckLinkProfileAttributes>(decklink_);
     com_iface_ptr<IDeckLinkConfiguration> configuration_ = iface_cast<IDeckLinkConfiguration>(decklink_);
     std::atomic<int64_t>                  scheduled_frames_completed_;
 
@@ -259,7 +372,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     com_iface_ptr<IDeckLinkOutput>        output_        = iface_cast<IDeckLinkOutput>(decklink_);
     com_iface_ptr<IDeckLinkConfiguration> configuration_ = iface_cast<IDeckLinkConfiguration>(decklink_);
     com_iface_ptr<IDeckLinkKeyer>         keyer_         = iface_cast<IDeckLinkKeyer>(decklink_, true);
-    com_iface_ptr<IDeckLinkAttributes>    attributes_    = iface_cast<IDeckLinkAttributes>(decklink_);
+    com_iface_ptr<IDeckLinkProfileAttributes>    attributes_    = iface_cast<IDeckLinkProfileAttributes>(decklink_);
 
     std::mutex         exception_mutex_;
     std::exception_ptr exception_;
@@ -284,6 +397,8 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     reference_signal_detector           reference_signal_detector_{output_};
     std::atomic<int64_t>                scheduled_frames_completed_{0};
     std::unique_ptr<key_video_context>  key_context_;
+
+    std::shared_ptr<klvanc_context_s> vanchdl_;
 
     com_ptr<IDeckLinkDisplayMode> mode_ =
         get_display_mode(output_, format_desc_.format, bmdFormat8BitBGRA, bmdVideoOutputFlagDefault);
@@ -314,6 +429,12 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         , config_(config)
         , format_desc_(format_desc)
     {
+        {
+            klvanc_context_s* vanchdl;
+            klvanc_context_create(&vanchdl); // TODO: Check for failure.
+            vanchdl_.reset(vanchdl, klvanc_context_destroy);
+        }
+
         if (config.keyer == configuration::keyer_t::external_separate_device_keyer) {
             key_context_.reset(new key_video_context(config, print()));
         }
@@ -394,7 +515,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
 
     void enable_video(BMDDisplayMode display_mode)
     {
-        if (FAILED(output_->EnableVideoOutput(display_mode, bmdVideoOutputFlagDefault))) {
+        if (FAILED(output_->EnableVideoOutput(display_mode, static_cast<BMDVideoOutputFlags>(bmdVideoOutputFlagDefault | bmdVideoOutputVANC)))) {
             CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info(print() + L" Could not enable fill video output."));
         }
 
@@ -583,8 +704,13 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
             }
         }
 
-        auto fill_frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(new decklink_frame(fill, format_desc_, nb_samples));
-        if (FAILED(output_->ScheduleVideoFrame(get_raw(fill_frame),
+        auto frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(new decklink_frame(fill, format_desc_, nb_samples));
+
+        auto ancillary_packets = iface_cast<IDeckLinkVideoFrameAncillaryPackets>(frame);
+
+        ancillary_packets->AttachPacket(wrap_raw<com_ptr, IDeckLinkAncillaryPacket>(new decklink_scte104(vanchdl_)));
+
+        if (FAILED(output_->ScheduleVideoFrame(get_raw(frame),
                                                video_scheduled_,
                                                format_desc_.duration * field_count_,
                                                format_desc_.time_scale))) {

@@ -197,8 +197,12 @@ public:
 
             void* ptr = reinterpret_cast<void*>(bytes);
 
-            *data = data;
-            *size = bytesCount;
+            if (data) {
+                *data = ptr;
+            }
+            if (size) {
+                *size = bytesCount;
+            }
 
             data_.reset(ptr, free);
         } else if (format == bmdAncillaryPacketFormatUInt16) {
@@ -214,12 +218,16 @@ public:
 
             void* ptr = reinterpret_cast<void*>(bytes);
 
-            *data = data;
-            *size = bytesCount;
+            if (data) {
+                *data = ptr;
+            }
+            if (size) {
+                *size = bytesCount;
+            }
 
             data_.reset(ptr, free);
         } else {
-            return E_FAIL;
+            return E_NOTIMPL;
         }
 
         return S_OK;
@@ -578,8 +586,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
             tick_timer_.restart();
 
             reference_signal_detector_.detect_change([this]() { return print(); });
-
-            auto dframe = reinterpret_cast<decklink_frame*>(completed_frame);
+            
             ++scheduled_frames_completed_;
 
             if (key_context_) {
@@ -592,7 +599,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
             if (result == bmdOutputFrameDisplayedLate) {
                 graph_->set_tag(diagnostics::tag_severity::WARNING, "late-frame");
                 video_scheduled_ += format_desc_.duration * field_count_;
-                audio_scheduled_ += dframe->nb_samples();
+                //audio_scheduled_ += dframe->nb_samples(); // TODO
             } else if (result == bmdOutputFrameDropped) {
                 graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
             } else if (result == bmdOutputFrameFlushed) {
@@ -704,19 +711,34 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
             }
         }
 
-        auto frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(new decklink_frame(fill, format_desc_, nb_samples));
+        com_ptr<IDeckLinkMutableVideoFrame> frame;
+        if (FAILED(output_->CreateVideoFrame(
+            format_desc_.width,
+            format_desc_.height,
+            format_desc_.width * 4,
+            bmdFormat8BitBGRA,
+            bmdFrameFlagDefault,
+            &frame
+        ))) {
+            CASPAR_LOG(error) << print() << L" Failed to allocate fill video.";
+            return;
+        };
+
+        void* bytes;
+        frame->GetBytes(&bytes);
+        memcpy(bytes, fill.get(), format_desc_.height * format_desc_.width * 4);
 
         auto ancillary_packets = iface_cast<IDeckLinkVideoFrameAncillaryPackets>(frame);
 
         ancillary_packets->AttachPacket(wrap_raw<com_ptr, IDeckLinkAncillaryPacket>(new decklink_scte104(vanchdl_)));
 
-        if (FAILED(output_->ScheduleVideoFrame(get_raw(frame),
+        if (FAILED(output_->ScheduleVideoFrame(frame,
                                                video_scheduled_,
                                                format_desc_.duration * field_count_,
                                                format_desc_.time_scale))) {
             CASPAR_LOG(error) << print() << L" Failed to schedule fill video.";
         }
-
+        
         video_scheduled_ += format_desc_.duration * field_count_;
     }
 

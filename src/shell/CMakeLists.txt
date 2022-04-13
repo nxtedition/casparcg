@@ -87,7 +87,6 @@ else ()
 		${TBB_MALLOC_PROXY_LIBRARIES}
 		${SFML_LIBRARIES}
 		${GLEW_LIBRARIES}
-		${OPENGL_gl_LIBRARY}
 		${X11_LIBRARIES}
 		${FFMPEG_LIBRARIES}
 		dl
@@ -95,6 +94,7 @@ else ()
 		icuuc
 		z
 		pthread
+		OpenGL::OpenGL OpenGL::EGL
 	)
 
     set_target_properties(casparcg PROPERTIES INSTALL_RPATH "$ORIGIN/../lib" BUILD_WITH_INSTALL_RPATH ON)

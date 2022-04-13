@@ -95,6 +95,7 @@ else ()
 		icuuc
 		z
 		pthread
+        OpenGL::OpenGL OpenGL::EGL
 	)
 
     set_target_properties(casparcg PROPERTIES INSTALL_RPATH "$ORIGIN/../lib" BUILD_WITH_INSTALL_RPATH ON)

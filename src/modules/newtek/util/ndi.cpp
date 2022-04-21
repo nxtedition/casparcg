@@ -44,9 +44,9 @@ const std::wstring& dll_name()
 static std::mutex                              find_instance_mutex;
 static std::shared_ptr<NDIlib_find_instance_t> find_instance;
 
-NDIlib_v3* load_library()
+NDIlib_v5* load_library()
 {
-    static NDIlib_v3* ndi_lib = nullptr;
+    static NDIlib_v5* ndi_lib = nullptr;
 
     if (ndi_lib)
         return ndi_lib;
@@ -54,6 +54,26 @@ NDIlib_v3* load_library()
     auto        dll_path    = boost::filesystem::path(env::initial_folder()) / NDILIB_LIBRARY_NAME;
     const char* runtime_dir = getenv(NDILIB_REDIST_FOLDER);
 
+#ifdef _WIN32
+    auto module = LoadLibrary(dll_path.c_str());
+
+    if (!module && runtime_dir) {
+        dll_path = boost::filesystem::path(runtime_dir) / NDILIB_LIBRARY_NAME;
+        module   = LoadLibrary(dll_path.c_str());
+    }
+
+    FARPROC NDIlib_v5_load = NULL;
+    if (module) {
+        CASPAR_LOG(info) << L"Loaded " << dll_path;
+        static std::shared_ptr<void> lib(module, FreeLibrary);
+        NDIlib_v5_load = GetProcAddress(module, "NDIlib_v5_load");
+    }
+
+    if (!NDIlib_v5_load) {
+        not_installed();
+    }
+
+#else
     // Try to load the library
     void* hNDILib = dlopen(NDILIB_LIBRARY_NAME, RTLD_LOCAL | RTLD_LAZY);
 
@@ -63,18 +83,20 @@ NDIlib_v3* load_library()
     }
 
     // The main NDI entry point for dynamic loading if we got the library
-    const NDIlib_v3* (*NDIlib_v3_load)(void) = NULL;
+    const NDIlib_v5* (*NDIlib_v5_load)(void) = NULL;
     if (hNDILib) {
         CASPAR_LOG(info) << L"Loaded " << dll_path;
         static std::shared_ptr<void> lib(hNDILib, dlclose);
-        *((void**)&NDIlib_v3_load) = dlsym(hNDILib, "NDIlib_v3_load");
+        *((void**)&NDIlib_v5_load) = dlsym(hNDILib, "NDIlib_v5_load");
     }
 
-    if (!NDIlib_v3_load) {
+    if (!NDIlib_v5_load) {
         not_installed();
     }
 
-    ndi_lib = (NDIlib_v3*)(NDIlib_v3_load());
+#endif
+
+    ndi_lib = (NDIlib_v5*)(NDIlib_v5_load());
 
     if (!ndi_lib->NDIlib_initialize()) {
         not_initialized();

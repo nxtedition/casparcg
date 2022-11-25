@@ -42,7 +42,7 @@
 #include <common/param.h>
 #include <common/timer.h>
 
-#include <tbb/scalable_allocator.h>
+#include <cstdlib>
 
 #include <boost/circular_buffer.hpp>
 #include <boost/lexical_cast.hpp>
@@ -355,7 +355,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
                 schedule_next_audio(std::vector<int32_t>(nb_samples * format_desc_.audio_channels), nb_samples);
             }
 
-            std::shared_ptr<void> image_data(scalable_aligned_malloc(format_desc_.size, 64), scalable_aligned_free);
+            std::shared_ptr<void> image_data(aligned_alloc(64, format_desc_.size), free);
             schedule_next_video(image_data, nb_samples);
         }
 
@@ -491,7 +491,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
                 }
             }
 
-            std::shared_ptr<void>     image_data(scalable_aligned_malloc(format_desc_.size, 64), scalable_aligned_free);
+            std::shared_ptr<void>     image_data(aligned_alloc(64, format_desc_.size), free);
             std::vector<std::int32_t> audio_data;
 
             if (mode_->GetFieldDominance() != bmdProgressiveFrame) {

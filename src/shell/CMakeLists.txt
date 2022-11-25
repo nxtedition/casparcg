@@ -52,9 +52,7 @@ if (MSVC)
 		Winmm.lib
 		Ws2_32.lib
 		optimized tbb.lib
-		optimized tbbmalloc.lib
 		debug tbb_debug.lib
-		debug tbbmalloc_debug.lib
 		OpenGL32.lib
 		glew32.lib
 		openal32.lib
@@ -83,8 +81,6 @@ else ()
 	target_link_libraries(casparcg
 		${Boost_LIBRARIES}
 		${TBB_LIBRARIES}
-		${TBB_MALLOC_LIBRARIES}
-		${TBB_MALLOC_PROXY_LIBRARIES}
 		${SFML_LIBRARIES}
 		${GLEW_LIBRARIES}
 		${OPENGL_gl_LIBRARY}

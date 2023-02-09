@@ -378,6 +378,24 @@ std::wstring swap_command(command_context& ctx)
     return L"202 SWAP OK\r\n";
 }
 
+
+std::wstring apply_command(command_context& ctx)
+{
+    core::diagnostics::scoped_call_context save;
+    core::diagnostics::call_context::for_thread().video_channel = ctx.channel_index + 1;
+
+    auto consumer = ctx.consumer_registry->create_consumer(ctx.parameters, get_channels(ctx));
+    auto result = ctx.channel.channel->output().call(ctx.layer_index(consumer->index()), ctx.parameters).get();
+    
+    std::wstringstream replyString;
+    if (result.empty())
+        replyString << L"202 APPLY OK\r\n";
+    else
+        replyString << L"201 APPLY OK\r\n" << result << L"\r\n";
+
+    return replyString.str();
+}
+
 std::wstring add_command(command_context& ctx)
 {
     replace_placeholders(L"<CLIENT_IP_ADDRESS>", ctx.client->address(), ctx.parameters);

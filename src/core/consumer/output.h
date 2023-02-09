@@ -27,6 +27,7 @@
 #include <common/forward.h>
 #include <common/memory.h>
 
+#include <future>
 #include <memory>
 
 FORWARD2(caspar, diagnostics, class graph);
@@ -44,6 +45,7 @@ class output final
 
     void operator()(const_frame frame, const video_format_desc& format_desc);
 
+    std::future<std::wstring> call(int index, const std::vector<std::wstring>& params);
     void add(const spl::shared_ptr<frame_consumer>& consumer);
     void add(int index, const spl::shared_ptr<frame_consumer>& consumer);
     bool remove(const spl::shared_ptr<frame_consumer>& consumer);

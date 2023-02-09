@@ -742,6 +742,11 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         video_scheduled_ += format_desc_.duration * field_count_;
     }
 
+    std::wstring call(const std::vector<std::wstring>& params)
+    {
+        return L"";
+    }
+
     bool send(core::const_frame frame)
     {
         {
@@ -812,6 +817,11 @@ struct decklink_consumer_proxy : public core::frame_consumer
     std::future<bool> send(core::const_frame frame) override
     {
         return executor_.begin_invoke([=] { return consumer_->send(frame); });
+    }
+
+    std::future<std::wstring> call(const std::vector<std::wstring>& params)
+    {
+        return executor_.begin_invoke([=] { return consumer_->call(params); });
     }
 
     std::wstring print() const override { return consumer_ ? consumer_->print() : L"[decklink_consumer]"; }

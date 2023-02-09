@@ -60,6 +60,14 @@ struct output::impl
     {
     }
 
+    std::future<std::wstring> call(int index, const std::vector<std::wstring>& params)
+    {
+        std::lock_guard<std::mutex> lock(consumers_mutex_);
+        auto it = consumers_.find(index);
+        auto consumer = it != consumers_.end() ? it->second : core::frame_consumer::empty();
+        return consumer->call(params);
+    }
+
     void add(int index, spl::shared_ptr<frame_consumer> consumer)
     {
         remove(index);
@@ -177,6 +185,7 @@ output::output(spl::shared_ptr<diagnostics::graph> graph, const video_format_des
 {
 }
 output::~output() {}
+std::future<std::wstring> output::call(int index, const std::vector<std::wstring>& params) { return impl_->call(index, params); }
 void output::add(int index, const spl::shared_ptr<frame_consumer>& consumer) { impl_->add(index, consumer); }
 void output::add(const spl::shared_ptr<frame_consumer>& consumer) { impl_->add(consumer); }
 bool output::remove(int index) { return impl_->remove(index); }

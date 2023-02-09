@@ -25,6 +25,7 @@
 #include "../monitor/monitor.h"
 
 #include <common/memory.h>
+#include <common/except.h>
 
 #include <boost/property_tree/ptree_fwd.hpp>
 
@@ -53,6 +54,11 @@ class frame_consumer
     {
         static const monitor::state empty;
         return empty;
+    }
+
+    virtual std::future<std::wstring> call(const std::vector<std::wstring>& params)
+    {
+        CASPAR_THROW_EXCEPTION(not_implemented());
     }
 
     virtual std::wstring print() const = 0;

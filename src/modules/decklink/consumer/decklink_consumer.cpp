@@ -46,6 +46,7 @@
 #include <boost/circular_buffer.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -142,25 +143,10 @@ class decklink_scte104 : public IDeckLinkAncillaryPacket {
     std::shared_ptr<klvanc_packet_scte_104_s> pkt_;
     std::shared_ptr<void> data_;
 public:
-    decklink_scte104(std::shared_ptr<klvanc_context_s> ctx)
+    decklink_scte104(std::shared_ptr<klvanc_context_s> ctx, std::shared_ptr<klvanc_packet_scte_104_s> pkt)
         : ctx_(std::move(ctx))
+        , pkt_(std::move(pkt))
     {
-        {
-            klvanc_packet_scte_104_s* pkt;
-            klvanc_alloc_SCTE_104(0xffff, &pkt); // TODO: Check for failure.
-            pkt_.reset(pkt, klvanc_free_SCTE_104);
-        }
-
-        {
-            klvanc_multiple_operation_message_operation* op;
-
-            klvanc_SCTE_104_Add_MOM_Op(pkt_.get(), MO_SPLICE_NULL_REQUEST_DATA, &op);
-            klvanc_SCTE_104_Add_MOM_Op(pkt_.get(), MO_INSERT_TIME_DESCRIPTOR, &op);
-
-            op->time_data.TAI_seconds = 1490808516; /* Wed Mar 29 13:28:36 EDT 2017 */
-            op->time_data.TAI_ns = 500000000;
-            op->time_data.UTC_offset = 500; /* Nonsensical value? */
-        }
     }
 
     // IUnknown
@@ -407,6 +393,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     std::unique_ptr<key_video_context>  key_context_;
 
     std::shared_ptr<klvanc_context_s> vanchdl_;
+    std::shared_ptr<klvanc_packet_scte_104_s> scte_104_pkt_;
 
     com_ptr<IDeckLinkDisplayMode> mode_ =
         get_display_mode(output_, format_desc_.format, bmdFormat8BitBGRA, bmdVideoOutputFlagDefault);
@@ -728,9 +715,12 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         frame->GetBytes(&bytes);
         memcpy(bytes, fill.get(), format_desc_.height * format_desc_.width * 4);
 
-        auto ancillary_packets = iface_cast<IDeckLinkVideoFrameAncillaryPackets>(frame);
+        if (scte_104_pkt_) {
+            auto ancillary_packets = iface_cast<IDeckLinkVideoFrameAncillaryPackets>(frame);
 
-        ancillary_packets->AttachPacket(wrap_raw<com_ptr, IDeckLinkAncillaryPacket>(new decklink_scte104(vanchdl_)));
+            ancillary_packets->AttachPacket(wrap_raw<com_ptr, IDeckLinkAncillaryPacket>(new decklink_scte104(vanchdl_, std::move(scte_104_pkt_))));
+            scte_104_pkt_ = nullptr;
+        }
 
         if (FAILED(output_->ScheduleVideoFrame(frame,
                                                video_scheduled_,
@@ -744,6 +734,43 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
 
     std::wstring call(const std::vector<std::wstring>& params)
     {
+        if (scte_104_pkt_) {
+            klvanc_packet_scte_104_s* pkt;
+            klvanc_alloc_SCTE_104(0xffff, &pkt); // TODO: Check for failure.
+            scte_104_pkt_.reset(pkt, klvanc_free_SCTE_104);
+        }
+
+        auto idx = 0;
+
+        if (boost::iequals(params.at(idx++), L"SCTE104")) {
+            if (boost::iequals(params.at(idx++), L"SPLICE_REQUEST_DATA")) {
+                klvanc_multiple_operation_message_operation* op = nullptr;
+
+                klvanc_SCTE_104_Add_MOM_Op(scte_104_pkt_.get(), MO_SPLICE_REQUEST_DATA, &op);  // TODO: Check for failure.
+
+                while (idx < params.size()) {
+                    auto key = params.at(idx++);
+                    auto val = params.at(idx++);
+
+                    if (boost::iequals(key, L"SPLICE_INSERT_TYPE")) {
+                        op->sr_data.splice_insert_type = boost::lexical_cast<unsigned int>(val);
+                    } else if (boost::iequals(key, L"SPLICE_EVENT_ID")) {
+                        op->sr_data.splice_event_id = boost::lexical_cast<unsigned int>(val);
+                    } else if (boost::iequals(key, L"PRE_ROLL_TIME")) {
+                        op->sr_data.pre_roll_time = boost::lexical_cast<unsigned short>(val);
+                    } else if (boost::iequals(key, L"BREAK_DURATION")) {
+                        op->sr_data.brk_duration = boost::lexical_cast<unsigned short>(val);
+                    } else if (boost::iequals(key, L"AVAIL_NUM")) {
+                        op->sr_data.avail_num = static_cast<unsigned char>(boost::lexical_cast<unsigned short>(val));
+                    } else if (boost::iequals(key, L"AVAIL_NUM")) {
+                        op->sr_data.avails_expected = static_cast<unsigned char>(boost::lexical_cast<unsigned short>(val));
+                    } else if (boost::iequals(key, L"AUTO_RETURN_FLAG")) {
+                        op->sr_data.auto_return_flag = static_cast<unsigned char>(boost::lexical_cast<unsigned short>(val));
+                    }
+                }
+            }
+        }
+
         return L"";
     }
 
@@ -819,7 +846,7 @@ struct decklink_consumer_proxy : public core::frame_consumer
         return executor_.begin_invoke([=] { return consumer_->send(frame); });
     }
 
-    std::future<std::wstring> call(const std::vector<std::wstring>& params)
+    std::future<std::wstring> call(const std::vector<std::wstring>& params) override
     {
         return executor_.begin_invoke([=] { return consumer_->call(params); });
     }

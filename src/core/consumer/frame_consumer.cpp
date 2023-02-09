@@ -113,6 +113,10 @@ class destroy_consumer_proxy : public frame_consumer
     }
 
     std::future<bool> send(const_frame frame) override { return consumer_->send(std::move(frame)); }
+    std::future<std::wstring> call(const std::vector<std::wstring>& params) override
+    {
+        return consumer_->call(params);
+    }
     void              initialize(const video_format_desc& format_desc, int channel_index) override
     {
         return consumer_->initialize(format_desc, channel_index);
@@ -143,6 +147,10 @@ class print_consumer_proxy : public frame_consumer
     }
 
     std::future<bool> send(const_frame frame) override { return consumer_->send(std::move(frame)); }
+    std::future<std::wstring> call(const std::vector<std::wstring>& params) override
+    {
+        return consumer_->call(params);
+    }
     void              initialize(const video_format_desc& format_desc, int channel_index) override
     {
         consumer_->initialize(format_desc, channel_index);

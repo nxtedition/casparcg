@@ -381,11 +381,17 @@ std::wstring swap_command(command_context& ctx)
 
 std::wstring apply_command(command_context& ctx)
 {
-    core::diagnostics::scoped_call_context save;
-    core::diagnostics::call_context::for_thread().video_channel = ctx.channel_index + 1;
+    auto index = ctx.layer_index(std::numeric_limits<int>::min());
 
-    auto consumer = ctx.consumer_registry->create_consumer(ctx.parameters, get_channels(ctx));
-    auto result = ctx.channel.channel->output().call(ctx.layer_index(consumer->index()), ctx.parameters).get();
+    if (index == std::numeric_limits<int>::min()) {
+        return L"402 APPLY FAILED\r\n";
+    }
+
+    if (ctx.parameters.size() == 0) {
+        return L"402 APPLY FAILED\r\n";
+    }
+
+    auto result = ctx.channel.channel->output().call(index, ctx.parameters).get();
     
     std::wstringstream replyString;
     if (result.empty())
@@ -1552,6 +1558,7 @@ void register_commands(amcp_command_repository& repo)
     repo.register_channel_command(L"Basic Commands", L"CALL", call_command, 1);
     repo.register_channel_command(L"Basic Commands", L"SWAP", swap_command, 1);
     repo.register_channel_command(L"Basic Commands", L"ADD", add_command, 1);
+    repo.register_channel_command(L"Basic Commands", L"APPLY", apply_command, 1);
     repo.register_channel_command(L"Basic Commands", L"REMOVE", remove_command, 0);
     repo.register_channel_command(L"Basic Commands", L"PRINT", print_command, 0);
     repo.register_command(L"Basic Commands", L"LOG LEVEL", log_level_command, 0);

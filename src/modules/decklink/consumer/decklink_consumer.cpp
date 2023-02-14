@@ -764,7 +764,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
                         op->sr_data.brk_duration = boost::lexical_cast<unsigned short>(val);
                     } else if (boost::iequals(key, L"AVAIL_NUM")) {
                         op->sr_data.avail_num = static_cast<unsigned char>(boost::lexical_cast<unsigned short>(val));
-                    } else if (boost::iequals(key, L"AVAIL_NUM")) {
+                    } else if (boost::iequals(key, L"AVAILS_EXPECTED")) {
                         op->sr_data.avails_expected = static_cast<unsigned char>(boost::lexical_cast<unsigned short>(val));
                     } else if (boost::iequals(key, L"AUTO_RETURN_FLAG")) {
                         op->sr_data.auto_return_flag = static_cast<unsigned char>(boost::lexical_cast<unsigned short>(val));

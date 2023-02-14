@@ -58,6 +58,7 @@
 #define __inline__
 #include <libklvanc/vanc.h>
 #include <libklvanc/vanc-scte_104.h>
+#include <libklvanc/vanc-lines.h>
 
 namespace caspar { namespace decklink {
 
@@ -544,61 +545,114 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
 
     void schedule_next_video(std::shared_ptr<void> fill, int nb_samples)
     {
-        std::shared_ptr<void> key;
+        com_ptr<IDeckLinkMutableVideoFrame> frame;
+        {
+            if (FAILED(output_->CreateVideoFrame(
+                format_desc_.width,
+                format_desc_.height,
+                format_desc_.width * 4,
+                bmdFormat8BitBGRA,
+                bmdFrameFlagDefault,
+                &frame
+                ))) {
+                CASPAR_LOG(error) << print() << L" Failed to allocate fill video.";
+                return;
+            };
+
+            void* bytes;
+            frame->GetBytes(&bytes);
+            memcpy(bytes, fill.get(), format_desc_.height * format_desc_.width * 4);
+        }
+
+        com_ptr<IDeckLinkVideoFrameAncillary> vanc;
+        {
+            output_->CreateAncillaryData(bmdFormat10BitYUV, &vanc);
+            
+            klvanc_line_set_s vanc_lines = { 0 };
+            CASPAR_SCOPE_EXIT{
+                for (int i = 0; i < vanc_lines.num_lines; ++i) {
+                    klvanc_line_free(vanc_lines.lines[i]);
+                }
+            };
+
+            std::lock_guard<std::mutex> lock(scte_104_pkt_mutex_);
+
+            if (!scte_104_pkt_) {
+                klvanc_packet_scte_104_s* pkt;
+                klvanc_alloc_SCTE_104(0xffff, &pkt); // TODO: Check for failure.
+                scte_104_pkt_.reset(pkt, klvanc_free_SCTE_104);
+
+                klvanc_multiple_operation_message_operation* op = nullptr;
+
+                klvanc_SCTE_104_Add_MOM_Op(scte_104_pkt_.get(), MO_SPLICE_NULL_REQUEST_DATA, &op);
+
+                klvanc_SCTE_104_Add_MOM_Op(scte_104_pkt_.get(), MO_INSERT_TIME_DESCRIPTOR, &op);
+                op->time_data.TAI_seconds = 1490808516; /* Wed Mar 29 13:28:36 EDT 2017 */
+                op->time_data.TAI_ns = 500000000;
+                op->time_data.UTC_offset = 500; /* Nonsensical value? */
+            } else {
+                CASPAR_LOG(debug) << print() << L" Inserting SCTE104";
+            }
+
+            if (scte_104_pkt_) {
+                {
+                    uint16_t* words;
+                    uint16_t wordCount;
+
+                    CASPAR_SCOPE_EXIT{
+                        free(words);
+                    };
+
+                    klvanc_convert_SCTE_104_to_words(vanchdl_.get(), scte_104_pkt_.get(), &words, &wordCount);
+
+                    klvanc_line_insert(vanchdl_.get(), &vanc_lines, words, wordCount, 20, 0);
+                }
+
+                for (int i = 0; i < vanc_lines.num_lines; ++i) {
+                    auto line = vanc_lines.lines[i];
+                    if (!line) {
+                        break;
+                    }
+                    
+                    void* buf;
+                    vanc->GetBufferForVerticalBlankingLine(line->line_number, &buf);
+
+                    klvanc_generate_vanc_line_v210(vanchdl_.get(), line, reinterpret_cast<uint8_t*>(buf), format_desc_.width);
+                }
+
+                scte_104_pkt_ = nullptr;
+            }
+        }
 
         com_ptr<IDeckLinkMutableVideoFrame> frame10;
-        if (FAILED(output_->CreateVideoFrame(
-            format_desc_.width,
-            format_desc_.height,
-            format_desc_.width * 4,
-            bmdFormat10BitYUV,
-            bmdFrameFlagDefault,
-            &frame
-        ))) {
-            CASPAR_LOG(error) << print() << L" Failed to allocate fill video.";
-            return;
-        };
+        {
+            if (FAILED(output_->CreateVideoFrame(
+                format_desc_.width,
+                format_desc_.height,
+                (format_desc_.width + 47) / 48 * 128,
+                bmdFormat10BitYUV,
+                bmdFrameFlagDefault,
+                &frame10
+                ))) {
+                CASPAR_LOG(error) << print() << L" Failed to allocate fill video.";
+                return;
+            };
 
-        void* bytes;
-        frame->GetBytes(&bytes);
-        memcpy(bytes, fill.get(), format_desc_.height * format_desc_.width * 4);
-
-        std::lock_guard<std::mutex> lock(scte_104_pkt_mutex_);
-
-        if (!scte_104_pkt_) {
-            klvanc_packet_scte_104_s* pkt;
-            klvanc_alloc_SCTE_104(0xffff, &pkt); // TODO: Check for failure.
-            scte_104_pkt_.reset(pkt, klvanc_free_SCTE_104);
-
-            klvanc_multiple_operation_message_operation* op = nullptr;
-
-            klvanc_SCTE_104_Add_MOM_Op(scte_104_pkt_.get(), MO_SPLICE_NULL_REQUEST_DATA, &op);
-
-            klvanc_SCTE_104_Add_MOM_Op(scte_104_pkt_.get(), MO_INSERT_TIME_DESCRIPTOR, &op);
-            op->time_data.TAI_seconds = 1490808516; /* Wed Mar 29 13:28:36 EDT 2017 */
-            op->time_data.TAI_ns = 500000000;
-            op->time_data.UTC_offset = 500; /* Nonsensical value? */
-        } else {
-            CASPAR_LOG(debug) << print() << L" Inserting SCTE104";
+            conversion_->ConvertFrame(frame, frame10);
         }
 
-        if (scte_104_pkt_) {
-            auto ancillary_packets = iface_cast<IDeckLinkVideoFrameAncillaryPackets>(frame10);
-
-            ancillary_packets->AttachPacket(wrap_raw<com_ptr, IDeckLinkAncillaryPacket>(new decklink_scte104(vanchdl_, std::move(scte_104_pkt_))));
-            scte_104_pkt_ = nullptr;
-        }
+        frame10->SetAncillaryData(vanc);
 
         if (FAILED(output_->ScheduleVideoFrame(frame10,
-                                               video_scheduled_,
-                                               format_desc_.duration * field_count_,
-                                               format_desc_.time_scale))) {
+            video_scheduled_,
+            format_desc_.duration * field_count_,
+            format_desc_.time_scale))) {
             CASPAR_LOG(error) << print() << L" Failed to schedule fill video.";
         }
-        
+
         video_scheduled_ += format_desc_.duration * field_count_;
     }
-
+    
     std::wstring call(const std::vector<std::wstring>& params)
     {
         auto idx = 0;

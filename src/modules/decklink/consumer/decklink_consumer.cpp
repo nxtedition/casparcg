@@ -720,6 +720,8 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
 
             ancillary_packets->AttachPacket(wrap_raw<com_ptr, IDeckLinkAncillaryPacket>(new decklink_scte104(vanchdl_, std::move(scte_104_pkt_))));
             scte_104_pkt_ = nullptr;
+
+            CASPAR_LOG(debug) << print() << "Inserting SCTE104";
         }
 
         if (FAILED(output_->ScheduleVideoFrame(frame,

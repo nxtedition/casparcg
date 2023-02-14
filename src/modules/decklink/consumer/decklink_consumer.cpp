@@ -393,6 +393,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     std::unique_ptr<key_video_context>  key_context_;
 
     std::shared_ptr<klvanc_context_s> vanchdl_;
+    std::mutex                                scte_104_pkt_mutex_;
     std::shared_ptr<klvanc_packet_scte_104_s> scte_104_pkt_;
 
     com_ptr<IDeckLinkDisplayMode> mode_ =
@@ -715,13 +716,30 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         frame->GetBytes(&bytes);
         memcpy(bytes, fill.get(), format_desc_.height * format_desc_.width * 4);
 
+        std::lock_guard<std::mutex> lock(scte_104_pkt_mutex_);
+
+        if (!scte_104_pkt_) {
+            klvanc_packet_scte_104_s* pkt;
+            klvanc_alloc_SCTE_104(0xffff, &pkt); // TODO: Check for failure.
+            scte_104_pkt_.reset(pkt, klvanc_free_SCTE_104);
+
+            klvanc_multiple_operation_message_operation* op = nullptr;
+
+            klvanc_SCTE_104_Add_MOM_Op(scte_104_pkt_.get(), MO_SPLICE_NULL_REQUEST_DATA, &op);
+
+            klvanc_SCTE_104_Add_MOM_Op(scte_104_pkt_.get(), MO_INSERT_TIME_DESCRIPTOR, &op);
+            op->time_data.TAI_seconds = 1490808516; /* Wed Mar 29 13:28:36 EDT 2017 */
+            op->time_data.TAI_ns = 500000000;
+            op->time_data.UTC_offset = 500; /* Nonsensical value? */
+        } else {
+            CASPAR_LOG(debug) << print() << L" Inserting SCTE104";
+        }
+
         if (scte_104_pkt_) {
             auto ancillary_packets = iface_cast<IDeckLinkVideoFrameAncillaryPackets>(frame);
 
             ancillary_packets->AttachPacket(wrap_raw<com_ptr, IDeckLinkAncillaryPacket>(new decklink_scte104(vanchdl_, std::move(scte_104_pkt_))));
             scte_104_pkt_ = nullptr;
-
-            CASPAR_LOG(debug) << print() << "Inserting SCTE104";
         }
 
         if (FAILED(output_->ScheduleVideoFrame(frame,
@@ -736,15 +754,17 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
 
     std::wstring call(const std::vector<std::wstring>& params)
     {
-        if (!scte_104_pkt_) {
-            klvanc_packet_scte_104_s* pkt;
-            klvanc_alloc_SCTE_104(0xffff, &pkt); // TODO: Check for failure.
-            scte_104_pkt_.reset(pkt, klvanc_free_SCTE_104);
-        }
-
         auto idx = 0;
 
         if (boost::iequals(params.at(idx++), L"SCTE104")) {
+            std::lock_guard<std::mutex> lock(scte_104_pkt_mutex_);
+
+            if (!scte_104_pkt_) {
+                klvanc_packet_scte_104_s* pkt;
+                klvanc_alloc_SCTE_104(0xffff, &pkt); // TODO: Check for failure.
+                scte_104_pkt_.reset(pkt, klvanc_free_SCTE_104);
+            }
+
             if (boost::iequals(params.at(idx++), L"SPLICE_REQUEST_DATA")) {
                 klvanc_multiple_operation_message_operation* op = nullptr;
 

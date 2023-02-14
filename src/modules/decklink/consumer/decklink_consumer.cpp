@@ -736,7 +736,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
 
     std::wstring call(const std::vector<std::wstring>& params)
     {
-        if (scte_104_pkt_) {
+        if (!scte_104_pkt_) {
             klvanc_packet_scte_104_s* pkt;
             klvanc_alloc_SCTE_104(0xffff, &pkt); // TODO: Check for failure.
             scte_104_pkt_.reset(pkt, klvanc_free_SCTE_104);

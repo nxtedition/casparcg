@@ -240,123 +240,6 @@ public:
     }
 };
 
-class decklink_frame : public IDeckLinkVideoFrame
-{
-    core::video_format_desc format_desc_;
-    std::shared_ptr<void>   data_;
-    std::atomic<int>        ref_count_{0};
-    int                     nb_samples_;
-
-  public:
-    decklink_frame(std::shared_ptr<void> data, const core::video_format_desc& format_desc, int nb_samples)
-        : format_desc_(format_desc)
-        , data_(data)
-        , nb_samples_(nb_samples)
-    {
-    }
-
-    // IUnknown
-
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, LPVOID*) override { return E_NOINTERFACE; }
-
-    ULONG STDMETHODCALLTYPE AddRef() override { return ++ref_count_; }
-
-    ULONG STDMETHODCALLTYPE Release() override
-    {
-        if (--ref_count_ == 0) {
-            delete this;
-
-            return 0;
-        }
-
-        return ref_count_;
-    }
-
-    // IDecklinkVideoFrame
-
-    long STDMETHODCALLTYPE GetWidth() override { return static_cast<long>(format_desc_.width); }
-    long STDMETHODCALLTYPE GetHeight() override { return static_cast<long>(format_desc_.height); }
-    long STDMETHODCALLTYPE GetRowBytes() override { return static_cast<long>(format_desc_.width * 4); }
-    BMDPixelFormat STDMETHODCALLTYPE GetPixelFormat() override { return bmdFormat8BitBGRA; }
-    BMDFrameFlags STDMETHODCALLTYPE GetFlags() override { return bmdFrameFlagDefault; }
-
-    HRESULT STDMETHODCALLTYPE GetBytes(void** buffer) override
-    {
-        *buffer = data_.get();
-        return S_OK;
-    }
-
-    HRESULT STDMETHODCALLTYPE GetTimecode(BMDTimecodeFormat format, IDeckLinkTimecode** timecode) override
-    {
-        return S_FALSE;
-    }
-
-    HRESULT STDMETHODCALLTYPE GetAncillaryData(IDeckLinkVideoFrameAncillary** ancillary) override { return S_FALSE; }
-
-    int nb_samples() const { return nb_samples_; }
-};
-
-struct key_video_context : public IDeckLinkVideoOutputCallback
-{
-    const configuration                   config_;
-    com_ptr<IDeckLink>                    decklink_      = get_device(config_.key_device_index());
-    com_iface_ptr<IDeckLinkOutput>        output_        = iface_cast<IDeckLinkOutput>(decklink_);
-    com_iface_ptr<IDeckLinkKeyer>         keyer_         = iface_cast<IDeckLinkKeyer>(decklink_, true);
-    com_iface_ptr<IDeckLinkProfileAttributes>    attributes_    = iface_cast<IDeckLinkProfileAttributes>(decklink_);
-    com_iface_ptr<IDeckLinkConfiguration> configuration_ = iface_cast<IDeckLinkConfiguration>(decklink_);
-    std::atomic<int64_t>                  scheduled_frames_completed_;
-
-    key_video_context(const configuration& config, const std::wstring& print)
-        : config_(config)
-    {
-        scheduled_frames_completed_ = 0;
-
-        set_latency(configuration_, config.latency, print);
-        set_keyer(attributes_, keyer_, config.keyer, print);
-
-        if (FAILED(output_->SetScheduledFrameCompletionCallback(this)))
-            CASPAR_THROW_EXCEPTION(caspar_exception()
-                                   << msg_info(print + L" Failed to set key playback completion callback.")
-                                   << boost::errinfo_api_function("SetScheduledFrameCompletionCallback"));
-    }
-
-    template <typename Print>
-    void enable_video(BMDDisplayMode display_mode, const Print& print)
-    {
-        if (FAILED(output_->EnableVideoOutput(display_mode, bmdVideoOutputFlagDefault)))
-            CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info(print() + L" Could not enable key video output."));
-
-        if (FAILED(output_->SetScheduledFrameCompletionCallback(this)))
-            CASPAR_THROW_EXCEPTION(caspar_exception()
-                                   << msg_info(print() + L" Failed to set key playback completion callback.")
-                                   << boost::errinfo_api_function("SetScheduledFrameCompletionCallback"));
-    }
-
-    virtual ~key_video_context()
-    {
-        if (output_) {
-            output_->StopScheduledPlayback(0, nullptr, 0);
-            output_->DisableVideoOutput();
-        }
-    }
-
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, LPVOID*) override { return E_NOINTERFACE; }
-    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
-    ULONG STDMETHODCALLTYPE Release() override { return 1; }
-
-    HRESULT STDMETHODCALLTYPE ScheduledPlaybackHasStopped() override { return S_OK; }
-
-    HRESULT STDMETHODCALLTYPE ScheduledFrameCompleted(IDeckLinkVideoFrame*           completed_frame,
-                                                      BMDOutputFrameCompletionResult result) override
-    {
-        ++scheduled_frames_completed_;
-
-        // Let the fill callback keep the pace, so no scheduling here.
-
-        return S_OK;
-    }
-};
-
 struct decklink_consumer : public IDeckLinkVideoOutputCallback
 {
     const int           channel_index_;
@@ -366,6 +249,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     com_iface_ptr<IDeckLinkOutput>        output_        = iface_cast<IDeckLinkOutput>(decklink_);
     com_iface_ptr<IDeckLinkConfiguration> configuration_ = iface_cast<IDeckLinkConfiguration>(decklink_);
     com_iface_ptr<IDeckLinkKeyer>         keyer_         = iface_cast<IDeckLinkKeyer>(decklink_, true);
+    com_ptr<IDeckLinkVideoConversion>     conversion_;
     com_iface_ptr<IDeckLinkProfileAttributes>    attributes_    = iface_cast<IDeckLinkProfileAttributes>(decklink_);
 
     std::mutex         exception_mutex_;
@@ -390,14 +274,13 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     caspar::timer                       tick_timer_;
     reference_signal_detector           reference_signal_detector_{output_};
     std::atomic<int64_t>                scheduled_frames_completed_{0};
-    std::unique_ptr<key_video_context>  key_context_;
 
-    std::shared_ptr<klvanc_context_s> vanchdl_;
+    std::shared_ptr<klvanc_context_s>         vanchdl_;
     std::mutex                                scte_104_pkt_mutex_;
     std::shared_ptr<klvanc_packet_scte_104_s> scte_104_pkt_;
 
     com_ptr<IDeckLinkDisplayMode> mode_ =
-        get_display_mode(output_, format_desc_.format, bmdFormat8BitBGRA, bmdVideoOutputFlagDefault);
+        get_display_mode(output_, format_desc_.format, bmdFormat10BitYUV, bmdVideoOutputFlagDefault);
     int field_count_ = mode_->GetFieldDominance() != bmdProgressiveFrame ? 2 : 1;
 
     std::atomic<bool> abort_request_{false};
@@ -431,8 +314,11 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
             vanchdl_.reset(vanchdl, klvanc_context_destroy);
         }
 
-        if (config.keyer == configuration::keyer_t::external_separate_device_keyer) {
-            key_context_.reset(new key_video_context(config, print()));
+        {
+            CComPtr<IDeckLinkVideoConversion> conversion;
+            if (FAILED(conversion.CoCreateInstance(CLSID_CDeckLinkVideoConversion)))
+                CASPAR_THROW_EXCEPTION(not_supported() << msg_info("Decklink conversion failed."));
+            conversion_ = conversion;
         }
 
         graph_->set_color("tick-time", diagnostics::color(0.0f, 0.6f, 0.9f));
@@ -445,11 +331,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         if (mode_->GetFieldDominance() != bmdProgressiveFrame) {
             graph_->set_color("tick-time-f2", diagnostics::color(0.9f, 0.6f, 0.0f));
         }
-
-        if (key_context_) {
-            graph_->set_color("key-offset", diagnostics::color(1.0f, 0.0f, 0.0f));
-        }
-
+        
         graph_->set_text(print());
         diagnostics::register_graph(graph_);
 
@@ -520,20 +402,12 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
                                    << msg_info(print() + L" Failed to set fill playback completion callback.")
                                    << boost::errinfo_api_function("SetScheduledFrameCompletionCallback"));
         }
-
-        if (key_context_) {
-            key_context_->enable_video(display_mode, [this]() { return print(); });
-        }
     }
 
     void start_playback()
     {
         if (FAILED(output_->StartScheduledPlayback(0, format_desc_.time_scale, 1.0))) {
             CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info(print() + L" Failed to schedule fill playback."));
-        }
-
-        if (key_context_ && FAILED(key_context_->output_->StartScheduledPlayback(0, format_desc_.time_scale, 1.0))) {
-            CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info(print() + L" Failed to schedule key playback."));
         }
     }
 
@@ -576,14 +450,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
             reference_signal_detector_.detect_change([this]() { return print(); });
             
             ++scheduled_frames_completed_;
-
-            if (key_context_) {
-                graph_->set_value(
-                    "key-offset",
-                    static_cast<double>(scheduled_frames_completed_ - key_context_->scheduled_frames_completed_) * 0.1 +
-                        0.5);
-            }
-
+            
             if (result == bmdOutputFrameDisplayedLate) {
                 graph_->set_tag(diagnostics::tag_severity::WARNING, "late-frame");
                 video_scheduled_ += format_desc_.duration * field_count_;
@@ -679,32 +546,12 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     {
         std::shared_ptr<void> key;
 
-        if (key_context_ || config_.key_only) {
-            key = std::shared_ptr<void>(scalable_aligned_malloc(format_desc_.size, 64), scalable_aligned_free);
-
-            aligned_memshfl(key.get(), fill.get(), format_desc_.size, 0x0F0F0F0F, 0x0B0B0B0B, 0x07070707, 0x03030303);
-
-            if (config_.key_only) {
-                fill = key;
-            }
-        }
-
-        if (key_context_) {
-            auto key_frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(new decklink_frame(key, format_desc_, nb_samples));
-            if (FAILED(key_context_->output_->ScheduleVideoFrame(get_raw(key_frame),
-                                                                 video_scheduled_,
-                                                                 format_desc_.duration * field_count_,
-                                                                 format_desc_.time_scale))) {
-                CASPAR_LOG(error) << print() << L" Failed to schedule key video.";
-            }
-        }
-
-        com_ptr<IDeckLinkMutableVideoFrame> frame;
+        com_ptr<IDeckLinkMutableVideoFrame> frame10;
         if (FAILED(output_->CreateVideoFrame(
             format_desc_.width,
             format_desc_.height,
             format_desc_.width * 4,
-            bmdFormat8BitBGRA,
+            bmdFormat10BitYUV,
             bmdFrameFlagDefault,
             &frame
         ))) {
@@ -736,13 +583,13 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
         }
 
         if (scte_104_pkt_) {
-            auto ancillary_packets = iface_cast<IDeckLinkVideoFrameAncillaryPackets>(frame);
+            auto ancillary_packets = iface_cast<IDeckLinkVideoFrameAncillaryPackets>(frame10);
 
             ancillary_packets->AttachPacket(wrap_raw<com_ptr, IDeckLinkAncillaryPacket>(new decklink_scte104(vanchdl_, std::move(scte_104_pkt_))));
             scte_104_pkt_ = nullptr;
         }
 
-        if (FAILED(output_->ScheduleVideoFrame(frame,
+        if (FAILED(output_->ScheduleVideoFrame(frame10,
                                                video_scheduled_,
                                                format_desc_.duration * field_count_,
                                                format_desc_.time_scale))) {

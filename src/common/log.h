@@ -29,6 +29,7 @@
 #include <boost/log/trivial.hpp>
 #include <boost/stacktrace.hpp>
 
+#include <atomic>
 #include <string>
 
 namespace caspar { namespace log {
@@ -58,10 +59,17 @@ using caspar_logger = boost::log::sources::wseverity_logger<boost::log::trivial:
 BOOST_LOG_INLINE_GLOBAL_LOGGER_DEFAULT(logger, caspar_logger)
 #define CASPAR_LOG(lvl) BOOST_LOG_SEV(::caspar::log::logger::get(), boost::log::trivial::severity_level::lvl)
 
+struct logging_config
+{
+    std::atomic<bool> align_columns = {false};
+    std::wstring      current_level;
+};
+
 void          add_file_sink(const std::wstring& file);
 void          add_cout_sink();
 bool          set_log_level(const std::wstring& lvl);
 std::wstring& get_log_level();
+void          set_log_column_alignment(bool align_columns);
 
 inline std::wstring get_stack_trace()
 {

@@ -100,6 +100,7 @@ std::shared_ptr<boost::asio::io_service> create_running_io_service()
 struct server::impl
 {
     std::shared_ptr<boost::asio::io_service>           io_service_ = create_running_io_service();
+    video_format_repository                            video_format_repository_;
     accelerator::accelerator                           accelerator_;
     std::shared_ptr<amcp::amcp_command_repository>     amcp_command_repo_;
     std::vector<spl::shared_ptr<IO::AsyncEventServer>> async_servers_;
@@ -112,11 +113,12 @@ struct server::impl
     spl::shared_ptr<core::frame_consumer_registry>     consumer_registry_;
     std::function<void(bool)>                          shutdown_server_now_;
 
-    impl(const impl&) = delete;
+    impl(const impl&)            = delete;
     impl& operator=(const impl&) = delete;
 
     explicit impl(std::function<void(bool)> shutdown_server_now)
-        : accelerator_()
+        : video_format_repository_()
+        , accelerator_()
         , producer_registry_(spl::make_shared<core::frame_producer_registry>())
         , consumer_registry_(spl::make_shared<core::frame_consumer_registry>())
         , shutdown_server_now_(std::move(shutdown_server_now))
@@ -124,8 +126,12 @@ struct server::impl
         caspar::core::diagnostics::osd::register_sink();
 
         auto ogl_device    = accelerator_.get_device();
-        amcp_command_repo_ = spl::make_shared<amcp::amcp_command_repository>(
-            cg_registry_, producer_registry_, consumer_registry_, ogl_device, shutdown_server_now_);
+        amcp_command_repo_ = spl::make_shared<amcp::amcp_command_repository>(video_format_repository_,
+                                                                             cg_registry_,
+                                                                             producer_registry_,
+                                                                             consumer_registry_,
+                                                                             ogl_device,
+                                                                             shutdown_server_now_);
 
         module_dependencies dependencies(cg_registry_, producer_registry_, consumer_registry_, amcp_command_repo_);
 
@@ -181,7 +187,7 @@ struct server::impl
             ptree_verify_element_name(xml_channel, L"channel");
 
             auto format_desc_str = xml_channel.second.get(L"video-mode", L"PAL");
-            auto format_desc     = video_format_desc(format_desc_str);
+            auto format_desc     = video_format_repository_.find(format_desc_str);
             if (format_desc.format == video_format::invalid)
                 CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"Invalid video-mode: " + format_desc_str));
 
@@ -308,7 +314,6 @@ struct server::impl
 
     void setup_controllers(const boost::property_tree::wptree& pt)
     {
-
         using boost::property_tree::wptree;
         for (auto& xml_controller : pt | witerate_children(L"configuration.controllers") | welement_context_iteration) {
             auto name     = xml_controller.first;

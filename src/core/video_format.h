@@ -67,6 +67,7 @@ enum class video_format
     x2160p5994,
     x2160p6000,
     invalid,
+    custom,
     count
 };
 
@@ -116,6 +117,9 @@ class video_format_repository
 
     video_format_desc find(const std::wstring& name) const;
     video_format_desc find_format(const video_format& format) const;
+    void              store(const video_format_desc& format);
+
+    std::size_t get_max_video_format_size() const;
 
     static video_format_desc invalid();
 

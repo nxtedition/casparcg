@@ -145,6 +145,23 @@ struct video_format_repository::impl
 
         return invalid();
     }
+
+    void store(const video_format_desc& format)
+    {
+        const std::wstring lower = boost::to_lower_copy(format.name);
+        formats_.insert({lower, format});
+    }
+
+    std::size_t get_max_video_format_size() const
+    {
+        size_t max = 0;
+        for (auto& f : formats_) {
+            if (f.second.size > max)
+                max = f.second.size;
+        }
+
+        return max;
+    }
 };
 
 video_format_repository::video_format_repository()
@@ -160,8 +177,9 @@ video_format_desc video_format_repository::find_format(const video_format& forma
 {
     return impl_->find_format(format);
 }
+void video_format_repository::store(const video_format_desc& format) { impl_->store(format); }
 
-const std::vector<video_format_desc> format_descs = {};
+std::size_t video_format_repository::get_max_video_format_size() const { return impl_->get_max_video_format_size(); }
 
 video_format_desc::video_format_desc(const video_format     format,
                                      const int              field_count,
@@ -196,7 +214,25 @@ video_format_desc::video_format_desc()
     *this = video_format_repository::invalid();
 }
 
-bool operator==(const video_format_desc& lhs, const video_format_desc& rhs) { return lhs.format == rhs.format; }
+bool operator==(const video_format_desc& lhs, const video_format_desc& rhs)
+{
+    if (lhs.format == video_format::custom || rhs.format == video_format::custom) {
+        if (lhs.format != rhs.format) {
+            // If one is custom, and the other isnt, then they dont match
+            return false;
+        }
+
+        // TODO - expand on this
+        if (lhs.width != rhs.width || lhs.height != rhs.height || lhs.framerate != rhs.framerate) {
+            return false;
+        }
+
+        return true;
+    } else {
+        // If neither are custom, look just at the format
+        return lhs.format == rhs.format;
+    }
+}
 
 bool operator!=(const video_format_desc& lhs, const video_format_desc& rhs) { return !(lhs == rhs); }
 

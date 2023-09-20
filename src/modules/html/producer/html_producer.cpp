@@ -72,6 +72,7 @@ namespace caspar { namespace html {
 class html_client
     : public CefClient
     , public CefRenderHandler
+    , public CefAudioHandler
     , public CefLifeSpanHandler
     , public CefLoadHandler
     , public CefDisplayHandler
@@ -283,6 +284,7 @@ class html_client
 
     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
 
+    CefRefPtr<CefAudioHandler>    GetAudioHandler() override { return this; }
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
 
     CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
@@ -326,6 +328,25 @@ class html_client
             BOOST_LOG_SEV(log::logger::get(), severity) << print() << L" [renderer_process] " << msg;
         }
 
+        return false;
+    }
+
+    void OnAudioStreamStarted(CefRefPtr<CefBrowser> browser, const CefAudioParameters& params_, int channels_)
+    {
+    }
+    void OnAudioStreamPacket(CefRefPtr<CefBrowser> browser, const float** data, int frames, int64_t pts)
+    {
+        const uint8_t** pcm           = (const uint8_t**)data;
+        int             speaker_count = 8;
+    }
+    void OnAudioStreamStopped(CefRefPtr<CefBrowser> browser)
+    {
+    }
+    void OnAudioStreamError(CefRefPtr<CefBrowser> browser, const CefString& message)
+    {
+    }
+    bool GetAudioParameters(CefRefPtr<CefBrowser> browser, CefAudioParameters& params)
+    {
         return false;
     }
 

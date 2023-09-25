@@ -69,6 +69,62 @@
 
 namespace caspar { namespace html {
 
+struct presentation_frame
+{
+    core::mutable_frame frame;
+    int64_t             audio_pts;
+    int64_t             video_pts;
+
+    presentation_frame()
+        : frame(core::mutable_frame(nullptr,
+                                    std::vector<caspar::array<uint8_t>>(),
+                                    caspar::array<int32_t>(),
+                                    core::pixel_format_desc()))
+        , video_pts(0)
+        , audio_pts(0)
+    {
+    }
+
+    presentation_frame(core::mutable_frame&& frame, int64_t video_pts = 0)
+        : frame(std::move(frame))
+        , video_pts(video_pts)
+        , audio_pts(0)
+    {
+    }
+
+    presentation_frame(presentation_frame&& other)
+        : frame(std::move(other.frame))
+        , video_pts(other.video_pts)
+        , audio_pts(other.audio_pts)
+    {
+    }
+
+    presentation_frame(const presentation_frame&)            = delete;
+    presentation_frame& operator=(const presentation_frame&) = delete;
+
+    presentation_frame& operator=(presentation_frame&& rhs)
+    {
+        frame     = std::move(rhs.frame);
+        video_pts = rhs.video_pts;
+        audio_pts = rhs.audio_pts;
+        return *this;
+    }
+
+    presentation_frame clone_video(caspar::spl::shared_ptr<caspar::core::frame_factory> frame_factory, void* tag)
+    {
+        auto new_frame = frame_factory->create_frame(tag, frame.pixel_format_desc());
+        auto src       = reinterpret_cast<char*>(frame.image_data(0).begin());
+        auto dst       = reinterpret_cast<char*>(new_frame.image_data(0).begin());
+        std::memcpy(dst, src, new_frame.image_data(0).size());
+
+        return presentation_frame(std::move(new_frame), video_pts);
+    }
+
+    ~presentation_frame() {}
+
+    bool is_empty() { return frame.pixel_format_desc().format == core::pixel_format::invalid; }
+};
+
 class html_client
     : public CefClient
     , public CefRenderHandler
@@ -90,7 +146,7 @@ class html_client
     bool                                 shared_texture_enable_;
     tbb::concurrent_queue<std::wstring>  javascript_before_load_;
     std::atomic<bool>                    loaded_;
-    std::queue<core::draw_frame>         frames_;
+    std::queue<presentation_frame>       frames_;
     mutable std::mutex                   frames_mutex_;
 
     core::draw_frame   last_frame_;
@@ -234,7 +290,7 @@ class html_client
         {
             std::lock_guard<std::mutex> lock(frames_mutex_);
 
-            frames_.push(core::draw_frame(std::move(frame)));
+            frames_.push(presentation_frame(std::move(frame)));
             while (frames_.size() > 8) {
                 frames_.pop();
                 graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
@@ -310,7 +366,7 @@ class html_client
 
             {
                 std::lock_guard<std::mutex> lock(frames_mutex_);
-                frames_.push(core::draw_frame::empty());
+                frames_.push(presentation_frame());
             }
 
             {
@@ -361,9 +417,9 @@ class html_client
         std::lock_guard<std::mutex> lock(frames_mutex_);
 
         if (!frames_.empty()) {
-            result = std::move(frames_.front());
+            result = (frames_.front().is_empty()) ? core::draw_frame::empty()
+                                                  : core::draw_frame(std::move(frames_.front().frame));
             frames_.pop();
-
             return true;
         }
 

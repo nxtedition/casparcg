@@ -21,6 +21,7 @@ include_directories(../..)
 include_directories(${BOOST_INCLUDE_PATH})
 include_directories(${TBB_INCLUDE_PATH})
 include_directories(${CEF_INCLUDE_PATH})
+include_directories(${FFMPEG_INCLUDE_PATH})
 
 set_target_properties(html PROPERTIES FOLDER modules)
 source_group(sources\\producer producer/*)
@@ -29,7 +30,7 @@ source_group(sources ./*)
 target_link_libraries(html
 	common
 	core
-
+	ffmpeg
 	${CEF_BIN_PATH}/libcef.so
 	${CEF_BIN_PATH}/libcef_dll_wrapper.a
 )

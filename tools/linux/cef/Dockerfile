@@ -11,7 +11,7 @@ FROM ${IMAGE_BASE} as BUILD
 
   WORKDIR /opt/cef
   RUN \
-    curl -sSL https://cef-builds.spotifycdn.com/cef_binary_99.2.10%2Bgfecf7ca%2Bchromium-99.0.4844.51_linux64_minimal.tar.bz2 \
+    curl -sSL https://cef-builds.spotifycdn.com/cef_binary_117.2.4%2Bg5053a95%2Bchromium-117.0.5938.150_linux64_minimal.tar.bz2 \
       | tar -jx --strip-components 1 && \
     cmake -S . -B /build && \
     cmake --build /build && \

@@ -223,14 +223,7 @@ boost::tribool has_valid_extension(const std::wstring& filename)
 
 bool has_invalid_protocol(const std::wstring& filename)
 {
-    static const auto invalid_protocols = {L"ndi:"};
-
-    auto protocol = boost::to_lower_copy(boost::filesystem::path(filename).root_name().wstring());
-
-    if (std::find(invalid_protocols.begin(), invalid_protocols.end(), protocol) != invalid_protocols.end()) {
-        return true;
-    }
-    return false;
+    return boost::algorithm::istarts_with(filename, L"ndi://");
 }
 
 bool is_valid_file(const std::wstring& filename)

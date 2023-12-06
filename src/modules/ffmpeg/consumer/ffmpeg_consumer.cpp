@@ -88,8 +88,6 @@ struct Stream
     std::shared_ptr<AVCodecContext> enc = nullptr;
     AVStream*                       st  = nullptr;
 
-    int64_t pts = 0;
-
     Stream(AVFormatContext*                    oc,
            std::string                         suffix,
            AVCodecID                           codec_id,
@@ -312,7 +310,7 @@ struct Stream
         }
     }
 
-    void send(std::pair<core::const_frame, int>&             in_frame,
+    void send(std::pair<core::const_frame, std::int64_t>&    in_frame,
               const core::video_format_desc&                 format_desc,
               std::function<void(std::shared_ptr<AVPacket>)> cb)
     {
@@ -331,7 +329,7 @@ struct Stream
             }
             FF(av_buffersrc_write_frame(source, frame.get()));
         } else {
-            FF(av_buffersrc_close(source, pts, 0));
+            FF(av_buffersrc_close(source, AV_NOPTS_VALUE, 0));
         }
 
         while (true) {
@@ -369,7 +367,7 @@ struct ffmpeg_consumer : public core::frame_consumer
     int                     channel_index_ = -1;
     core::video_format_desc format_desc_;
     bool                    realtime_ = false;
-    int                     frame_number = 0;
+    std::int64_t            frame_number = 0;
 
     spl::shared_ptr<diagnostics::graph> graph_;
 
@@ -379,7 +377,7 @@ struct ffmpeg_consumer : public core::frame_consumer
     std::exception_ptr exception_;
     std::mutex         exception_mutex_;
 
-    tbb::concurrent_bounded_queue<std::pair<core::const_frame, int> > frame_buffer_;
+    tbb::concurrent_bounded_queue<std::pair<core::const_frame, std::int64_t> > frame_buffer_;
     std::thread                                      frame_thread_;
 
   public:
@@ -558,14 +556,14 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                 auto packet_cb = [&](std::shared_ptr<AVPacket>&& pkt) { packet_buffer.push(std::move(pkt)); };
 
-                std::int32_t frame_number = 0;
+                std::int64_t frame_number = 0;
                 while (true) {
                     {
                         std::lock_guard<std::mutex> lock(state_mutex_);
                         state_["file/frame"] = frame_number++;
                     }
 
-                    std::pair<core::const_frame, int> frame;
+                    std::pair<core::const_frame, std::int64_t> frame;
                     frame_buffer_.pop(frame);
                     graph_->set_value("input",
                                       static_cast<double>(frame_buffer_.size() + 0.001) / frame_buffer_.capacity());

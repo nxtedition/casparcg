@@ -119,8 +119,9 @@ struct device::impl : public std::enable_shared_from_this<impl>
         auto err = glewInit();
         if (err != GLEW_OK) {
             std::stringstream str;
-            str << "Failed to initialize GLEW:" << std::endl << glewGetErrorString(err) << std::endl;
-            CASPAR_THROW_EXCEPTION(gl::ogl_exception() << msg_info(str.str()));
+            str << "Failed to initialize GLEW (" << (int)err << "): " << glewGetErrorString(err) << std::endl;
+            CASPAR_LOG(info) << str.str();
+            // CASPAR_THROW_EXCEPTION(gl::ogl_exception() << msg_info(str.str()));
         }
 
         version_ = u16(reinterpret_cast<const char*>(GL2(glGetString(GL_VERSION)))) + L" " +

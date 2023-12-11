@@ -163,7 +163,7 @@ MACRO (TEST_FOR_SUPPORTED_PLATFORM _supported_platform)
 
   # .. and check it against the list, returning it if found.
   SET (_supported_platforms
-       "ubuntu14.04" "ubuntu16.04"
+       "ubuntu14.04" "ubuntu16.04 ubuntu22.04"
        "windows_msvc2015")
   LIST (FIND _supported_platforms ${_platform} _index)
   IF (_index GREATER "-1")

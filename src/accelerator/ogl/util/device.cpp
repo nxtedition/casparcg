@@ -74,7 +74,8 @@ struct device::impl : public std::enable_shared_from_this<impl>
     std::thread                         thread_;
 
     impl()
-        : eglDisplay_(EGL_NO_DISPLAY), eglContext_(EGL_NO_CONTEXT)
+        : eglDisplay_(EGL_NO_DISPLAY)
+        , eglContext_(EGL_NO_CONTEXT)
         , work_(make_work_guard(service_))
     {
         CASPAR_LOG(info) << L"Initializing OpenGL Device.";
@@ -88,16 +89,19 @@ struct device::impl : public std::enable_shared_from_this<impl>
         EGLint major, minor;
         eglInitialize(eglDisplay_, &major, &minor);
 
-        const EGLint configAttribs[] = {
-          EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-          EGL_BLUE_SIZE, 8,
-          EGL_GREEN_SIZE, 8,
-          EGL_RED_SIZE, 8,
-          EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-          EGL_NONE
-        };
+        const EGLint configAttribs[] = {EGL_SURFACE_TYPE,
+                                        EGL_PBUFFER_BIT,
+                                        EGL_BLUE_SIZE,
+                                        8,
+                                        EGL_GREEN_SIZE,
+                                        8,
+                                        EGL_RED_SIZE,
+                                        8,
+                                        EGL_RENDERABLE_TYPE,
+                                        EGL_OPENGL_BIT,
+                                        EGL_NONE};
 
-        EGLint numConfigs;
+        EGLint    numConfigs;
         EGLConfig eglConfig;
         if (!eglChooseConfig(eglDisplay_, configAttribs, &eglConfig, 1, &numConfigs)) {
             CASPAR_THROW_EXCEPTION(gl::ogl_exception() << msg_info("Failed to initialize OpenGL: eglChooseConfig"));
@@ -252,16 +256,18 @@ struct device::impl : public std::enable_shared_from_this<impl>
         });
     }
 
-    array<uint8_t> create_array(int size)
+    array<uint8_t> create_array(int count, common::bit_depth depth)
     {
-        auto buf = create_buffer(size, true);
-        auto ptr = reinterpret_cast<uint8_t*>(buf->data());
-        return array<uint8_t>(ptr, buf->size(), buf);
+        auto bytes_per_pixel = static_cast<int>(depth) + 1;
+        auto buf             = create_buffer(count * bytes_per_pixel, true);
+        auto ptr             = reinterpret_cast<uint8_t*>(buf->data());
+        return array<uint8_t>(ptr, buf->size(), buf, depth);
     }
 
     std::future<std::shared_ptr<texture>>
-    copy_async(const array<const uint8_t>& source, int width, int height, int stride, common::bit_depth depth)
+    copy_async(const array<const uint8_t>& source, int width, int height, int stride)
     {
+        auto depth = source.native_depth();
         return dispatch_async([=] {
             std::shared_ptr<buffer> buf;
 
@@ -439,11 +445,11 @@ std::shared_ptr<texture> device::create_texture(int width, int height, int strid
 {
     return impl_->create_texture(width, height, stride, depth, true);
 }
-array<uint8_t> device::create_array(int size) { return impl_->create_array(size); }
+array<uint8_t> device::create_array(int size, common::bit_depth depth) { return impl_->create_array(size, depth); }
 std::future<std::shared_ptr<texture>>
-device::copy_async(const array<const uint8_t>& source, int width, int height, int stride, common::bit_depth depth)
+device::copy_async(const array<const uint8_t>& source, int width, int height, int stride)
 {
-    return impl_->copy_async(source, width, height, stride, depth);
+    return impl_->copy_async(source, width, height, stride);
 }
 std::future<array<const uint8_t>> device::copy_async(const std::shared_ptr<texture>& source)
 {

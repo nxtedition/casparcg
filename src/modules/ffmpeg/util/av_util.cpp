@@ -201,6 +201,10 @@ std::shared_ptr<AVFrame> make_av_video_frame(const core::const_frame& frame, con
     av_frame->width               = format_desc.width;
     av_frame->height              = format_desc.height;
 
+    const auto is_16bit = frame.image_data(0).native_depth() == common::bit_depth::bit16;
+    if (is_16bit)
+        av_frame->format = AVPixelFormat::AV_PIX_FMT_BGRA64;
+    else
     switch (format) {
         case core::pixel_format::rgb:
             av_frame->format = AVPixelFormat::AV_PIX_FMT_RGB24;
@@ -251,14 +255,15 @@ std::shared_ptr<AVFrame> make_av_video_frame(const core::const_frame& frame, con
             break;
     }
 
-    FF(av_frame_get_buffer(av_frame.get(), 32));
+    FF(av_frame_get_buffer(av_frame.get(), is_16bit ? 64 : 32));
 
     // TODO (perf) Avoid extra memcpy.
+    const auto depth_factor = (is_16bit ? 2 : 1);
     for (int n = 0; n < planes.size(); ++n) {
         for (int y = 0; y < av_frame->height; ++y) {
             std::memcpy(av_frame->data[n] + y * av_frame->linesize[n],
-                        frame.image_data(n).data() + y * planes[n].linesize,
-                        planes[n].linesize);
+                        frame.image_data(n).data() + y * planes[n].linesize * depth_factor,
+                        planes[n].linesize * depth_factor);
         }
     }
 

@@ -70,7 +70,7 @@ class array final
         ptr_          = std::move(other.ptr_);
         size_         = std::move(other.size_);
         storage_      = std::move(other.storage_);
-        native_depth_ = std::move(other.native_depth_);
+        native_depth_ = other.native_depth_;
 
         return *this;
     }
@@ -114,14 +114,16 @@ class array<const T> final
             std::memset(ptr_, 0, size_);
             storage_ = std::make_shared<boost::any>(storage);
         }
+        native_depth_ = common::bit_depth::bit8;
     }
 
     array(const std::vector<T>& other)
     {
-        auto storage = std::make_shared<std::vector<T>>(std::move(other));
-        ptr_         = storage->data();
-        size_        = storage->size();
-        storage_     = std::make_shared<boost::any>(std::move(storage));
+        auto storage  = std::make_shared<std::vector<T>>(std::move(other));
+        ptr_          = storage->data();
+        size_         = storage->size();
+        storage_      = std::make_shared<boost::any>(std::move(storage));
+        native_depth_ = common::bit_depth::bit8;
     }
 
     template <typename S>
@@ -157,9 +159,10 @@ class array<const T> final
 
     array& operator=(const array& other)
     {
-        ptr_     = other.ptr_;
-        size_    = other.size_;
-        storage_ = other.storage_;
+        ptr_          = other.ptr_;
+        size_         = other.size_;
+        storage_      = other.storage_;
+        native_depth_ = other.native_depth_;
         return *this;
     }
 
@@ -181,7 +184,7 @@ class array<const T> final
     const T*                    ptr_  = nullptr;
     std::size_t                 size_ = 0;
     std::shared_ptr<boost::any> storage_;
-    common::bit_depth           native_depth_ = common::bit_depth::bit8;
+    common::bit_depth           native_depth_;
 };
 
 } // namespace caspar

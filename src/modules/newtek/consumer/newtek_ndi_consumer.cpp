@@ -172,7 +172,8 @@ struct newtek_ndi_consumer : public core::frame_consumer
 std::atomic<int> newtek_ndi_consumer::instances_(0);
 
 spl::shared_ptr<core::frame_consumer> create_ndi_consumer(const std::vector<std::wstring>&                  params,
-                                                          std::vector<spl::shared_ptr<core::video_channel>> channels)
+                                                          std::vector<spl::shared_ptr<core::video_channel>> channels,
+                                                          common::bit_depth                                 depth)
 {
     if (params.size() < 1 || !boost::iequals(params.at(0), L"NDI"))
         return core::frame_consumer::empty();
@@ -183,7 +184,8 @@ spl::shared_ptr<core::frame_consumer> create_ndi_consumer(const std::vector<std:
 
 spl::shared_ptr<core::frame_consumer>
 create_preconfigured_ndi_consumer(const boost::property_tree::wptree&               ptree,
-                                  std::vector<spl::shared_ptr<core::video_channel>> channels)
+                                  std::vector<spl::shared_ptr<core::video_channel>> channels,
+                                  common::bit_depth                                 depth)
 {
     auto name         = ptree.get(L"name", L"");
     bool allow_fields = ptree.get(L"allow-fields", false);

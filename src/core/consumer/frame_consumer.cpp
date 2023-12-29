@@ -156,7 +156,8 @@ class print_consumer_proxy : public frame_consumer
 
 spl::shared_ptr<core::frame_consumer>
 frame_consumer_registry::create_consumer(const std::vector<std::wstring>&            params,
-                                         std::vector<spl::shared_ptr<video_channel>> channels) const
+                                         std::vector<spl::shared_ptr<video_channel>> channels,
+                                         common::bit_depth                           depth) const
 {
     if (params.empty())
         CASPAR_THROW_EXCEPTION(invalid_argument() << msg_info("params cannot be empty"));
@@ -166,7 +167,7 @@ frame_consumer_registry::create_consumer(const std::vector<std::wstring>&       
     if (!std::any_of(
             consumer_factories.begin(), consumer_factories.end(), [&](const consumer_factory_t& factory) -> bool {
                 try {
-                    consumer = factory(params, channels);
+                    consumer = factory(params, channels, depth);
                 } catch (...) {
                     CASPAR_LOG_CURRENT_EXCEPTION();
                 }
@@ -181,7 +182,8 @@ frame_consumer_registry::create_consumer(const std::vector<std::wstring>&       
 spl::shared_ptr<frame_consumer>
 frame_consumer_registry::create_consumer(const std::wstring&                         element_name,
                                          const boost::property_tree::wptree&         element,
-                                         std::vector<spl::shared_ptr<video_channel>> channels) const
+                                         std::vector<spl::shared_ptr<video_channel>> channels,
+                                         common::bit_depth                           depth) const
 {
     auto& preconfigured_consumer_factories = impl_->preconfigured_consumer_factories;
     auto  found                            = preconfigured_consumer_factories.find(element_name);
@@ -191,7 +193,7 @@ frame_consumer_registry::create_consumer(const std::wstring&                    
                                << msg_info(L"No consumer factory registered for element name " + element_name));
 
     return spl::make_shared<destroy_consumer_proxy>(
-        spl::make_shared<print_consumer_proxy>(found->second(element, channels)));
+        spl::make_shared<print_consumer_proxy>(found->second(element, channels, depth)));
 }
 
 const spl::shared_ptr<frame_consumer>& frame_consumer::empty()

@@ -288,8 +288,8 @@ struct server::impl
 
                     try {
                         if (name != L"<xmlcomment>")
-                            channel->output().add(
-                                consumer_registry_->create_consumer(name, xml_consumer.second, channels_));
+                            channel->output().add(consumer_registry_->create_consumer(
+                                name, xml_consumer.second, channels_, channel->mixer().depth()));
                     } catch (...) {
                         CASPAR_LOG_CURRENT_EXCEPTION();
                     }

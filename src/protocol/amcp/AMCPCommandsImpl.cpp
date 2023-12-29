@@ -384,7 +384,8 @@ std::wstring add_command(command_context& ctx)
     core::diagnostics::scoped_call_context save;
     core::diagnostics::call_context::for_thread().video_channel = ctx.channel_index + 1;
 
-    auto consumer = ctx.consumer_registry->create_consumer(ctx.parameters, get_channels(ctx));
+    auto consumer =
+        ctx.consumer_registry->create_consumer(ctx.parameters, get_channels(ctx), ctx.channel.channel->mixer().depth());
     ctx.channel.channel->output().add(ctx.layer_index(consumer->index()), consumer);
 
     return L"202 ADD OK\r\n";
@@ -401,7 +402,9 @@ std::wstring remove_command(command_context& ctx)
             return L"402 REMOVE FAILED\r\n";
         }
 
-        index = ctx.consumer_registry->create_consumer(ctx.parameters, get_channels(ctx))->index();
+        index = ctx.consumer_registry
+                    ->create_consumer(ctx.parameters, get_channels(ctx), ctx.channel.channel->mixer().depth())
+                    ->index();
     }
 
     if (!ctx.channel.channel->output().remove(index)) {
@@ -413,7 +416,8 @@ std::wstring remove_command(command_context& ctx)
 
 std::wstring print_command(command_context& ctx)
 {
-    ctx.channel.channel->output().add(ctx.consumer_registry->create_consumer({L"IMAGE"}, get_channels(ctx)));
+    ctx.channel.channel->output().add(
+        ctx.consumer_registry->create_consumer({L"IMAGE"}, get_channels(ctx), ctx.channel.channel->mixer().depth()));
 
     return L"202 PRINT OK\r\n";
 }
@@ -1245,7 +1249,8 @@ std::wstring channel_grid_command(command_context& ctx)
     params.push_back(L"0");
     params.push_back(L"NAME");
     params.push_back(L"Channel Grid Window");
-    auto screen = ctx.consumer_registry->create_consumer(params, get_channels(ctx));
+    auto screen =
+        ctx.consumer_registry->create_consumer(params, get_channels(ctx), ctx.channel.channel->mixer().depth());
 
     self.channel->output().add(screen);
 

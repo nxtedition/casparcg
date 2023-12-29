@@ -589,7 +589,8 @@ struct decklink_consumer_proxy : public core::frame_consumer
 };
 
 spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>&                  params,
-                                                      std::vector<spl::shared_ptr<core::video_channel>> channels)
+                                                      std::vector<spl::shared_ptr<core::video_channel>> channels,
+                                                      common::bit_depth                                 depth)
 {
     if (params.size() < 1 || !boost::iequals(params.at(0), L"DECKLINK")) {
         return core::frame_consumer::empty();
@@ -620,7 +621,8 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wst
 
 spl::shared_ptr<core::frame_consumer>
 create_preconfigured_consumer(const boost::property_tree::wptree&               ptree,
-                              std::vector<spl::shared_ptr<core::video_channel>> channels)
+                              std::vector<spl::shared_ptr<core::video_channel>> channels,
+                              common::bit_depth                                 depth)
 {
     configuration config;
 

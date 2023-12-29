@@ -629,7 +629,8 @@ struct ffmpeg_consumer : public core::frame_consumer
 };
 
 spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>&                  params,
-                                                      std::vector<spl::shared_ptr<core::video_channel>> channels)
+                                                      std::vector<spl::shared_ptr<core::video_channel>> channels,
+                                                      common::bit_depth                                 depth)
 {
     if (params.size() < 2 || (!boost::iequals(params.at(0), L"STREAM") && !boost::iequals(params.at(0), L"FILE")))
         return core::frame_consumer::empty();
@@ -644,7 +645,8 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wst
 
 spl::shared_ptr<core::frame_consumer>
 create_preconfigured_consumer(const boost::property_tree::wptree&               ptree,
-                              std::vector<spl::shared_ptr<core::video_channel>> channels)
+                              std::vector<spl::shared_ptr<core::video_channel>> channels,
+                              common::bit_depth                                 depth)
 {
     return spl::make_shared<ffmpeg_consumer>(u8(ptree.get<std::wstring>(L"path", L"")),
                                              u8(ptree.get<std::wstring>(L"args", L"")),

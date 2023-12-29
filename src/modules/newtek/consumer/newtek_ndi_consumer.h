@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include <common/bit_depth.h>
 #include <common/memory.h>
 
 #include <core/fwd.h>
@@ -34,9 +35,11 @@
 namespace caspar { namespace newtek {
 
 spl::shared_ptr<core::frame_consumer> create_ndi_consumer(const std::vector<std::wstring>&                  params,
-                                                          std::vector<spl::shared_ptr<core::video_channel>> channels);
+                                                          std::vector<spl::shared_ptr<core::video_channel>> channels,
+                                                          common::bit_depth                                 depth);
 spl::shared_ptr<core::frame_consumer>
 create_preconfigured_ndi_consumer(const boost::property_tree::wptree&               ptree,
-                                  std::vector<spl::shared_ptr<core::video_channel>> channels);
+                                  std::vector<spl::shared_ptr<core::video_channel>> channels,
+                                  common::bit_depth                                 depth);
 
 }} // namespace caspar::newtek

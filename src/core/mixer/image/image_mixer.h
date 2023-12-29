@@ -51,6 +51,8 @@ class image_mixer
     class mutable_frame create_frame(const void*                     video_stream_tag,
                                      const struct pixel_format_desc& desc,
                                      common::bit_depth               depth) override                               = 0;
+
+    virtual common::bit_depth depth() const = 0;
 };
 
 }} // namespace caspar::core

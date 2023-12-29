@@ -50,6 +50,8 @@ class mixer final
 
     core::monitor::state state() const;
 
+    common::bit_depth depth() const;
+
   private:
     struct impl;
     spl::shared_ptr<impl> impl_;

@@ -33,9 +33,9 @@
 #include <core/frame/pixel_format.h>
 #include <core/video_format.h>
 
+#include <queue>
 #include <unordered_map>
 #include <vector>
-#include <queue>
 
 namespace caspar { namespace core {
 
@@ -110,4 +110,6 @@ mutable_frame mixer::create_frame(const void* tag, const pixel_format_desc& desc
     return impl_->image_mixer_->create_frame(tag, desc);
 }
 core::monitor::state mixer::state() const { return impl_->state_; }
+
+common::bit_depth mixer::depth() const { return impl_->image_mixer_->depth(); }
 }} // namespace caspar::core

@@ -101,6 +101,8 @@ class image_renderer
         }));
     }
 
+    common::bit_depth depth() const { return depth_; }
+
   private:
     void draw(std::shared_ptr<texture>&      target_texture,
               std::vector<layer>             layers,
@@ -235,14 +237,12 @@ struct image_mixer::impl
     std::vector<core::image_transform> transform_stack_;
     std::vector<layer>                 layers_; // layer/stream/items
     std::vector<layer*>                layer_stack_;
-    common::bit_depth                  depth_;
 
   public:
     impl(const spl::shared_ptr<device>& ogl, const int channel_id, const size_t max_frame_size, common::bit_depth depth)
         : ogl_(ogl)
         , renderer_(ogl, max_frame_size, depth)
         , transform_stack_(1)
-        , depth_(depth)
     {
         CASPAR_LOG(info) << L"Initialized OpenGL Accelerated GPU Image Mixer for channel " << channel_id;
     }
@@ -338,6 +338,8 @@ struct image_mixer::impl
                 return std::make_shared<decltype(textures)>(std::move(textures));
             });
     }
+
+    common::bit_depth depth() const { return renderer_.depth(); }
 };
 
 image_mixer::image_mixer(const spl::shared_ptr<device>& ogl,
@@ -364,5 +366,7 @@ image_mixer::create_frame(const void* tag, const core::pixel_format_desc& desc, 
 {
     return impl_->create_frame(tag, desc, depth);
 }
+
+common::bit_depth image_mixer::depth() const { return impl_->depth(); }
 
 }}} // namespace caspar::accelerator::ogl

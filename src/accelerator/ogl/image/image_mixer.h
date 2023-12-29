@@ -53,9 +53,10 @@ class image_mixer final : public core::image_mixer
 
     // core::image_mixer
 
-    void push(const core::frame_transform& frame) override;
-    void visit(const core::const_frame& frame) override;
-    void pop() override;
+    void              push(const core::frame_transform& frame) override;
+    void              visit(const core::const_frame& frame) override;
+    void              pop() override;
+    common::bit_depth depth() const override;
 
   private:
     struct impl;

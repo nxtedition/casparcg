@@ -20,9 +20,9 @@
  *         James Wise, james.wise@bluefish444.com
  */
 
+#include "bluefish_consumer.h"
 #include "../util/blue_velvet.h"
 #include "../util/memory.h"
-#include "bluefish_consumer.h"
 
 #include <core/consumer/frame_consumer.h>
 #include <core/frame/frame.h>
@@ -165,7 +165,7 @@ struct bluefish_consumer
     const int           channel_index_;
     const configuration config_;
 
-    spl::shared_ptr<bvc_wrapper> blue_ = create_blue(config_.device_index);
+    spl::shared_ptr<bvc_wrapper> blue_         = create_blue(config_.device_index);
     spl::shared_ptr<bvc_wrapper> watchdog_bvc_ = create_blue(config_.device_index);
 
     std::mutex         exception_mutex_;

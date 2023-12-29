@@ -769,14 +769,13 @@ std::wstring mixer_keyer_command(command_context& ctx)
 
     transforms_applier transforms(ctx);
     bool               value = std::stoi(ctx.parameters.at(0));
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) -> frame_transform {
-            transform.image_transform.is_key = value;
-            return transform;
-        },
-        0,
-        tweener(L"linear")));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) -> frame_transform {
+                                                transform.image_transform.is_key = value;
+                                                return transform;
+                                            },
+                                            0,
+                                            tweener(L"linear")));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -789,14 +788,13 @@ std::wstring mixer_invert_command(command_context& ctx)
 
     transforms_applier transforms(ctx);
     bool               value = std::stoi(ctx.parameters.at(0));
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) -> frame_transform {
-            transform.image_transform.invert = value;
-            return transform;
-        },
-        0,
-        tweener(L"linear")));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) -> frame_transform {
+                                                transform.image_transform.invert = value;
+                                                return transform;
+                                            },
+                                            0,
+                                            tweener(L"linear")));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -861,14 +859,13 @@ std::wstring mixer_chroma_command(command_context& ctx)
         }
     }
 
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) -> frame_transform {
-            transform.image_transform.chroma = chroma;
-            return transform;
-        },
-        duration,
-        tween));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) -> frame_transform {
+                                                transform.image_transform.chroma = chroma;
+                                                return transform;
+                                            },
+                                            duration,
+                                            tween));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -881,14 +878,13 @@ std::wstring mixer_blend_command(command_context& ctx)
 
     transforms_applier transforms(ctx);
     auto               value = get_blend_mode(ctx.parameters.at(0));
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) -> frame_transform {
-            transform.image_transform.blend_mode = value;
-            return transform;
-        },
-        0,
-        tweener(L"linear")));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) -> frame_transform {
+                                                transform.image_transform.blend_mode = value;
+                                                return transform;
+                                            },
+                                            0,
+                                            tweener(L"linear")));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -905,14 +901,13 @@ std::wstring single_double_animatable_mixer_command(command_context& ctx, const 
     int                duration = ctx.parameters.size() > 1 ? std::stoi(ctx.parameters[1]) : 0;
     std::wstring       tween    = ctx.parameters.size() > 2 ? ctx.parameters[2] : L"linear";
 
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) -> frame_transform {
-            setter(transform, value);
-            return transform;
-        },
-        duration,
-        tween));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) -> frame_transform {
+                                                setter(transform, value);
+                                                return transform;
+                                            },
+                                            duration,
+                                            tween));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -969,14 +964,13 @@ std::wstring mixer_levels_command(command_context& ctx)
     int          duration = ctx.parameters.size() > 5 ? std::stoi(ctx.parameters[5]) : 0;
     std::wstring tween    = ctx.parameters.size() > 6 ? ctx.parameters[6] : L"linear";
 
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) -> frame_transform {
-            transform.image_transform.levels = value;
-            return transform;
-        },
-        duration,
-        tween));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) -> frame_transform {
+                                                transform.image_transform.levels = value;
+                                                return transform;
+                                            },
+                                            duration,
+                                            tween));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -1000,17 +994,16 @@ std::wstring mixer_fill_command(command_context& ctx)
     double             x_s      = std::stod(ctx.parameters.at(2));
     double             y_s      = std::stod(ctx.parameters.at(3));
 
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) mutable -> frame_transform {
-            transform.image_transform.fill_translation[0] = x;
-            transform.image_transform.fill_translation[1] = y;
-            transform.image_transform.fill_scale[0]       = x_s;
-            transform.image_transform.fill_scale[1]       = y_s;
-            return transform;
-        },
-        duration,
-        tween));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) mutable -> frame_transform {
+                                                transform.image_transform.fill_translation[0] = x;
+                                                transform.image_transform.fill_translation[1] = y;
+                                                transform.image_transform.fill_scale[0]       = x_s;
+                                                transform.image_transform.fill_scale[1]       = y_s;
+                                                return transform;
+                                            },
+                                            duration,
+                                            tween));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -1035,17 +1028,16 @@ std::wstring mixer_clip_command(command_context& ctx)
     double             x_s      = std::stod(ctx.parameters.at(2));
     double             y_s      = std::stod(ctx.parameters.at(3));
 
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) -> frame_transform {
-            transform.image_transform.clip_translation[0] = x;
-            transform.image_transform.clip_translation[1] = y;
-            transform.image_transform.clip_scale[0]       = x_s;
-            transform.image_transform.clip_scale[1]       = y_s;
-            return transform;
-        },
-        duration,
-        tween));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) -> frame_transform {
+                                                transform.image_transform.clip_translation[0] = x;
+                                                transform.image_transform.clip_translation[1] = y;
+                                                transform.image_transform.clip_scale[0]       = x_s;
+                                                transform.image_transform.clip_scale[1]       = y_s;
+                                                return transform;
+                                            },
+                                            duration,
+                                            tween));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -1065,15 +1057,14 @@ std::wstring mixer_anchor_command(command_context& ctx)
     double             x        = std::stod(ctx.parameters.at(0));
     double             y        = std::stod(ctx.parameters.at(1));
 
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) mutable -> frame_transform {
-            transform.image_transform.anchor[0] = x;
-            transform.image_transform.anchor[1] = y;
-            return transform;
-        },
-        duration,
-        tween));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) mutable -> frame_transform {
+                                                transform.image_transform.anchor[0] = x;
+                                                transform.image_transform.anchor[1] = y;
+                                                return transform;
+                                            },
+                                            duration,
+                                            tween));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -1095,17 +1086,16 @@ std::wstring mixer_crop_command(command_context& ctx)
     double             lr_x     = std::stod(ctx.parameters.at(2));
     double             lr_y     = std::stod(ctx.parameters.at(3));
 
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) -> frame_transform {
-            transform.image_transform.crop.ul[0] = ul_x;
-            transform.image_transform.crop.ul[1] = ul_y;
-            transform.image_transform.crop.lr[0] = lr_x;
-            transform.image_transform.crop.lr[1] = lr_y;
-            return transform;
-        },
-        duration,
-        tween));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) -> frame_transform {
+                                                transform.image_transform.crop.ul[0] = ul_x;
+                                                transform.image_transform.crop.ul[1] = ul_y;
+                                                transform.image_transform.crop.lr[0] = lr_x;
+                                                transform.image_transform.crop.lr[1] = lr_y;
+                                                return transform;
+                                            },
+                                            duration,
+                                            tween));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -1143,21 +1133,20 @@ std::wstring mixer_perspective_command(command_context& ctx)
     double             ll_x     = std::stod(ctx.parameters.at(6));
     double             ll_y     = std::stod(ctx.parameters.at(7));
 
-    transforms.add(stage::transform_tuple_t(
-        ctx.layer_index(),
-        [=](frame_transform transform) -> frame_transform {
-            transform.image_transform.perspective.ul[0] = ul_x;
-            transform.image_transform.perspective.ul[1] = ul_y;
-            transform.image_transform.perspective.ur[0] = ur_x;
-            transform.image_transform.perspective.ur[1] = ur_y;
-            transform.image_transform.perspective.lr[0] = lr_x;
-            transform.image_transform.perspective.lr[1] = lr_y;
-            transform.image_transform.perspective.ll[0] = ll_x;
-            transform.image_transform.perspective.ll[1] = ll_y;
-            return transform;
-        },
-        duration,
-        tween));
+    transforms.add(stage::transform_tuple_t(ctx.layer_index(),
+                                            [=](frame_transform transform) -> frame_transform {
+                                                transform.image_transform.perspective.ul[0] = ul_x;
+                                                transform.image_transform.perspective.ul[1] = ul_y;
+                                                transform.image_transform.perspective.ur[0] = ur_x;
+                                                transform.image_transform.perspective.ur[1] = ur_y;
+                                                transform.image_transform.perspective.lr[0] = lr_x;
+                                                transform.image_transform.perspective.lr[1] = lr_y;
+                                                transform.image_transform.perspective.ll[0] = ll_x;
+                                                transform.image_transform.perspective.ll[1] = ll_y;
+                                                return transform;
+                                            },
+                                            duration,
+                                            tween));
     transforms.apply();
 
     return L"202 MIXER OK\r\n";
@@ -1194,21 +1183,20 @@ std::wstring mixer_grid_command(command_context& ctx)
     for (int x = 0; x < n; ++x) {
         for (int y = 0; y < n; ++y) {
             int index = x + y * n + 1;
-            transforms.add(stage::transform_tuple_t(
-                index,
-                [=](frame_transform transform) -> frame_transform {
-                    transform.image_transform.fill_translation[0] = x * delta;
-                    transform.image_transform.fill_translation[1] = y * delta;
-                    transform.image_transform.fill_scale[0]       = delta;
-                    transform.image_transform.fill_scale[1]       = delta;
-                    transform.image_transform.clip_translation[0] = x * delta;
-                    transform.image_transform.clip_translation[1] = y * delta;
-                    transform.image_transform.clip_scale[0]       = delta;
-                    transform.image_transform.clip_scale[1]       = delta;
-                    return transform;
-                },
-                duration,
-                tween));
+            transforms.add(stage::transform_tuple_t(index,
+                                                    [=](frame_transform transform) -> frame_transform {
+                                                        transform.image_transform.fill_translation[0] = x * delta;
+                                                        transform.image_transform.fill_translation[1] = y * delta;
+                                                        transform.image_transform.fill_scale[0]       = delta;
+                                                        transform.image_transform.fill_scale[1]       = delta;
+                                                        transform.image_transform.clip_translation[0] = x * delta;
+                                                        transform.image_transform.clip_translation[1] = y * delta;
+                                                        transform.image_transform.clip_scale[0]       = delta;
+                                                        transform.image_transform.clip_scale[1]       = delta;
+                                                        return transform;
+                                                    },
+                                                    duration,
+                                                    tween));
         }
     }
     transforms.apply();

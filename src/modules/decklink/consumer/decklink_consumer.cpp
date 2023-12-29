@@ -49,9 +49,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <future>
-#include <thread>
 #include <mutex>
 #include <queue>
+#include <thread>
 
 namespace caspar { namespace decklink {
 
@@ -505,10 +505,8 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     void schedule_next_video(std::shared_ptr<void> fill, int nb_samples)
     {
         auto frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(new decklink_frame(fill, format_desc_, nb_samples));
-        if (FAILED(output_->ScheduleVideoFrame(get_raw(frame),
-                                               video_scheduled_,
-                                               format_desc_.duration * field_count_,
-                                               format_desc_.time_scale))) {
+        if (FAILED(output_->ScheduleVideoFrame(
+                get_raw(frame), video_scheduled_, format_desc_.duration * field_count_, format_desc_.time_scale))) {
             CASPAR_LOG(error) << print() << L" Failed to schedule fill video.";
         }
 
@@ -524,8 +522,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
             }
         }
 
-        if (frame)
-        {
+        if (frame) {
             std::unique_lock<std::mutex> lock(buffer_mutex_);
             buffer_cond_.wait(lock, [&] { return buffer_.size() < buffer_capacity_ || abort_request_; });
             buffer_.push(std::move(frame));

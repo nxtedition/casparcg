@@ -57,10 +57,10 @@ extern "C" {
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
 #include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 #include <libavutil/samplefmt.h>
-#include <libavutil/channel_layout.h>
 }
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -319,10 +319,10 @@ struct Stream
 
         if (in_frame.first) {
             if (enc->codec_type == AVMEDIA_TYPE_VIDEO) {
-                frame = make_av_video_frame(in_frame.first, format_desc);
+                frame      = make_av_video_frame(in_frame.first, format_desc);
                 frame->pts = in_frame.second;
             } else if (enc->codec_type == AVMEDIA_TYPE_AUDIO) {
-                frame = make_av_audio_frame(in_frame.first, format_desc);
+                frame      = make_av_audio_frame(in_frame.first, format_desc);
                 frame->pts = in_frame.second * frame->nb_samples;
             } else {
                 // TODO
@@ -366,7 +366,7 @@ struct ffmpeg_consumer : public core::frame_consumer
     mutable std::mutex      state_mutex_;
     int                     channel_index_ = -1;
     core::video_format_desc format_desc_;
-    bool                    realtime_ = false;
+    bool                    realtime_    = false;
     std::int64_t            frame_number = 0;
 
     spl::shared_ptr<diagnostics::graph> graph_;
@@ -377,8 +377,8 @@ struct ffmpeg_consumer : public core::frame_consumer
     std::exception_ptr exception_;
     std::mutex         exception_mutex_;
 
-    tbb::concurrent_bounded_queue<std::pair<core::const_frame, std::int64_t> > frame_buffer_;
-    std::thread                                      frame_thread_;
+    tbb::concurrent_bounded_queue<std::pair<core::const_frame, std::int64_t>> frame_buffer_;
+    std::thread                                                               frame_thread_;
 
   public:
     ffmpeg_consumer(std::string path, std::string args, bool realtime)

@@ -308,7 +308,7 @@ struct image_mixer::impl
 
     core::mutable_frame create_frame(const void* tag, const core::pixel_format_desc& desc) override
     {
-        return create_frame(tag, desc, depth_);
+        return create_frame(tag, desc, common::bit_depth::bit8);
     }
 
     core::mutable_frame

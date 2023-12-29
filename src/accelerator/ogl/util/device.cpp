@@ -323,7 +323,7 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
             auto ptr  = reinterpret_cast<uint8_t*>(buf->data());
             auto size = buf->size();
-            return array<const uint8_t>(ptr, size, std::move(buf));
+            return array<const uint8_t>(ptr, size, std::move(buf), source->depth());
         });
     }
 

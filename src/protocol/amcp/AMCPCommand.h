@@ -38,6 +38,7 @@ struct command_context
     int                                                  channel_index;
     int                                                  layer_id;
     std::vector<channel_context>                         channels;
+    const core::video_format_repository                  format_repository;
     spl::shared_ptr<core::cg_producer_registry>          cg_registry;
     spl::shared_ptr<const core::frame_producer_registry> producer_registry;
     spl::shared_ptr<const core::frame_consumer_registry> consumer_registry;
@@ -54,6 +55,7 @@ struct command_context
                     int                                                  channel_index,
                     int                                                  layer_id,
                     std::vector<channel_context>                         channels,
+                    const core::video_format_repository&                 format_repository,
                     spl::shared_ptr<core::cg_producer_registry>          cg_registry,
                     spl::shared_ptr<const core::frame_producer_registry> producer_registry,
                     spl::shared_ptr<const core::frame_consumer_registry> consumer_registry,
@@ -66,6 +68,7 @@ struct command_context
         , channel_index(channel_index)
         , layer_id(layer_id)
         , channels(std::move(channels))
+        , format_repository(format_repository)
         , cg_registry(std::move(cg_registry))
         , producer_registry(std::move(producer_registry))
         , consumer_registry(std::move(consumer_registry))
@@ -89,11 +92,11 @@ class AMCPCommand
     const std::wstring      request_id_;
 
   public:
-    AMCPCommand(const command_context&     ctx,
+    AMCPCommand(const command_context&   ctx,
                 const amcp_command_func& command,
                 int                      min_num_params,
                 const std::wstring&      name,
-                const std::wstring& request_id)
+                const std::wstring&      request_id)
         : ctx_(ctx)
         , command_(command)
         , min_num_params_(min_num_params)
@@ -104,10 +107,7 @@ class AMCPCommand
 
     using ptr_type = std::shared_ptr<AMCPCommand>;
 
-    const std::wstring Execute()
-    {
-        return command_(ctx_);
-    }
+    const std::wstring Execute() { return command_(ctx_); }
 
     int minimum_parameters() const { return min_num_params_; }
 

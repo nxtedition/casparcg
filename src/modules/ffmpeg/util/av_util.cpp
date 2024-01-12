@@ -9,10 +9,10 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavfilter/avfilter.h>
+#include <libavutil/channel_layout.h>
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixfmt.h>
-#include <libavutil/channel_layout.h>
 }
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -52,31 +52,33 @@ core::mutable_frame make_frame(void*                    tag,
 
     auto frame = frame_factory.create_frame(tag, pix_desc);
 
-    tbb::parallel_invoke([&]() {
-        if (video) {
-            for (int n = 0; n < static_cast<int>(pix_desc.planes.size()); ++n) {
-                auto frame_plan_index = data_map.empty() ? n : data_map.at(n);
+    tbb::parallel_invoke(
+        [&]() {
+            if (video) {
+                for (int n = 0; n < static_cast<int>(pix_desc.planes.size()); ++n) {
+                    auto frame_plan_index = data_map.empty() ? n : data_map.at(n);
 
-                tbb::parallel_for(0, pix_desc.planes[n].height, [&](int y) {
-                    std::memcpy(frame.image_data(n).begin() + y * pix_desc.planes[n].linesize,
-                                video->data[frame_plan_index] + y * video->linesize[frame_plan_index],
-                                pix_desc.planes[n].linesize);
-                });
-            }
-        }
-    }, [&]() {
-        if (audio) {
-            // TODO This is a bit of a hack
-            frame.audio_data() = std::vector<int32_t>(audio->nb_samples * 8, 0);
-            auto dst = frame.audio_data().data();
-            auto src = reinterpret_cast<int32_t*>(audio->data[0]);
-            for (auto i = 0; i < audio->nb_samples; i++) {
-                for (auto j = 0; j < std::min(8, audio->channels); ++j) {
-                    dst[i * 8 + j] = src[i * audio->channels + j];
+                    tbb::parallel_for(0, pix_desc.planes[n].height, [&](int y) {
+                        std::memcpy(frame.image_data(n).begin() + y * pix_desc.planes[n].linesize,
+                                    video->data[frame_plan_index] + y * video->linesize[frame_plan_index],
+                                    pix_desc.planes[n].linesize);
+                    });
                 }
             }
-        }
-    });
+        },
+        [&]() {
+            if (audio) {
+                // TODO This is a bit of a hack
+                frame.audio_data() = std::vector<int32_t>(audio->nb_samples * 8, 0);
+                auto dst           = frame.audio_data().data();
+                auto src           = reinterpret_cast<int32_t*>(audio->data[0]);
+                for (auto i = 0; i < audio->nb_samples; i++) {
+                    for (auto j = 0; j < std::min(8, audio->channels); ++j) {
+                        dst[i * 8 + j] = src[i * audio->channels + j];
+                    }
+                }
+            }
+        });
 
     return frame;
 }
@@ -123,9 +125,9 @@ core::pixel_format get_pixel_format(AVPixelFormat pix_fmt)
 
 core::pixel_format_desc pixel_format_desc(AVPixelFormat pix_fmt, int width, int height, std::vector<int>& data_map)
 {
-    int linesize[4] = {};
+    int       linesize[4]  = {};
     ptrdiff_t linesize1[4] = {};
-    size_t sizes[4] = {};
+    size_t    sizes[4]     = {};
 
     FF_RET(av_image_fill_linesizes(linesize, pix_fmt, width), "av_image_fill_linesizes");
 
@@ -205,55 +207,55 @@ std::shared_ptr<AVFrame> make_av_video_frame(const core::const_frame& frame, con
     if (is_16bit)
         av_frame->format = AVPixelFormat::AV_PIX_FMT_BGRA64;
     else
-    switch (format) {
-        case core::pixel_format::rgb:
-            av_frame->format = AVPixelFormat::AV_PIX_FMT_RGB24;
-            break;
-        case core::pixel_format::bgr:
-            av_frame->format = AVPixelFormat::AV_PIX_FMT_BGR24;
-            break;
-        case core::pixel_format::rgba:
-            av_frame->format = AVPixelFormat::AV_PIX_FMT_RGBA;
-            break;
-        case core::pixel_format::argb:
-            av_frame->format = AVPixelFormat::AV_PIX_FMT_ARGB;
-            break;
-        case core::pixel_format::bgra:
-            av_frame->format = AVPixelFormat::AV_PIX_FMT_BGRA;
-            break;
-        case core::pixel_format::abgr:
-            av_frame->format = AVPixelFormat::AV_PIX_FMT_ABGR;
-            break;
-        case core::pixel_format::gray:
-        case core::pixel_format::luma:
-            av_frame->format = AVPixelFormat::AV_PIX_FMT_GRAY8;
-            break;
-        case core::pixel_format::ycbcr: {
-            int y_w = planes[0].width;
-            int y_h = planes[0].height;
-            int c_w = planes[1].width;
-            int c_h = planes[1].height;
+        switch (format) {
+            case core::pixel_format::rgb:
+                av_frame->format = AVPixelFormat::AV_PIX_FMT_RGB24;
+                break;
+            case core::pixel_format::bgr:
+                av_frame->format = AVPixelFormat::AV_PIX_FMT_BGR24;
+                break;
+            case core::pixel_format::rgba:
+                av_frame->format = AVPixelFormat::AV_PIX_FMT_RGBA;
+                break;
+            case core::pixel_format::argb:
+                av_frame->format = AVPixelFormat::AV_PIX_FMT_ARGB;
+                break;
+            case core::pixel_format::bgra:
+                av_frame->format = AVPixelFormat::AV_PIX_FMT_BGRA;
+                break;
+            case core::pixel_format::abgr:
+                av_frame->format = AVPixelFormat::AV_PIX_FMT_ABGR;
+                break;
+            case core::pixel_format::gray:
+            case core::pixel_format::luma:
+                av_frame->format = AVPixelFormat::AV_PIX_FMT_GRAY8;
+                break;
+            case core::pixel_format::ycbcr: {
+                int y_w = planes[0].width;
+                int y_h = planes[0].height;
+                int c_w = planes[1].width;
+                int c_h = planes[1].height;
 
-            if (c_h == y_h && c_w == y_w)
-                av_frame->format = AVPixelFormat::AV_PIX_FMT_YUV444P;
-            else if (c_h == y_h && c_w * 2 == y_w)
-                av_frame->format = AVPixelFormat::AV_PIX_FMT_YUV422P;
-            else if (c_h == y_h && c_w * 4 == y_w)
-                av_frame->format = AVPixelFormat::AV_PIX_FMT_YUV411P;
-            else if (c_h * 2 == y_h && c_w * 2 == y_w)
-                av_frame->format = AVPixelFormat::AV_PIX_FMT_YUV420P;
-            else if (c_h * 2 == y_h && c_w * 4 == y_w)
-                av_frame->format = AVPixelFormat::AV_PIX_FMT_YUV410P;
+                if (c_h == y_h && c_w == y_w)
+                    av_frame->format = AVPixelFormat::AV_PIX_FMT_YUV444P;
+                else if (c_h == y_h && c_w * 2 == y_w)
+                    av_frame->format = AVPixelFormat::AV_PIX_FMT_YUV422P;
+                else if (c_h == y_h && c_w * 4 == y_w)
+                    av_frame->format = AVPixelFormat::AV_PIX_FMT_YUV411P;
+                else if (c_h * 2 == y_h && c_w * 2 == y_w)
+                    av_frame->format = AVPixelFormat::AV_PIX_FMT_YUV420P;
+                else if (c_h * 2 == y_h && c_w * 4 == y_w)
+                    av_frame->format = AVPixelFormat::AV_PIX_FMT_YUV410P;
 
-            break;
+                break;
+            }
+            case core::pixel_format::ycbcra:
+                av_frame->format = AVPixelFormat::AV_PIX_FMT_YUVA420P;
+                break;
+            case core::pixel_format::count:
+            case core::pixel_format::invalid:
+                break;
         }
-        case core::pixel_format::ycbcra:
-            av_frame->format = AVPixelFormat::AV_PIX_FMT_YUVA420P;
-            break;
-        case core::pixel_format::count:
-        case core::pixel_format::invalid:
-            break;
-    }
 
     FF(av_frame_get_buffer(av_frame.get(), is_16bit ? 64 : 32));
 

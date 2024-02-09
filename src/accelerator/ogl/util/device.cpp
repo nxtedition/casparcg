@@ -219,9 +219,10 @@ struct device::impl : public std::enable_shared_from_this<impl>
         CASPAR_VERIFY(stride > 0 && stride < 5);
         CASPAR_VERIFY(width > 0 && height > 0);
 
+        auto depth_pool_index = depth == common::bit_depth::bit8 ? 0 : 1;
+
         // TODO (perf) Shared pool.
-        auto pool =
-            &device_pools_[static_cast<int>(depth)][stride - 1][(width << 16 & 0xFFFF0000) | (height & 0x0000FFFF)];
+        auto pool = &device_pools_[depth_pool_index][stride - 1][(width << 16 & 0xFFFF0000) | (height & 0x0000FFFF)];
 
         std::shared_ptr<texture> tex;
         if (!pool->try_pop(tex)) {
@@ -258,7 +259,7 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
     array<uint8_t> create_array(int count, common::bit_depth depth)
     {
-        auto bytes_per_pixel = static_cast<int>(depth) + 1;
+        auto bytes_per_pixel = depth == common::bit_depth::bit8 ? 1 : 2;
         auto buf             = create_buffer(count * bytes_per_pixel, true);
         auto ptr             = reinterpret_cast<uint8_t*>(buf->data());
         return array<uint8_t>(ptr, buf->size(), buf, depth);

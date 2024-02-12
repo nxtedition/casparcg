@@ -33,6 +33,7 @@
 #include <core/producer/frame_producer.h>
 
 #include <common/assert.h>
+#include <common/bit_depth.h>
 #include <common/diagnostics/graph.h>
 #include <common/env.h>
 #include <common/executor.h>
@@ -165,18 +166,18 @@ class html_client
         }
     }
 
-    bool OnBeforePopup(CefRefPtr<CefBrowser>   browser,
-                       CefRefPtr<CefFrame>     frame,
-                       const CefString&        target_url,
-                       const CefString&        target_frame_name,
-                       cef_window_open_disposition_t target_disposition,
-                       bool                    user_gesture,
-                       const CefPopupFeatures& popupFeatures,
-                       CefWindowInfo&          windowInfo,
-                       CefRefPtr<CefClient>&   client,
-                       CefBrowserSettings&     settings,
+    bool OnBeforePopup(CefRefPtr<CefBrowser>          browser,
+                       CefRefPtr<CefFrame>            frame,
+                       const CefString&               target_url,
+                       const CefString&               target_frame_name,
+                       cef_window_open_disposition_t  target_disposition,
+                       bool                           user_gesture,
+                       const CefPopupFeatures&        popupFeatures,
+                       CefWindowInfo&                 windowInfo,
+                       CefRefPtr<CefClient>&          client,
+                       CefBrowserSettings&            settings,
                        CefRefPtr<CefDictionaryValue>& dict,
-                       bool*                   no_javascript_access) override
+                       bool*                          no_javascript_access) override
     {
         // This blocks popup windows from opening, as they dont make sense and hit an exception in get_browser_host upon
         // closing
@@ -223,7 +224,7 @@ class html_client
 
         core::pixel_format_desc pixel_desc;
         pixel_desc.format = core::pixel_format::bgra;
-        pixel_desc.planes.push_back(core::pixel_format_desc::plane(width, height, 4));
+        pixel_desc.planes.push_back(core::pixel_format_desc::plane(width, height, 4, common::bit_depth::bit8));
 
         auto frame = frame_factory_->create_frame(this, pixel_desc);
         auto src   = (char*)buffer;
@@ -410,14 +411,14 @@ class html_producer : public core::frame_producer
             client_ = new html_client(frame_factory, graph_, format_desc, shared_texture_enable, url_);
 
             CefWindowInfo window_info;
-            window_info.bounds.width = format_desc.square_width;
-            window_info.bounds.height = format_desc.square_height;
+            window_info.bounds.width                 = format_desc.square_width;
+            window_info.bounds.height                = format_desc.square_height;
             window_info.windowless_rendering_enabled = true;
-            window_info.shared_texture_enabled = shared_texture_enable;
+            window_info.shared_texture_enabled       = shared_texture_enable;
 
             CefBrowserSettings browser_settings;
-            browser_settings.webgl        = enable_gpu ? cef_state_t::STATE_ENABLED : cef_state_t::STATE_DISABLED;
-            double fps                    = format_desc.fps;
+            browser_settings.webgl = enable_gpu ? cef_state_t::STATE_ENABLED : cef_state_t::STATE_DISABLED;
+            double fps             = format_desc.fps;
             browser_settings.windowless_frame_rate = int(ceil(fps));
             CefBrowserHost::CreateBrowser(window_info, client_.get(), url, browser_settings, nullptr, nullptr);
         });

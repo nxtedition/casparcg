@@ -217,7 +217,7 @@ class image_renderer
         draw_params draw_params;
         draw_params.pix_desc.format = core::pixel_format::bgra;
         draw_params.pix_desc.planes = {
-            core::pixel_format_desc::plane(source_buffer->width(), source_buffer->height(), 4)};
+            core::pixel_format_desc::plane(source_buffer->width(), source_buffer->height(), 4, source_buffer->depth())};
         draw_params.textures   = {spl::make_shared_ptr(source_buffer)};
         draw_params.transform  = core::image_transform();
         draw_params.blend_mode = blend_mode;
@@ -288,7 +288,8 @@ struct image_mixer::impl
                 item.textures.emplace_back(ogl_->copy_async(frame.image_data(n),
                                                             item.pix_desc.planes[n].width,
                                                             item.pix_desc.planes[n].height,
-                                                            item.pix_desc.planes[n].stride));
+                                                            item.pix_desc.planes[n].stride,
+                                                            item.pix_desc.planes[n].depth));
             }
         }
 
@@ -316,27 +317,31 @@ struct image_mixer::impl
     {
         std::vector<array<std::uint8_t>> image_data;
         for (auto& plane : desc.planes) {
-            image_data.push_back(ogl_->create_array(plane.size, depth));
+            image_data.push_back(ogl_->create_array(plane.size,
+                                                    plane.depth == common::bit_depth::bit8 ? common::bit_depth::bit8
+                                                                                           : common::bit_depth::bit16));
         }
 
         std::weak_ptr<image_mixer::impl> weak_self = shared_from_this();
-        return core::mutable_frame(
-            tag,
-            std::move(image_data),
-            array<int32_t>{},
-            desc,
-            [weak_self, desc](std::vector<array<const std::uint8_t>> image_data) -> boost::any {
-                auto self = weak_self.lock();
-                if (!self) {
-                    return boost::any{};
-                }
-                std::vector<future_texture> textures;
-                for (int n = 0; n < static_cast<int>(desc.planes.size()); ++n) {
-                    textures.emplace_back(self->ogl_->copy_async(
-                        image_data[n], desc.planes[n].width, desc.planes[n].height, desc.planes[n].stride));
-                }
-                return std::make_shared<decltype(textures)>(std::move(textures));
-            });
+        return core::mutable_frame(tag,
+                                   std::move(image_data),
+                                   array<int32_t>{},
+                                   desc,
+                                   [weak_self, desc](std::vector<array<const std::uint8_t>> image_data) -> boost::any {
+                                       auto self = weak_self.lock();
+                                       if (!self) {
+                                           return boost::any{};
+                                       }
+                                       std::vector<future_texture> textures;
+                                       for (int n = 0; n < static_cast<int>(desc.planes.size()); ++n) {
+                                           textures.emplace_back(self->ogl_->copy_async(image_data[n],
+                                                                                        desc.planes[n].width,
+                                                                                        desc.planes[n].height,
+                                                                                        desc.planes[n].stride,
+                                                                                        desc.planes[n].depth));
+                                       }
+                                       return std::make_shared<decltype(textures)>(std::move(textures));
+                                   });
     }
 
     common::bit_depth depth() const { return renderer_.depth(); }

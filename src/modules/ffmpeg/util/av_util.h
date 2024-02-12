@@ -1,9 +1,9 @@
 #include <libavutil/pixfmt.h>
 
-#include <core/video_format.h>
 #include <core/frame/frame.h>
 #include <core/frame/frame_factory.h>
 #include <core/frame/pixel_format.h>
+#include <core/video_format.h>
 
 #include <map>
 #include <memory>
@@ -20,7 +20,6 @@ namespace caspar { namespace ffmpeg {
 std::shared_ptr<AVFrame>  alloc_frame();
 std::shared_ptr<AVPacket> alloc_packet();
 
-core::pixel_format      get_pixel_format(AVPixelFormat pix_fmt);
 core::pixel_format_desc pixel_format_desc(AVPixelFormat pix_fmt, int width, int height, std::vector<int>& data_map);
 core::mutable_frame     make_frame(void*                    tag,
                                    core::frame_factory&     frame_factory,

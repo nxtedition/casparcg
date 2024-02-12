@@ -259,16 +259,14 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
     array<uint8_t> create_array(int count, common::bit_depth depth)
     {
-        auto bytes_per_pixel = depth == common::bit_depth::bit8 ? 1 : 2;
-        auto buf             = create_buffer(count * bytes_per_pixel, true);
-        auto ptr             = reinterpret_cast<uint8_t*>(buf->data());
+        auto buf = create_buffer(count, true);
+        auto ptr = reinterpret_cast<uint8_t*>(buf->data());
         return array<uint8_t>(ptr, buf->size(), buf, depth);
     }
 
     std::future<std::shared_ptr<texture>>
-    copy_async(const array<const uint8_t>& source, int width, int height, int stride)
+    copy_async(const array<const uint8_t>& source, int width, int height, int stride, common::bit_depth depth)
     {
-        auto depth = source.native_depth();
         return dispatch_async([=] {
             std::shared_ptr<buffer> buf;
 
@@ -448,9 +446,9 @@ std::shared_ptr<texture> device::create_texture(int width, int height, int strid
 }
 array<uint8_t> device::create_array(int size, common::bit_depth depth) { return impl_->create_array(size, depth); }
 std::future<std::shared_ptr<texture>>
-device::copy_async(const array<const uint8_t>& source, int width, int height, int stride)
+device::copy_async(const array<const uint8_t>& source, int width, int height, int stride, common::bit_depth depth)
 {
-    return impl_->copy_async(source, width, height, stride);
+    return impl_->copy_async(source, width, height, stride, depth);
 }
 std::future<array<const uint8_t>> device::copy_async(const std::shared_ptr<texture>& source)
 {

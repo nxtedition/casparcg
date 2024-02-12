@@ -71,15 +71,22 @@ struct mixer::impl
 
         state_["audio"] = audio_mixer_.state();
 
-        buffer_.push(std::async(
-            std::launch::deferred,
-            [image = std::move(image), audio = std::move(audio), graph = graph_, format_desc, tag = this]() mutable {
-                auto desc = pixel_format_desc(pixel_format::bgra);
-                desc.planes.push_back(pixel_format_desc::plane(format_desc.width, format_desc.height, 4));
-                std::vector<array<const uint8_t>> image_data;
-                image_data.emplace_back(std::move(image.get()));
-                return const_frame(std::move(image_data), std::move(audio), desc);
-            }));
+        auto depth = image_mixer_->depth();
+
+        buffer_.push(std::async(std::launch::deferred,
+                                [image = std::move(image),
+                                 audio = std::move(audio),
+                                 graph = graph_,
+                                 depth,
+                                 format_desc,
+                                 tag = this]() mutable {
+                                    auto desc = pixel_format_desc(pixel_format::bgra);
+                                    desc.planes.push_back(
+                                        pixel_format_desc::plane(format_desc.width, format_desc.height, 4, depth));
+                                    std::vector<array<const uint8_t>> image_data;
+                                    image_data.emplace_back(std::move(image.get()));
+                                    return const_frame(std::move(image_data), std::move(audio), desc);
+                                }));
 
         if (buffer_.size() < 2) {
             return const_frame{};

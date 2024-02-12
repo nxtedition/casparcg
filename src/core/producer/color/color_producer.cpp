@@ -29,6 +29,7 @@
 #include <core/producer/frame_producer.h>
 
 #include <common/array.h>
+#include <common/bit_depth.h>
 #include <common/except.h>
 #include <common/scope_exit.h>
 
@@ -42,7 +43,8 @@ draw_frame
 create_color_frame(void* tag, const spl::shared_ptr<frame_factory>& frame_factory, const std::vector<uint32_t>& values)
 {
     core::pixel_format_desc desc(pixel_format::bgra);
-    desc.planes.push_back(core::pixel_format_desc::plane(static_cast<int>(values.size()), 1, 4));
+    desc.planes.push_back(
+        core::pixel_format_desc::plane(static_cast<int>(values.size()), 1, 4, common::bit_depth::bit8));
     auto frame = frame_factory->create_frame(tag, desc);
 
     for (int i = 0; i < values.size(); ++i)

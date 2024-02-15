@@ -121,7 +121,7 @@ struct device::impl : public std::enable_shared_from_this<impl>
         }
 
         auto err = glewInit();
-        if (err != GLEW_OK && err != GLEW_ERROR_NO_GLX_DISPLAY) {
+        if (err != GLEW_OK && err != 4) { // GLEW_ERROR_NO_GLX_DISPLAY
             std::stringstream str;
             str << "Failed to initialize GLEW (" << (int)err << "): " << glewGetErrorString(err) << std::endl;
             CASPAR_THROW_EXCEPTION(gl::ogl_exception() << msg_info(str.str()));

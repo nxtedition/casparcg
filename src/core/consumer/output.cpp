@@ -23,9 +23,11 @@
 #include "frame_consumer.h"
 
 #include "../frame/frame.h"
+#include "../frame/pixel_format.h"
 #include "../monitor/monitor.h"
 #include "../video_format.h"
 
+#include <common/bit_depth.h>
 #include <common/diagnostics/graph.h>
 #include <common/except.h>
 #include <common/memory.h>
@@ -87,7 +89,10 @@ struct output::impl
             return;
         }
 
-        if (input_frame.size() != format_desc_.size) {
+        const auto bytesPerComponent =
+            input_frame.pixel_format_desc().planes.at(0).depth == common::bit_depth::bit8 ? 1 : 2;
+
+        if (input_frame.size() != format_desc_.size * bytesPerComponent) {
             CASPAR_LOG(warning) << print() << L" Invalid input frame size.";
             return;
         }

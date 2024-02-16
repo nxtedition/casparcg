@@ -1,5 +1,5 @@
 /* -LICENSE-START-
-** Copyright (c) 2011 Blackmagic Design
+** Copyright (c) 2015 Blackmagic Design
 **  
 ** Permission is hereby granted, free of charge, to any person or organization 
 ** obtaining a copy of the software and accompanying documentation (the 
@@ -38,39 +38,39 @@
 ** -LICENSE-END-
 */
 
-#ifndef BMD_DECKLINKAPI_v8_0_H
-#define BMD_DECKLINKAPI_v8_0_H
+#ifndef BMD_DECKLINKAPICONFIGURATION_v10_4_H
+#define BMD_DECKLINKAPICONFIGURATION_v10_4_H
 
-#include "DeckLinkAPI.h"
+#include "DeckLinkAPIConfiguration.h"
 
 // Interface ID Declarations
 
-#define IID_IDeckLink_v8_0                                    /* 62BFF75D-6569-4E55-8D4D-66AA03829ABC */ (REFIID){0x62,0xBF,0xF7,0x5D,0x65,0x69,0x4E,0x55,0x8D,0x4D,0x66,0xAA,0x03,0x82,0x9A,0xBC}
-#define IID_IDeckLinkIterator_v8_0                            /* 74E936FC-CC28-4A67-81A0-1E94E52D4E69 */ (REFIID){0x74,0xE9,0x36,0xFC,0xCC,0x28,0x4A,0x67,0x81,0xA0,0x1E,0x94,0xE5,0x2D,0x4E,0x69}
+BMD_CONST REFIID IID_IDeckLinkConfiguration_v10_4                       = /* 1E69FCF6-4203-4936-8076-2A9F4CFD50CB */ {0x1E,0x69,0xFC,0xF6,0x42,0x03,0x49,0x36,0x80,0x76,0x2A,0x9F,0x4C,0xFD,0x50,0xCB};
 
-#if defined (__cplusplus)
 
-/* Interface IDeckLink_v8_0 - represents a DeckLink device */
+//
+// Forward Declarations
 
-class BMD_PUBLIC IDeckLink_v8_0 : public IUnknown
+class IDeckLinkConfiguration_v10_4;
+
+/* Interface IDeckLinkConfiguration_v10_4 - DeckLink Configuration interface */
+
+class BMD_PUBLIC IDeckLinkConfiguration_v10_4 : public IUnknown
 {
 public:
-    virtual HRESULT GetModelName (/* out */ const char **modelName) = 0;
+    virtual HRESULT SetFlag (/* in */ BMDDeckLinkConfigurationID cfgID, /* in */ bool value) = 0;
+    virtual HRESULT GetFlag (/* in */ BMDDeckLinkConfigurationID cfgID, /* out */ bool *value) = 0;
+    virtual HRESULT SetInt (/* in */ BMDDeckLinkConfigurationID cfgID, /* in */ int64_t value) = 0;
+    virtual HRESULT GetInt (/* in */ BMDDeckLinkConfigurationID cfgID, /* out */ int64_t *value) = 0;
+    virtual HRESULT SetFloat (/* in */ BMDDeckLinkConfigurationID cfgID, /* in */ double value) = 0;
+    virtual HRESULT GetFloat (/* in */ BMDDeckLinkConfigurationID cfgID, /* out */ double *value) = 0;
+    virtual HRESULT SetString (/* in */ BMDDeckLinkConfigurationID cfgID, /* in */ const char *value) = 0;
+    virtual HRESULT GetString (/* in */ BMDDeckLinkConfigurationID cfgID, /* out */ const char **value) = 0;
+    virtual HRESULT WriteConfigurationToPreferences (void) = 0;
+
+protected:
+    virtual ~IDeckLinkConfiguration_v10_4 () {} // call Release method to drop reference count
 };
 
-/* Interface IDeckLinkIterator_v8_0 - enumerates installed DeckLink hardware */
 
-class BMD_PUBLIC IDeckLinkIterator_v8_0 : public IUnknown
-{
-public:
-    virtual HRESULT Next (/* out */ IDeckLink_v8_0 **deckLinkInstance) = 0;
-};
-
-extern "C" {
-    BMD_PUBLIC IDeckLinkIterator_v8_0* CreateDeckLinkIteratorInstance_v8_0 (void);
-};
-
-#endif	// defined __cplusplus
-
-#endif /* defined(BMD_DECKLINKAPI_v8_0_H) */
-
+#endif /* defined(BMD_DECKLINKAPICONFIGURATION_v10_4_H) */

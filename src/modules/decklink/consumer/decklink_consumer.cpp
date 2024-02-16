@@ -102,7 +102,45 @@ void set_latency(const com_iface_ptr<Configuration>& config,
     }
 }
 
-void set_keyer(const com_iface_ptr<IDeckLinkAttributes>& attributes,
+com_ptr<IDeckLinkDisplayMode> get_display_mode(const com_iface_ptr<IDeckLinkOutput>& device,
+                                               core::video_format                    fmt,
+                                               BMDPixelFormat                        pix_fmt,
+                                               BMDSupportedVideoModeFlags            flag)
+{
+    auto format = get_decklink_video_format(fmt);
+
+    IDeckLinkDisplayMode*         m = nullptr;
+    IDeckLinkDisplayModeIterator* iter;
+    if (SUCCEEDED(device->GetDisplayModeIterator(&iter))) {
+        auto iterator = wrap_raw<com_ptr>(iter, true);
+        while (SUCCEEDED(iterator->Next(&m)) && m != nullptr && m->GetDisplayMode() != format) {
+            m->Release();
+        }
+    }
+
+    if (!m)
+        CASPAR_THROW_EXCEPTION(user_error()
+                               << msg_info("Device could not find requested video-format: " + std::to_string(format)));
+
+    com_ptr<IDeckLinkDisplayMode> mode = wrap_raw<com_ptr>(m, true);
+
+    BMDDisplayMode actualMode = bmdModeUnknown;
+    BOOL           supported  = false;
+
+    if (FAILED(device->DoesSupportVideoMode(
+            bmdVideoConnectionUnspecified, mode->GetDisplayMode(), pix_fmt, bmdNoVideoOutputConversion, flag, &actualMode, &supported)))
+        CASPAR_THROW_EXCEPTION(caspar_exception()
+                               << msg_info(L"Could not determine whether device supports requested video format: " +
+                                           get_mode_name(mode)));
+    else if (!supported)
+        CASPAR_LOG(info) << L"Device may not support video-format: " << get_mode_name(mode);
+    else if (actualMode != bmdModeUnknown)
+        CASPAR_LOG(warning) << L"Device supports video-format with conversion: " << get_mode_name(mode);
+
+    return mode;
+}
+
+void set_keyer(const com_iface_ptr<IDeckLinkProfileAttributes>& attributes,
                const com_iface_ptr<IDeckLinkKeyer>&      decklink_keyer,
                configuration::keyer_t                    keyer,
                const std::wstring&                       print)
@@ -195,7 +233,7 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     com_iface_ptr<IDeckLinkOutput>        output_        = iface_cast<IDeckLinkOutput>(decklink_);
     com_iface_ptr<IDeckLinkConfiguration> configuration_ = iface_cast<IDeckLinkConfiguration>(decklink_);
     com_iface_ptr<IDeckLinkKeyer>         keyer_         = iface_cast<IDeckLinkKeyer>(decklink_, true);
-    com_iface_ptr<IDeckLinkAttributes>    attributes_    = iface_cast<IDeckLinkAttributes>(decklink_);
+    com_iface_ptr<IDeckLinkProfileAttributes>    attributes_    = iface_cast<IDeckLinkProfileAttributes>(decklink_);
 
     std::mutex         exception_mutex_;
     std::exception_ptr exception_;

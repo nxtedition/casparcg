@@ -133,10 +133,6 @@ public:
             }
         }
 
-        if (codec->capabilities & AV_CODEC_CAP_SLICE_THREADS) {
-            ctx->thread_type = FF_THREAD_SLICE;
-        }
-
         FF(avcodec_open2(ctx.get(), codec, nullptr));
 
         thread = boost::thread([=]()

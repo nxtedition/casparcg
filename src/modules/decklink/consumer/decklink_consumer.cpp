@@ -127,8 +127,13 @@ com_ptr<IDeckLinkDisplayMode> get_display_mode(const com_iface_ptr<IDeckLinkOutp
     BMDDisplayMode actualMode = bmdModeUnknown;
     BOOL           supported  = false;
 
-    if (FAILED(device->DoesSupportVideoMode(
-            bmdVideoConnectionUnspecified, mode->GetDisplayMode(), pix_fmt, bmdNoVideoOutputConversion, flag, &actualMode, &supported)))
+    if (FAILED(device->DoesSupportVideoMode(bmdVideoConnectionUnspecified,
+                                            mode->GetDisplayMode(),
+                                            pix_fmt,
+                                            bmdNoVideoOutputConversion,
+                                            flag,
+                                            &actualMode,
+                                            &supported)))
         CASPAR_THROW_EXCEPTION(caspar_exception()
                                << msg_info(L"Could not determine whether device supports requested video format: " +
                                            get_mode_name(mode)));
@@ -141,9 +146,9 @@ com_ptr<IDeckLinkDisplayMode> get_display_mode(const com_iface_ptr<IDeckLinkOutp
 }
 
 void set_keyer(const com_iface_ptr<IDeckLinkProfileAttributes>& attributes,
-               const com_iface_ptr<IDeckLinkKeyer>&      decklink_keyer,
-               configuration::keyer_t                    keyer,
-               const std::wstring&                       print)
+               const com_iface_ptr<IDeckLinkKeyer>&             decklink_keyer,
+               configuration::keyer_t                           keyer,
+               const std::wstring&                              print)
 {
     if (keyer == configuration::keyer_t::internal_keyer) {
         BOOL value = true;
@@ -168,7 +173,9 @@ void set_keyer(const com_iface_ptr<IDeckLinkProfileAttributes>& attributes,
     }
 }
 
-class decklink_frame : public IDeckLinkVideoFrame
+class decklink_frame
+    : public IDeckLinkVideoFrame
+    , public IDeckLinkVideoFrameMetadataExtensions
 {
     core::video_format_desc format_desc_;
     std::shared_ptr<void>   data_;
@@ -185,7 +192,35 @@ class decklink_frame : public IDeckLinkVideoFrame
 
     // IUnknown
 
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, LPVOID*) override { return E_NOINTERFACE; }
+    HRESULT STDMETHODCALLTYPE QueryInterface(const REFIID iid, LPVOID* ppv) override
+    {
+        /* Implementation from the SignalGenHDR example in the Decklink SDK */
+
+        CFUUIDBytes iunknown;
+        HRESULT     result = S_OK;
+
+        if (ppv == nullptr)
+            return E_INVALIDARG;
+
+        // Initialise the return result
+        *ppv = nullptr;
+
+        iunknown = CFUUIDGetUUIDBytes(IUnknownUUID);
+        if (std::memcmp(&iid, &iunknown, sizeof(REFIID)) == 0) {
+            *ppv = this;
+            AddRef();
+        } else if (std::memcmp(&iid, &IID_IDeckLinkVideoFrame, sizeof(REFIID)) == 0) {
+            *ppv = static_cast<IDeckLinkVideoFrame*>(this);
+            AddRef();
+        } else if (std::memcmp(&iid, &IID_IDeckLinkVideoFrameMetadataExtensions, sizeof(REFIID)) == 0) {
+            *ppv = static_cast<IDeckLinkVideoFrameMetadataExtensions*>(this);
+            AddRef();
+        } else {
+            result = E_NOINTERFACE;
+        }
+
+        return result;
+    }
 
     ULONG STDMETHODCALLTYPE AddRef() override { return ++ref_count_; }
 
@@ -222,6 +257,51 @@ class decklink_frame : public IDeckLinkVideoFrame
     HRESULT STDMETHODCALLTYPE GetAncillaryData(IDeckLinkVideoFrameAncillary** ancillary) override { return S_FALSE; }
 
     int nb_samples() const { return nb_samples_; }
+
+    // IDeckLinkVideoFrameMetadataExtensions
+    HRESULT GetInt(BMDDeckLinkFrameMetadataID metadataID, int64_t* value)
+    {
+        HRESULT result = S_OK;
+
+        switch (metadataID) {
+            case bmdDeckLinkFrameMetadataHDRElectroOpticalTransferFunc:
+                *value = 1;
+                break;
+
+            case bmdDeckLinkFrameMetadataColorspace:
+                // Colorspace is fixed for this sample
+                *value = bmdColorspaceRec2020;
+                break;
+
+            default:
+                value  = nullptr;
+                result = E_INVALIDARG;
+        }
+
+        return result;
+    }
+
+    HRESULT GetFloat(BMDDeckLinkFrameMetadataID metadataID, double* value) { return E_INVALIDARG; }
+
+    HRESULT GetFlag(BMDDeckLinkFrameMetadataID, bool* value)
+    {
+        // Not expecting GetFlag
+        *value = false;
+        return E_INVALIDARG;
+    }
+
+    HRESULT GetString(BMDDeckLinkFrameMetadataID, const char** value)
+    {
+        // Not expecting GetString
+        *value = nullptr;
+        return E_INVALIDARG;
+    }
+
+    HRESULT GetBytes(BMDDeckLinkFrameMetadataID metadataID, void* buffer, uint32_t* bufferSize)
+    {
+        *bufferSize = 0;
+        return E_INVALIDARG;
+    }
 };
 
 struct decklink_consumer : public IDeckLinkVideoOutputCallback
@@ -229,11 +309,11 @@ struct decklink_consumer : public IDeckLinkVideoOutputCallback
     const int           channel_index_;
     const configuration config_;
 
-    com_ptr<IDeckLink>                    decklink_      = get_device(config_.device_index);
-    com_iface_ptr<IDeckLinkOutput>        output_        = iface_cast<IDeckLinkOutput>(decklink_);
-    com_iface_ptr<IDeckLinkConfiguration> configuration_ = iface_cast<IDeckLinkConfiguration>(decklink_);
-    com_iface_ptr<IDeckLinkKeyer>         keyer_         = iface_cast<IDeckLinkKeyer>(decklink_, true);
-    com_iface_ptr<IDeckLinkProfileAttributes>    attributes_    = iface_cast<IDeckLinkProfileAttributes>(decklink_);
+    com_ptr<IDeckLink>                        decklink_      = get_device(config_.device_index);
+    com_iface_ptr<IDeckLinkOutput>            output_        = iface_cast<IDeckLinkOutput>(decklink_);
+    com_iface_ptr<IDeckLinkConfiguration>     configuration_ = iface_cast<IDeckLinkConfiguration>(decklink_);
+    com_iface_ptr<IDeckLinkKeyer>             keyer_         = iface_cast<IDeckLinkKeyer>(decklink_, true);
+    com_iface_ptr<IDeckLinkProfileAttributes> attributes_    = iface_cast<IDeckLinkProfileAttributes>(decklink_);
 
     std::mutex         exception_mutex_;
     std::exception_ptr exception_;

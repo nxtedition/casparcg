@@ -218,18 +218,15 @@ struct ChromaticityCoordinates
 
 struct HDRMetadata
 {
-    int64_t                 EOTF;
-    ChromaticityCoordinates referencePrimaries;
-    double                  maxDisplayMasteringLuminance;
-    double                  minDisplayMasteringLuminance;
-    double                  maxCLL;
-    double                  maxFALL;
+    int64_t EOTF;
+    double  maxDisplayMasteringLuminance;
+    double  minDisplayMasteringLuminance;
+    double  maxCLL;
+    double  maxFALL;
 };
 
-// Both have ChromaticityCoordinates dictated by Rec2020
-const HDRMetadata HDR_METADATA[] = {
-    {EOTF::PQ, {0.708, 0.292, 0.170, 0.797, 0.131, 0.046, 0.3127, 0.3290}, 1000.0, 0.005, 1000.0, 50.0},
-    {EOTF::HLG, {0.708, 0.292, 0.170, 0.797, 0.131, 0.046, 0.3127, 0.3290}, 1000.0, 0.005, 1000.0, 50.0}};
+const auto REC_709  = ChromaticityCoordinates{0.640, 0.330, 0.300, 0.600, 0.150, 0.060, 0.3127, 0.3290};
+const auto REC_2020 = ChromaticityCoordinates{0.708, 0.292, 0.170, 0.797, 0.131, 0.046, 0.3127, 0.3290};
 
 class decklink_frame
     : public IDeckLinkVideoFrame
@@ -329,7 +326,7 @@ class decklink_frame
 
         switch (metadataID) {
             case bmdDeckLinkFrameMetadataHDRElectroOpticalTransferFunc:
-                *value = HDR_METADATA[0].EOTF;
+                *value = EOTF::PQ;
                 break;
 
             case bmdDeckLinkFrameMetadataColorspace:
@@ -350,51 +347,51 @@ class decklink_frame
 
         switch (metadataID) {
             case bmdDeckLinkFrameMetadataHDRDisplayPrimariesRedX:
-                *value = HDR_METADATA[1].referencePrimaries.RedX;
+                *value = REC_709.RedX;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRDisplayPrimariesRedY:
-                *value = HDR_METADATA[1].referencePrimaries.RedY;
+                *value = REC_709.RedY;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRDisplayPrimariesGreenX:
-                *value = HDR_METADATA[1].referencePrimaries.GreenX;
+                *value = REC_709.GreenX;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRDisplayPrimariesGreenY:
-                *value = HDR_METADATA[1].referencePrimaries.GreenY;
+                *value = REC_709.GreenY;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRDisplayPrimariesBlueX:
-                *value = HDR_METADATA[1].referencePrimaries.BlueX;
+                *value = REC_709.BlueX;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRDisplayPrimariesBlueY:
-                *value = HDR_METADATA[1].referencePrimaries.BlueY;
+                *value = REC_709.BlueY;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRWhitePointX:
-                *value = HDR_METADATA[1].referencePrimaries.WhiteX;
+                *value = REC_709.WhiteX;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRWhitePointY:
-                *value = HDR_METADATA[1].referencePrimaries.WhiteY;
+                *value = REC_709.WhiteY;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRMaxDisplayMasteringLuminance:
-                *value = HDR_METADATA[1].maxDisplayMasteringLuminance;
+                *value = 1000.0;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRMinDisplayMasteringLuminance:
-                *value = HDR_METADATA[1].minDisplayMasteringLuminance;
+                *value = 0.005;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRMaximumContentLightLevel:
-                *value = HDR_METADATA[1].maxCLL;
+                *value = 1000.0;
                 break;
 
             case bmdDeckLinkFrameMetadataHDRMaximumFrameAverageLightLevel:
-                *value = HDR_METADATA[1].maxFALL;
+                *value = 50.0;
                 break;
 
             default:

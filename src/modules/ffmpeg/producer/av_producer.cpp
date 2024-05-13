@@ -70,6 +70,21 @@ struct Frame
     int64_t                  duration   = 0;
 };
 
+AVPixelFormat get_pix_fmt_with_alpha(AVPixelFormat fmt)
+{
+    switch (fmt) {
+        case AV_PIX_FMT_YUV420P:
+            return AV_PIX_FMT_YUVA420P;
+        case AV_PIX_FMT_YUV422P:
+            return AV_PIX_FMT_YUVA422P;
+        case AV_PIX_FMT_YUV444P:
+            return AV_PIX_FMT_YUVA444P;
+        default:
+            break;
+    }
+    return fmt;
+}
+
 // TODO (fix) Handle ts discontinuities.
 // TODO (feat) Forward options.
 
@@ -102,7 +117,10 @@ public:
     explicit Decoder(AVStream* stream)
         : st(stream)
     {
-        const auto codec = avcodec_find_decoder(stream->codecpar->codec_id);
+        const auto codec = stream->codecpar->codec_id == AV_CODEC_ID_VP9
+                               ? avcodec_find_decoder_by_name("libvpx-vp9")
+                               : avcodec_find_decoder(stream->codecpar->codec_id);
+
         if (!codec) {
             FF_RET(AVERROR_DECODER_NOT_FOUND, "avcodec_find_decoder");
         }
@@ -115,6 +133,12 @@ public:
         }
 
         FF(avcodec_parameters_to_context(ctx.get(), stream->codecpar));
+
+        if (stream->metadata != NULL) {
+            auto entry = av_dict_get(stream->metadata, "alpha_mode", NULL, AV_DICT_MATCH_CASE);
+            if (entry != NULL && entry->value != NULL && *entry->value == '1')
+                ctx->pix_fmt = get_pix_fmt_with_alpha(ctx->pix_fmt);
+        }
 
         int thread_count = env::properties().get(L"configuration.ffmpeg.producer.threads", 0);
         FF(av_opt_set_int(ctx.get(), "threads", thread_count, 0));

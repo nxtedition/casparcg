@@ -85,6 +85,17 @@ AVPixelFormat get_pix_fmt_with_alpha(AVPixelFormat fmt)
     return fmt;
 }
 
+const AVCodec* get_decoder(AVCodecID codec_id)
+{
+    // enforce use of libvpx for vp8 and vp9 codecs to be able
+    // to decode webm files with alpha channel
+    if(codec_id == AV_CODEC_ID_VP9)
+        return avcodec_find_decoder_by_name("libvpx-vp9");
+    else if(codec_id == AV_CODEC_ID_VP8)
+        return avcodec_find_decoder_by_name("libvpx");
+    return avcodec_find_decoder(codec_id);
+}
+
 // TODO (fix) Handle ts discontinuities.
 // TODO (feat) Forward options.
 
@@ -117,9 +128,7 @@ public:
     explicit Decoder(AVStream* stream)
         : st(stream)
     {
-        const auto codec = stream->codecpar->codec_id == AV_CODEC_ID_VP9
-                               ? avcodec_find_decoder_by_name("libvpx-vp9")
-                               : avcodec_find_decoder(stream->codecpar->codec_id);
+        const auto codec = get_decoder(stream->codecpar->codec_id); 
 
         if (!codec) {
             FF_RET(AVERROR_DECODER_NOT_FOUND, "avcodec_find_decoder");

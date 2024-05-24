@@ -30,7 +30,7 @@ class mutable_frame final
     ~mutable_frame();
 
     mutable_frame& operator=(const mutable_frame&) = delete;
-    mutable_frame& operator                        =(mutable_frame&& other);
+    mutable_frame& operator=(mutable_frame&& other);
 
     void swap(mutable_frame& other);
 
@@ -41,6 +41,7 @@ class mutable_frame final
 
     array<std::int32_t>&       audio_data();
     const array<std::int32_t>& audio_data() const;
+    void                       set_audio_data(caspar::array<int32_t>&& audio);
 
     std::size_t width() const;
 

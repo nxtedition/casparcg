@@ -40,6 +40,8 @@
 #include <common/os/filesystem.h>
 #include <common/timer.h>
 
+#include <ffmpeg/util/audio_resampler.h>
+
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/filesystem.hpp>
@@ -69,27 +71,116 @@
 
 namespace caspar { namespace html {
 
+struct presentation_frame
+{
+    core::mutable_frame frame;
+    int64_t             audio_pts;
+
+    presentation_frame()
+        : frame(core::mutable_frame(nullptr,
+                                    std::vector<caspar::array<uint8_t>>(),
+                                    caspar::array<int32_t>(),
+                                    core::pixel_format_desc()))
+        , audio_pts(0)
+    {
+    }
+
+    presentation_frame(core::mutable_frame&& frame)
+        : frame(std::move(frame))
+        , audio_pts(0)
+    {
+    }
+
+    presentation_frame(presentation_frame&& other)
+        : frame(std::move(other.frame))
+        , audio_pts(other.audio_pts)
+    {
+    }
+
+    presentation_frame(const presentation_frame&)            = delete;
+    presentation_frame& operator=(const presentation_frame&) = delete;
+
+    presentation_frame& operator=(presentation_frame&& rhs)
+    {
+        frame     = std::move(rhs.frame);
+        audio_pts = rhs.audio_pts;
+        return *this;
+    }
+
+    ~presentation_frame() {}
+
+    void set_audio(caspar::array<int32_t>&& data, int64_t pts)
+    {
+        frame.set_audio_data(std::move(data));
+        audio_pts = pts;
+    }
+    void set_video(core::mutable_frame&& data)
+    {
+        auto audio = std::move(frame.audio_data());
+        frame      = std::move(data);
+        set_audio(std::move(audio), audio_pts);
+    }
+    bool has_audio() const { return audio_pts != 0; }
+    bool has_video() const { return frame.pixel_format_desc().format != core::pixel_format::invalid; }
+    bool is_empty() const { return !has_audio() && !has_video(); }
+};
+
+struct video_frame_data
+{
+    int                    width;
+    int                    height;
+    caspar::array<uint8_t> data;
+
+    video_frame_data() = delete;
+    video_frame_data(int width, int height, const uint8_t* src)
+        : width(width)
+        , height(height)
+        , data(width * height * 4)
+    {
+        memcpy(data.begin(), src, width * height * 4);
+    }
+    video_frame_data(const video_frame_data& other)
+        : width(other.width)
+        , height(other.height)
+        , data(other.data.size())
+    {
+        memcpy(data.begin(), other.data.begin(), other.data.size());
+    }
+
+    video_frame_data& operator=(const video_frame_data& other)
+    {
+        width  = other.width;
+        height = other.height;
+        data   = caspar::array<uint8_t>(other.data.size());
+        memcpy(data.begin(), other.data.begin(), other.data.size());
+        return *this;
+    }
+};
+
 class html_client
     : public CefClient
     , public CefRenderHandler
+    , public CefAudioHandler
     , public CefLifeSpanHandler
     , public CefLoadHandler
     , public CefDisplayHandler
 {
-    std::wstring                        url_;
-    spl::shared_ptr<diagnostics::graph> graph_;
-    core::monitor::state                state_;
-    mutable std::mutex                  state_mutex_;
-    caspar::timer                       tick_timer_;
-    caspar::timer                       frame_timer_;
-    caspar::timer                       paint_timer_;
+    std::wstring                            url_;
+    spl::shared_ptr<diagnostics::graph>     graph_;
+    core::monitor::state                    state_;
+    mutable std::mutex                      state_mutex_;
+    caspar::timer                           tick_timer_;
+    caspar::timer                           frame_timer_;
+    caspar::timer                           paint_timer_;
+    std::unique_ptr<ffmpeg::AudioResampler> audioResampler_;
+    std::shared_ptr<video_frame_data>       last_video_frame_;
 
     spl::shared_ptr<core::frame_factory> frame_factory_;
     core::video_format_desc              format_desc_;
     bool                                 shared_texture_enable_;
     tbb::concurrent_queue<std::wstring>  javascript_before_load_;
     std::atomic<bool>                    loaded_;
-    std::queue<core::draw_frame>         frames_;
+    std::queue<presentation_frame>       frames_;
     mutable std::mutex                   frames_mutex_;
 
     core::draw_frame   last_frame_;
@@ -165,18 +256,18 @@ class html_client
         }
     }
 
-    bool OnBeforePopup(CefRefPtr<CefBrowser>   browser,
-                       CefRefPtr<CefFrame>     frame,
-                       const CefString&        target_url,
-                       const CefString&        target_frame_name,
-                       cef_window_open_disposition_t target_disposition,
-                       bool                    user_gesture,
-                       const CefPopupFeatures& popupFeatures,
-                       CefWindowInfo&          windowInfo,
-                       CefRefPtr<CefClient>&   client,
-                       CefBrowserSettings&     settings,
+    bool OnBeforePopup(CefRefPtr<CefBrowser>          browser,
+                       CefRefPtr<CefFrame>            frame,
+                       const CefString&               target_url,
+                       const CefString&               target_frame_name,
+                       cef_window_open_disposition_t  target_disposition,
+                       bool                           user_gesture,
+                       const CefPopupFeatures&        popupFeatures,
+                       CefWindowInfo&                 windowInfo,
+                       CefRefPtr<CefClient>&          client,
+                       CefBrowserSettings&            settings,
                        CefRefPtr<CefDictionaryValue>& dict,
-                       bool*                   no_javascript_access) override
+                       bool*                          no_javascript_access) override
     {
         // This blocks popup windows from opening, as they dont make sense and hit an exception in get_browser_host upon
         // closing
@@ -204,6 +295,21 @@ class html_client
         rect = CefRect(0, 0, format_desc_.square_width, format_desc_.square_height);
     }
 
+    core::mutable_frame create_filled_frame(int width, int height, const void* data)
+    {
+        core::pixel_format_desc pixel_desc;
+        pixel_desc.format = core::pixel_format::bgra;
+        pixel_desc.planes.push_back(core::pixel_format_desc::plane(width, height, 4));
+        auto frame = frame_factory_->create_frame(this, pixel_desc);
+        auto dst   = frame.image_data(0).begin();
+        std::memcpy(dst, data, width * height * 4);
+        return frame;
+    }
+    core::mutable_frame create_filled_frame(const video_frame_data& video_frame)
+    {
+        return create_filled_frame(video_frame.width, video_frame.height, video_frame.data.begin());
+    }
+
     void OnPaint(CefRefPtr<CefBrowser> browser,
                  PaintElementType      type,
                  const RectList&       dirtyRects,
@@ -221,19 +327,18 @@ class html_client
         if (type != PET_VIEW)
             return;
 
-        core::pixel_format_desc pixel_desc;
-        pixel_desc.format = core::pixel_format::bgra;
-        pixel_desc.planes.push_back(core::pixel_format_desc::plane(width, height, 4));
-
-        auto frame = frame_factory_->create_frame(this, pixel_desc);
-        auto src   = (char*)buffer;
-        auto dst   = reinterpret_cast<char*>(frame.image_data(0).begin());
-        std::memcpy(dst, src, width * height * 4);
+        auto frame      = create_filled_frame(width, height, buffer);
+        auto frame_data = std::make_shared<video_frame_data>(width, height, (const uint8_t*)buffer);
 
         {
             std::lock_guard<std::mutex> lock(frames_mutex_);
+            last_video_frame_ = frame_data;
+            if (!frames_.empty() && !frames_.back().has_video()) {
+                frames_.back().set_video(std::move(frame));
+            } else {
+                frames_.push(presentation_frame(std::move(frame)));
+            }
 
-            frames_.push(core::draw_frame(std::move(frame)));
             while (frames_.size() > 8) {
                 frames_.pop();
                 graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
@@ -283,6 +388,7 @@ class html_client
 
     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
 
+    CefRefPtr<CefAudioHandler>    GetAudioHandler() override { return this; }
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
 
     CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
@@ -308,7 +414,7 @@ class html_client
 
             {
                 std::lock_guard<std::mutex> lock(frames_mutex_);
-                frames_.push(core::draw_frame::empty());
+                frames_.push(presentation_frame());
             }
 
             {
@@ -329,6 +435,48 @@ class html_client
         return false;
     }
 
+    bool GetAudioParameters(CefRefPtr<CefBrowser> browser, CefAudioParameters& params)
+    {
+        params.channel_layout    = CEF_CHANNEL_LAYOUT_7_1;
+        params.sample_rate       = format_desc_.audio_sample_rate;
+        params.frames_per_buffer = format_desc_.audio_cadence[0];
+        return format_desc_.audio_cadence.size() == 1;
+    }
+
+    void OnAudioStreamStarted(CefRefPtr<CefBrowser> browser, const CefAudioParameters& params, int channels)
+    {
+        audioResampler_ = std::make_unique<ffmpeg::AudioResampler>(params.sample_rate, AV_SAMPLE_FMT_FLTP);
+    }
+    void OnAudioStreamPacket(CefRefPtr<CefBrowser> browser, const float** data, int frames, int64_t pts)
+    {
+        if (audioResampler_) {
+            auto audio = audioResampler_->convert(frames, reinterpret_cast<const void**>(data));
+            {
+                std::lock_guard<std::mutex> lock(frames_mutex_);
+                if (frames_.empty()) {
+                    if (last_video_frame_) {
+                        frames_.push(presentation_frame(create_filled_frame(*last_video_frame_)));
+                    } else
+                        frames_.push(presentation_frame());
+                }
+
+                if (!frames_.back().has_audio()) {
+                    frames_.back().set_audio(std::move(audio), pts);
+                } else {
+                    auto frame = presentation_frame(create_filled_frame(*last_video_frame_));
+                    frame.set_audio(std::move(audio), pts);
+                    frames_.push(std::move(frame));
+                }
+            }
+        }
+    }
+    void OnAudioStreamStopped(CefRefPtr<CefBrowser> browser) { audioResampler_ = nullptr; }
+    void OnAudioStreamError(CefRefPtr<CefBrowser> browser, const CefString& message)
+    {
+        CASPAR_LOG(info) << "[html_producer] OnAudioStreamError: \"" << message.ToString() << "\"";
+        audioResampler_ = nullptr;
+    }
+
     void invoke_requested_animation_frames()
     {
         graph_->set_value("tick-time", tick_timer_.elapsed() * format_desc_.fps * 0.5);
@@ -340,9 +488,9 @@ class html_client
         std::lock_guard<std::mutex> lock(frames_mutex_);
 
         if (!frames_.empty()) {
-            result = std::move(frames_.front());
+            result = (frames_.front().is_empty()) ? core::draw_frame::empty()
+                                                  : core::draw_frame(std::move(frames_.front().frame));
             frames_.pop();
-
             return true;
         }
 
@@ -410,14 +558,14 @@ class html_producer : public core::frame_producer
             client_ = new html_client(frame_factory, graph_, format_desc, shared_texture_enable, url_);
 
             CefWindowInfo window_info;
-            window_info.bounds.width = format_desc.square_width;
-            window_info.bounds.height = format_desc.square_height;
+            window_info.bounds.width                 = format_desc.square_width;
+            window_info.bounds.height                = format_desc.square_height;
             window_info.windowless_rendering_enabled = true;
-            window_info.shared_texture_enabled = shared_texture_enable;
+            window_info.shared_texture_enabled       = shared_texture_enable;
 
             CefBrowserSettings browser_settings;
-            browser_settings.webgl        = enable_gpu ? cef_state_t::STATE_ENABLED : cef_state_t::STATE_DISABLED;
-            double fps                    = format_desc.fps;
+            browser_settings.webgl = enable_gpu ? cef_state_t::STATE_ENABLED : cef_state_t::STATE_DISABLED;
+            double fps             = format_desc.fps;
             browser_settings.windowless_frame_rate = int(ceil(fps));
             CefBrowserHost::CreateBrowser(window_info, client_.get(), url, browser_settings, nullptr, nullptr);
         });

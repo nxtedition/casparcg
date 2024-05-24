@@ -97,7 +97,7 @@ class color_producer : public frame_producer
 
     // frame_producer
 
-    draw_frame receive_impl(int nb_samples) override
+    draw_frame receive_impl(const core::video_field field, int nb_samples) override
     {
         CASPAR_SCOPE_EXIT { state_["color"] = color_str_; };
         return frame_;
@@ -108,6 +108,8 @@ class color_producer : public frame_producer
     std::wstring name() const override { return L"color"; }
 
     core::monitor::state state() const override { return state_; }
+
+    bool is_ready() override { return true; }
 };
 
 std::wstring get_hex_color(const std::wstring& str)

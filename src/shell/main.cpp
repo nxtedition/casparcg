@@ -19,16 +19,10 @@
  * Author: Robert Nagy, ronag89@gmail.com
  */
 
-// tbbmalloc_proxy:
-// Replace the standard memory allocation routines in Microsoft* C/C++ RTL
-// (malloc/free, global new/delete, etc.) with the TBB memory allocator.
-
 #if defined _DEBUG && defined _MSC_VER
 #define _CRTDBG_MAP_ALLOC
 #include <crtdbg.h>
 #include <stdlib.h>
-#else
-// #include <tbb/tbbmalloc_proxy.h>
 #endif
 
 #include "included_modules.h"
@@ -77,7 +71,11 @@ void signal_handler(int signum)
 void setup_global_locale()
 {
     boost::locale::generator gen;
+#if BOOST_VERSION >= 108100
+    gen.categories(boost::locale::category_t::codepage);
+#else
     gen.categories(boost::locale::codepage_facet);
+#endif
 
     std::locale::global(gen(""));
 
@@ -122,17 +120,13 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
     // Create a dummy client which prints amcp responses to console.
     auto console_client = spl::make_shared<IO::ConsoleClientInfo>();
 
-    // Create a amcp parser for console commands.
-    std::shared_ptr<IO::protocol_strategy<wchar_t>> amcp =
-        spl::make_shared<caspar::IO::delimiter_based_chunking_strategy_factory<wchar_t>>(
-            L"\r\n",
-            spl::make_shared<caspar::IO::legacy_strategy_adapter_factory>(
-                spl::make_shared<protocol::amcp::AMCPProtocolStrategy>(L"Console",
-                                                                       caspar_server->get_amcp_command_repository())))
+    auto amcp =
+        protocol::amcp::create_wchar_amcp_strategy_factory(L"Console", caspar_server->get_amcp_command_repository())
             ->create(console_client);
 
     // Use separate thread for the blocking console input, will be terminated
     // anyway when the main thread terminates.
+
     std::thread([&]() mutable {
         std::wstring wcmd;
         while (true) {
@@ -145,6 +139,10 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
             // Linux gets stuck in an endless loop if wcin gets a multibyte utf8 char
             std::string cmd1;
             if (!std::getline(std::cin, cmd1)) { // TODO: It's blocking...
+                if (std::cin.eof()) {
+                    std::cin.clear();
+                    break;
+                }
                 std::cin.clear();
                 continue;
             }
@@ -165,8 +163,7 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
                 amcp->parse(wcmd);
             }
         }
-    })
-        .detach();
+    }).detach();
 
     // *after* initializing CEF
     ::signal(SIGHUP, signal_handler);
@@ -230,7 +227,7 @@ int main(int argc, char** argv)
     // Increase process priority.
     increase_process_priority();
 
-    std::wstring             config_file_name(L"casparcg.config");
+    std::wstring config_file_name(L"casparcg.config");
 
     try {
         // Configure environment properties from configuration.
@@ -239,6 +236,8 @@ int main(int argc, char** argv)
 
         log::add_cout_sink();
         env::configure(config_file_name);
+
+        log::set_log_column_alignment(env::properties().get(L"configuration.log-align-columns", true));
 
         {
             std::wstring target_level = env::properties().get(L"configuration.log-level", L"info");
@@ -252,10 +251,15 @@ int main(int argc, char** argv)
             wait_for_remote_debugging();
 
         // Start logging to file.
-        log::add_file_sink(env::log_folder() + L"caspar");
-        std::wcout << L"Logging [" << log::get_log_level() << L"] or higher severity to " << env::log_folder()
-                   << std::endl
-                   << std::endl;
+        if (env::log_to_file()) {
+            log::add_file_sink(env::log_folder() + L"caspar");
+            std::wcout << L"Logging [" << log::get_log_level() << L"] or higher severity to " << env::log_folder()
+                       << std::endl
+                       << std::endl;
+        } else {
+            std::wcout << L"Logging [" << log::get_log_level() << L"] or higher severity to console" << std::endl
+                       << std::endl;
+        }
 
         // Once logging to file, log configuration warnings.
         env::log_configuration_warnings();

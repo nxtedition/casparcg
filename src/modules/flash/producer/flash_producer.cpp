@@ -49,8 +49,8 @@
 #include <common/env.h>
 #include <common/executor.h>
 #include <common/future.h>
-#include <common/scope_exit.h>
 #include <common/prec_timer.h>
+#include <common/scope_exit.h>
 #include <common/timer.h>
 
 #include <boost/algorithm/string.hpp>
@@ -160,10 +160,10 @@ std::mutex& get_global_init_destruct_mutex()
 
 std::wstring url_from_path(std::wstring in)
 {
-    DWORD        out_length = INTERNET_MAX_URL_LENGTH * 2;
-    PWSTR        out_buf = (PWSTR)malloc(out_length + 4);
+    DWORD out_length = INTERNET_MAX_URL_LENGTH * 2;
+    PWSTR out_buf    = (PWSTR)malloc(out_length + 4);
     CASPAR_SCOPE_EXIT { free(out_buf); };
-    HRESULT      ret     = UrlCreateFromPathW(in.c_str(), out_buf, &out_length, NULL);
+    HRESULT ret = UrlCreateFromPathW(in.c_str(), out_buf, &out_length, NULL);
     if (SUCCEEDED(ret)) {
         return std::wstring(out_buf);
     } else {
@@ -306,7 +306,7 @@ class flash_renderer
         ax_->Tick();
 
         if (ax_->InvalidRect()) {
-            core::pixel_format_desc desc = core::pixel_format::bgra;
+            core::pixel_format_desc desc = core::pixel_format_desc(core::pixel_format::bgra);
             desc.planes.push_back(core::pixel_format_desc::plane(width_, height_, 4));
             auto frame = frame_factory_->create_frame(this, desc);
 
@@ -369,7 +369,7 @@ struct flash_producer : public core::frame_producer
     std::unique_ptr<flash_renderer> renderer_;
     std::atomic<bool>               has_renderer_;
 
-    executor executor_ = L"flash_producer";
+    executor executor_ = executor(L"flash_producer");
 
   public:
     flash_producer(const spl::shared_ptr<core::frame_factory>& frame_factory,
@@ -409,7 +409,7 @@ struct flash_producer : public core::frame_producer
         graph_->set_value("buffered", ratio);
     }
 
-    core::draw_frame receive_impl(int nb_samples) override
+    core::draw_frame receive_impl(const core::video_field field, int nb_samples) override
     {
         auto frame = last_frame_;
 
@@ -432,6 +432,8 @@ struct flash_producer : public core::frame_producer
 
         return frame;
     }
+
+    bool is_ready() override { return !output_buffer_.empty() || last_frame_; }
 
     std::future<std::wstring> call(const std::vector<std::wstring>& params) override
     {
@@ -593,8 +595,8 @@ spl::shared_ptr<core::frame_producer> create_swf_producer(const core::frame_prod
 
     swf_t::header_t header(filename);
 
-    const auto url = url_from_path(filename);
-    auto producer = spl::make_shared<flash_producer>(
+    const auto url      = url_from_path(filename);
+    auto       producer = spl::make_shared<flash_producer>(
         dependencies.frame_factory, dependencies.format_desc, url, header.frame_width, header.frame_height);
 
     producer->call({L"start_rendering"}).get();

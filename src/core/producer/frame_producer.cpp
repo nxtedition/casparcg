@@ -24,8 +24,6 @@
 #include "cg_proxy.h"
 #include "frame_producer.h"
 
-#include "../frame/draw_frame.h"
-
 #include "color/color_producer.h"
 #include "route/route_producer.h"
 #include "separated/separated_producer.h"
@@ -57,11 +55,13 @@ void frame_producer_registry::register_producer_factory(std::wstring name, const
 frame_producer_dependencies::frame_producer_dependencies(
     const spl::shared_ptr<core::frame_factory>&           frame_factory,
     const std::vector<spl::shared_ptr<video_channel>>&    channels,
+    const video_format_repository&                        format_repository,
     const video_format_desc&                              format_desc,
     const spl::shared_ptr<const frame_producer_registry>& producer_registry,
     const spl::shared_ptr<const cg_producer_registry>&    cg_registry)
     : frame_factory(frame_factory)
     , channels(channels)
+    , format_repository(format_repository)
     , format_desc(format_desc)
     , producer_registry(producer_registry)
     , cg_registry(cg_registry)
@@ -75,18 +75,25 @@ const spl::shared_ptr<frame_producer>& frame_producer::empty()
       public:
         empty_frame_producer() {}
 
-        draw_frame                receive_impl(int nb_samples) override { return draw_frame{}; }
-        uint32_t                  nb_frames() const override { return 0; }
-        std::wstring              print() const override { return L"empty"; }
-        std::wstring              name() const override { return L"empty"; }
-        uint32_t                  frame_number() const override { return 0; }
+        draw_frame   receive_impl(const core::video_field field, int nb_samples) override { return draw_frame{}; }
+        uint32_t     nb_frames() const override { return 0; }
+        std::wstring print() const override { return L"empty"; }
+        std::wstring name() const override { return L"empty"; }
+        uint32_t     frame_number() const override { return 0; }
         std::future<std::wstring> call(const std::vector<std::wstring>& params) override
         {
             CASPAR_LOG(warning) << L" Cannot call on empty frame_producer";
             return make_ready_future(std::wstring());
         }
-        draw_frame last_frame() override { return draw_frame{}; }
-        draw_frame first_frame() override { return draw_frame{}; }
+        draw_frame           last_frame(const core::video_field field) override { return draw_frame{}; }
+        draw_frame           first_frame(const core::video_field field) override { return draw_frame{}; }
+        core::monitor::state state() const override
+        {
+            static const monitor::state empty;
+            return empty;
+        }
+
+        bool is_ready() override { return true; }
     };
 
     static spl::shared_ptr<frame_producer> producer = spl::make_shared<empty_frame_producer>();
@@ -164,7 +171,10 @@ class destroy_producer_proxy : public frame_producer
         });
     }
 
-    draw_frame                receive_impl(int nb_samples) override { return producer_->receive(nb_samples); }
+    draw_frame receive_impl(const core::video_field field, int nb_samples) override
+    {
+        return producer_->receive(field, nb_samples);
+    }
     std::wstring              print() const override { return producer_->print(); }
     std::wstring              name() const override { return producer_->name(); }
     std::future<std::wstring> call(const std::vector<std::wstring>& params) override { return producer_->call(params); }
@@ -174,9 +184,10 @@ class destroy_producer_proxy : public frame_producer
     }
     uint32_t             frame_number() const override { return producer_->frame_number(); }
     uint32_t             nb_frames() const override { return producer_->nb_frames(); }
-    draw_frame           last_frame() override { return producer_->last_frame(); }
-    draw_frame           first_frame() override { return producer_->first_frame(); }
+    draw_frame           last_frame(const core::video_field field) override { return producer_->last_frame(field); }
+    draw_frame           first_frame(const core::video_field field) override { return producer_->first_frame(field); }
     core::monitor::state state() const override { return producer_->state(); }
+    bool                 is_ready() override { return producer_->is_ready(); }
 };
 
 spl::shared_ptr<core::frame_producer> create_destroy_proxy(spl::shared_ptr<core::frame_producer> producer)

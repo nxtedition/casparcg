@@ -30,7 +30,6 @@
 #include <common/gl/gl_check.h>
 #include <common/log.h>
 #include <common/memory.h>
-#include <common/memshfl.h>
 #include <common/param.h>
 #include <common/timer.h>
 #include <common/utf.h>
@@ -46,7 +45,6 @@
 
 #include <tbb/concurrent_queue.h>
 
-#include <memory>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -152,7 +150,7 @@ struct screen_consumer
     std::atomic<bool> is_running_{true};
     std::thread       thread_;
 
-    screen_consumer(const screen_consumer&) = delete;
+    screen_consumer(const screen_consumer&)            = delete;
     screen_consumer& operator=(const screen_consumer&) = delete;
 
   public:
@@ -228,10 +226,10 @@ struct screen_consumer
 
         thread_ = std::thread([this] {
             try {
-                const auto window_style = config_.borderless ? sf::Style::None
-                                                             : config_.windowed ? sf::Style::Resize | sf::Style::Close
-                                                                                : sf::Style::Fullscreen;
-                sf::VideoMode desktop = sf::VideoMode::getDesktopMode();
+                const auto    window_style = config_.borderless ? sf::Style::None
+                                             : config_.windowed ? sf::Style::Resize | sf::Style::Close
+                                                                : sf::Style::Fullscreen;
+                sf::VideoMode desktop      = sf::VideoMode::getDesktopMode();
                 sf::VideoMode mode(
                     config_.sbs_key ? screen_width_ * 2 : screen_width_, screen_height_, desktop.bitsPerPixel);
                 window_.create(mode,
@@ -463,7 +461,7 @@ struct screen_consumer
         tick_timer_.restart();
     }
 
-    std::future<bool> send(const core::const_frame& frame)
+    std::future<bool> send(core::video_field field, const core::const_frame& frame)
     {
         if (!frame_buffer_.try_push(frame)) {
             graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
@@ -530,7 +528,7 @@ struct screen_consumer
         }
     }
 
-    std::pair<float, float> none()
+    std::pair<float, float> none() const
     {
         float width =
             static_cast<float>(config_.sbs_key ? square_width_ * 2 : square_width_) / static_cast<float>(screen_width_);
@@ -539,7 +537,7 @@ struct screen_consumer
         return std::make_pair(width, height);
     }
 
-    std::pair<float, float> uniform()
+    std::pair<float, float> uniform() const
     {
         float aspect = static_cast<float>(config_.sbs_key ? square_width_ * 2 : square_width_) /
                        static_cast<float>(square_height_);
@@ -549,9 +547,9 @@ struct screen_consumer
         return std::make_pair(width, height);
     }
 
-    std::pair<float, float> Fill() { return std::make_pair(1.0f, 1.0f); }
+    static std::pair<float, float> Fill() { return std::make_pair(1.0f, 1.0f); }
 
-    std::pair<float, float> uniform_to_fill()
+    std::pair<float, float> uniform_to_fill() const
     {
         float wr =
             static_cast<float>(config_.sbs_key ? square_width_ * 2 : square_width_) / static_cast<float>(screen_width_);
@@ -584,7 +582,10 @@ struct screen_consumer_proxy : public core::frame_consumer
         consumer_ = std::make_unique<screen_consumer>(config_, format_desc, channel_index);
     }
 
-    std::future<bool> send(core::const_frame frame) override { return consumer_->send(frame); }
+    std::future<bool> send(core::video_field field, core::const_frame frame) override
+    {
+        return consumer_->send(field, frame);
+    }
 
     std::wstring print() const override { return consumer_ ? consumer_->print() : L"[screen_consumer]"; }
 
@@ -593,9 +594,20 @@ struct screen_consumer_proxy : public core::frame_consumer
     bool has_synchronization_clock() const override { return false; }
 
     int index() const override { return 600 + (config_.key_only ? 10 : 0) + config_.screen_index; }
+
+    core::monitor::state state() const override
+    {
+        core::monitor::state state;
+        state["screen/name"]          = config_.name;
+        state["screen/index"]         = config_.screen_index;
+        state["screen/key_only"]      = config_.key_only;
+        state["screen/always_on_top"] = config_.always_on_top;
+        return state;
+    }
 };
 
-spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>&                         params,
+spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>&     params,
+                                                      const core::video_format_repository& format_repository,
                                                       const std::vector<spl::shared_ptr<core::video_channel>>& channels)
 {
     if (params.empty() || !boost::iequals(params.at(0), L"SCREEN")) {
@@ -621,6 +633,19 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wst
         config.name = get_param(L"NAME", params);
     }
 
+    if (contains_param(L"X", params)) {
+        config.screen_x = get_param(L"X", params, 0);
+    }
+    if (contains_param(L"Y", params)) {
+        config.screen_y = get_param(L"Y", params, 0);
+    }
+    if (contains_param(L"WIDTH", params)) {
+        config.screen_width = get_param(L"WIDTH", params, 0);
+    }
+    if (contains_param(L"HEIGHT", params)) {
+        config.screen_height = get_param(L"HEIGHT", params, 0);
+    }
+
     if (config.sbs_key && config.key_only) {
         CASPAR_LOG(warning) << L" Key-only not supported with configuration of side-by-side fill and key. Ignored.";
         config.key_only = false;
@@ -631,6 +656,7 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wst
 
 spl::shared_ptr<core::frame_consumer>
 create_preconfigured_consumer(const boost::property_tree::wptree&                      ptree,
+                              const core::video_format_repository&                     format_repository,
                               const std::vector<spl::shared_ptr<core::video_channel>>& channels)
 {
     configuration config;

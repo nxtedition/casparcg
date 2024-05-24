@@ -29,11 +29,12 @@
 #include <core/producer/frame_producer.h>
 #include <core/video_channel.h>
 
-#include <boost/range/algorithm/find_if.hpp>
 #include <boost/regex.hpp>
 #include <boost/signals2.hpp>
 
 #include <tbb/concurrent_queue.h>
+
+#include <optional>
 
 namespace caspar { namespace core {
 
@@ -43,7 +44,7 @@ class route_producer
 {
     spl::shared_ptr<diagnostics::graph> graph_;
 
-    tbb::concurrent_bounded_queue<core::draw_frame> buffer_;
+    tbb::concurrent_bounded_queue<std::pair<core::draw_frame, core::draw_frame>> buffer_;
 
     caspar::timer produce_timer_;
     caspar::timer consume_timer_;
@@ -51,15 +52,15 @@ class route_producer
     std::shared_ptr<route>             route_;
     boost::signals2::scoped_connection connection_;
 
-    core::draw_frame frame_;
-    int              source_channel_;
-    int              source_layer_;
+    std::optional<std::pair<core::draw_frame, core::draw_frame>> frame_;
+    int                                                          source_channel_;
+    int                                                          source_layer_;
 
-    int get_source_channel() const { return source_channel_; }
-    int get_source_layer() const { return source_layer_; }
+    int get_source_channel() const override { return source_channel_; }
+    int get_source_layer() const override { return source_layer_; }
 
     // set the buffer depth to 2 for cross-channel routes, 1 otherwise
-    void set_cross_channel(bool cross)
+    void set_cross_channel(bool cross) override
     {
         if (cross) {
             buffer_.set_capacity(2);
@@ -73,13 +74,19 @@ class route_producer
         : route_(route)
         , source_channel_(source_channel)
         , source_layer_(source_layer)
-        , connection_(route_->signal.connect([this](const core::draw_frame& frame) {
-            auto frame2 = frame;
-            if (!frame2) {
+        , connection_(route_->signal.connect([this](const core::draw_frame& frame1, const core::draw_frame& frame2) {
+            auto frame1b = frame1;
+            if (!frame1b) {
                 // We got a frame, so ensure it is a real frame (otherwise the layer gets confused)
-                frame2 = core::draw_frame::push(frame2);
+                frame1b = core::draw_frame::push(frame1);
             }
-            if (!buffer_.try_push(frame2)) {
+            auto frame2b = frame2;
+            if (!frame2b) {
+                // We got a frame, so ensure it is a real frame (otherwise the layer gets confused)
+                frame2b = core::draw_frame::push(frame2);
+            }
+
+            if (!buffer_.try_push(std::make_pair(frame1b, frame2b))) {
                 graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
             }
             graph_->set_value("produce-time", produce_timer_.elapsed() * route_->format_desc.fps * 0.5);
@@ -98,31 +105,68 @@ class route_producer
         CASPAR_LOG(debug) << print() << L" Initialized";
     }
 
-    draw_frame last_frame() override
+    draw_frame last_frame(const core::video_field field) override
     {
         if (!frame_) {
-            buffer_.try_pop(frame_);
+            std::pair<core::draw_frame, core::draw_frame> frame;
+            if (buffer_.try_pop(frame)) {
+                frame_ = frame;
+            }
         }
-        return core::draw_frame::still(frame_);
+
+        if (!frame_) {
+            return core::draw_frame{};
+        }
+
+        if (field == core::video_field::b) {
+            return core::draw_frame::still(frame_->second);
+        } else {
+            return core::draw_frame::still(frame_->first);
+        }
     }
 
-    draw_frame receive_impl(int nb_samples) override
+    draw_frame receive_impl(const core::video_field field, int nb_samples) override
     {
-        core::draw_frame frame;
-        if (!buffer_.try_pop(frame)) {
-            graph_->set_tag(diagnostics::tag_severity::WARNING, "late-frame");
-        } else {
-            frame_ = frame;
+        if (field == core::video_field::a || field == core::video_field::progressive) {
+            std::pair<core::draw_frame, core::draw_frame> frame;
+            if (!buffer_.try_pop(frame)) {
+                graph_->set_tag(diagnostics::tag_severity::WARNING, "late-frame");
+            } else {
+                frame_ = frame;
+            }
         }
 
         graph_->set_value("consume-time", consume_timer_.elapsed() * route_->format_desc.fps * 0.5);
         consume_timer_.restart();
-        return frame;
+
+        if (!frame_) {
+            return core::draw_frame{};
+        }
+
+        if (field == core::video_field::b) {
+            return frame_->second;
+        } else {
+            return frame_->first;
+        }
     }
+
+    bool is_ready() override { return true; }
 
     std::wstring print() const override { return L"route[" + route_->name + L"]"; }
 
     std::wstring name() const override { return L"route"; }
+
+    core::monitor::state state() const override
+    {
+        core::monitor::state state;
+        state["route/channel"] = source_channel_;
+
+        if (source_layer_ > -1) {
+            state["route/layer"] = source_layer_;
+        }
+
+        return state;
+    }
 };
 
 spl::shared_ptr<core::frame_producer> create_route_producer(const core::frame_producer_dependencies& dependencies,
@@ -146,8 +190,10 @@ spl::shared_ptr<core::frame_producer> create_route_producer(const core::frame_pr
             mode = core::route_mode::next;
     }
 
-    auto channel_it = boost::find_if(dependencies.channels,
-                                     [=](spl::shared_ptr<core::video_channel> ch) { return ch->index() == channel; });
+    auto channel_it =
+        std::find_if(dependencies.channels.begin(),
+                     dependencies.channels.end(),
+                     [=](const spl::shared_ptr<core::video_channel>& ch) { return ch->index() == channel; });
 
     if (channel_it == dependencies.channels.end()) {
         CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"No channel with id " + std::to_wstring(channel)));

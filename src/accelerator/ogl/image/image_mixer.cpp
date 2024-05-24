@@ -38,13 +38,7 @@
 
 #include <GL/glew.h>
 
-#ifdef WIN32
-#include "../../d3d/d3d_texture2d.h"
-#endif
-
-#include <boost/any.hpp>
-
-#include <algorithm>
+#include <any>
 #include <vector>
 
 namespace caspar { namespace accelerator { namespace ogl {
@@ -53,7 +47,7 @@ using future_texture = std::shared_future<std::shared_ptr<texture>>;
 
 struct item
 {
-    core::pixel_format_desc     pix_desc = core::pixel_format::invalid;
+    core::pixel_format_desc     pix_desc = core::pixel_format_desc(core::pixel_format::invalid);
     std::vector<future_texture> textures;
     core::image_transform       transform;
     core::frame_geometry        geometry = core::frame_geometry::get_default();
@@ -75,11 +69,13 @@ class image_renderer
 {
     spl::shared_ptr<device> ogl_;
     image_kernel            kernel_;
+    const size_t            max_frame_size_;
 
   public:
-    explicit image_renderer(const spl::shared_ptr<device>& ogl)
+    explicit image_renderer(const spl::shared_ptr<device>& ogl, const size_t max_frame_size)
         : ogl_(ogl)
         , kernel_(ogl_)
+        , max_frame_size_(max_frame_size)
     {
     }
 
@@ -87,7 +83,7 @@ class image_renderer
                                                       const core::video_format_desc& format_desc)
     {
         if (layers.empty()) { // Bypass GPU with empty frame.
-            static const std::vector<uint8_t> buffer(8192 * 8192 * 8, 0);
+            static const std::vector<uint8_t> buffer(max_frame_size_, 0);
             return make_ready_future(array<const std::uint8_t>(buffer.data(), format_desc.size, true));
         }
 
@@ -236,9 +232,9 @@ struct image_mixer::impl
     std::vector<layer*>                layer_stack_;
 
   public:
-    impl(const spl::shared_ptr<device>& ogl, int channel_id)
+    impl(const spl::shared_ptr<device>& ogl, const int channel_id, const size_t max_frame_size)
         : ogl_(ogl)
-        , renderer_(ogl)
+        , renderer_(ogl, max_frame_size)
         , transform_stack_(1)
     {
         CASPAR_LOG(info) << L"Initialized OpenGL Accelerated GPU Image Mixer for channel " << channel_id;
@@ -276,7 +272,7 @@ struct image_mixer::impl
         item.transform = transform_stack_.back();
         item.geometry  = frame.geometry();
 
-        auto textures_ptr = boost::any_cast<std::shared_ptr<std::vector<future_texture>>>(frame.opaque());
+        auto textures_ptr = std::any_cast<std::shared_ptr<std::vector<future_texture>>>(frame.opaque());
 
         if (textures_ptr) {
             item.textures = *textures_ptr;
@@ -316,10 +312,10 @@ struct image_mixer::impl
             std::move(image_data),
             array<int32_t>{},
             desc,
-            [weak_self, desc](std::vector<array<const std::uint8_t>> image_data) -> boost::any {
+            [weak_self, desc](std::vector<array<const std::uint8_t>> image_data) -> std::any {
                 auto self = weak_self.lock();
                 if (!self) {
-                    return boost::any{};
+                    return std::any{};
                 }
                 std::vector<future_texture> textures;
                 for (int n = 0; n < static_cast<int>(desc.planes.size()); ++n) {
@@ -329,51 +325,10 @@ struct image_mixer::impl
                 return std::make_shared<decltype(textures)>(std::move(textures));
             });
     }
-
-#ifdef WIN32
-    core::const_frame
-    import_d3d_texture(const void* tag, const std::shared_ptr<d3d::d3d_texture2d>& d3d_texture, bool vflip) override
-    {
-        // map directx texture with wgl texture
-        if (d3d_texture->gl_texture_id() == 0)
-            ogl_->dispatch_sync([=] { d3d_texture->gen_gl_texture(ogl_->d3d_interop()); });
-
-        // copy directx texture to gl texture
-        auto gl_texture = ogl_->dispatch_sync([=] {
-            return ogl_->copy_async(d3d_texture->gl_texture_id(), d3d_texture->width(), d3d_texture->height(), 4);
-        });
-
-        // make gl texture to draw
-        std::vector<future_texture> textures{make_ready_future(gl_texture.get())};
-
-        std::weak_ptr<image_mixer::impl> weak_self = shared_from_this();
-        core::pixel_format_desc          desc(core::pixel_format::bgra);
-        desc.planes.push_back(core::pixel_format_desc::plane(d3d_texture->width(), d3d_texture->height(), 4));
-        auto frame = core::mutable_frame(
-            tag,
-            std::vector<array<uint8_t>>{},
-            array<int32_t>{},
-            desc,
-            [weak_self, texs = std::move(textures)](std::vector<array<const std::uint8_t>> image_data) -> boost::any {
-                auto self = weak_self.lock();
-                if (!self) {
-                    return boost::any{};
-                }
-
-                return std::make_shared<decltype(textures)>(std::move(texs));
-            });
-
-        if (vflip) {
-            frame.geometry() = core::frame_geometry::get_default_vflip();
-        }
-
-        return core::const_frame(std::move(frame));
-    }
-#endif
 };
 
-image_mixer::image_mixer(const spl::shared_ptr<device>& ogl, int channel_id)
-    : impl_(std::make_unique<impl>(ogl, channel_id))
+image_mixer::image_mixer(const spl::shared_ptr<device>& ogl, const int channel_id, const size_t max_frame_size)
+    : impl_(std::make_unique<impl>(ogl, channel_id, max_frame_size))
 {
 }
 image_mixer::~image_mixer() {}
@@ -389,11 +344,4 @@ core::mutable_frame image_mixer::create_frame(const void* tag, const core::pixel
     return impl_->create_frame(tag, desc);
 }
 
-#ifdef WIN32
-core::const_frame
-image_mixer::import_d3d_texture(const void* tag, const std::shared_ptr<d3d::d3d_texture2d>& d3d_texture, bool vflip)
-{
-    return impl_->import_d3d_texture(tag, d3d_texture, vflip);
-}
-#endif
 }}} // namespace caspar::accelerator::ogl

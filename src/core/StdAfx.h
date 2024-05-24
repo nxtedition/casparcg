@@ -29,17 +29,16 @@
 #include <boost/circular_buffer.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/lexical_cast.hpp>
-#include <boost/optional.hpp>
 #include <boost/range/adaptors.hpp>
 #include <boost/range/algorithm.hpp>
 #include <boost/range/algorithm/equal.hpp>
 #include <boost/range/distance.hpp>
 #include <boost/range/iterator_range.hpp>
 #include <boost/rational.hpp>
-#include <boost/timer.hpp>
 #include <boost/variant.hpp>
 #include <common/array.h>
 #include <common/assert.h>
+#include <common/compiler/vs/disable_silly_warnings.h>
 #include <common/diagnostics/graph.h>
 #include <common/enum_class.h>
 #include <common/env.h>
@@ -63,6 +62,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <queue>
 #include <set>
 #include <sstream>

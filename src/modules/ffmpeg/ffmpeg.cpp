@@ -40,8 +40,6 @@
 #endif
 
 extern "C" {
-#define __STDC_CONSTANT_MACROS
-#define __STDC_LIMIT_MACROS
 #include <libavdevice/avdevice.h>
 #include <libavfilter/avfilter.h>
 #include <libavformat/avformat.h>
@@ -111,9 +109,20 @@ void log_callback(void* ptr, int level, const char* fmt, va_list vl)
 
 void log_for_thread(void* ptr, int level, const char* fmt, va_list vl) { log_callback(ptr, level, fmt, vl); }
 
-void init(core::module_dependencies dependencies)
+void init(const core::module_dependencies& dependencies)
 {
     av_log_set_callback(log_for_thread);
+
+    avformat_network_init();
+    avdevice_register_all();
+
+#if LIBAVFORMAT_VERSION_MAJOR < 59
+    // mpegts demuxer does not seek acture with binary search.
+    const auto ts_demuxer = av_find_input_format("mpegts");
+    if (ts_demuxer) {
+        ts_demuxer->flags = AVFMT_SHOW_IDS | AVFMT_TS_DISCONT | AVFMT_NOBINSEARCH | AVFMT_GENERIC_INDEX;
+    }
+#endif
 
     dependencies.consumer_registry->register_consumer_factory(L"FFmpeg Consumer", create_consumer);
     dependencies.consumer_registry->register_preconfigured_consumer_factory(L"ffmpeg", create_preconfigured_consumer);
@@ -124,6 +133,6 @@ void init(core::module_dependencies dependencies)
 void uninit()
 {
     // avfilter_uninit();
-    // avformat_network_deinit();
+    avformat_network_deinit();
 }
 }} // namespace caspar::ffmpeg

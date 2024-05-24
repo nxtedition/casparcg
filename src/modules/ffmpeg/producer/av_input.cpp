@@ -8,8 +8,8 @@
 #include <common/param.h>
 #include <common/scope_exit.h>
 
-#include <boost/filesystem.hpp>
 #include <boost/algorithm/string/case_conv.hpp>
+#include <boost/filesystem.hpp>
 
 #include <set>
 
@@ -27,7 +27,7 @@ extern "C" {
 
 namespace caspar { namespace ffmpeg {
 
-Input::Input(const std::string& filename, std::shared_ptr<diagnostics::graph> graph, boost::optional<bool> seekable)
+Input::Input(const std::string& filename, std::shared_ptr<diagnostics::graph> graph, std::optional<bool> seekable)
     : filename_(filename)
     , graph_(graph)
     , seekable_(seekable)
@@ -127,8 +127,12 @@ void Input::internal_reset()
 
     static const std::set<std::wstring> PROTOCOLS_TREATED_AS_FORMATS = {L"dshow", L"v4l2", L"iec61883"};
 
+#if LIBAVFORMAT_VERSION_MAJOR >= 59
     const AVInputFormat* input_format = nullptr;
-    auto           url_parts    = caspar::protocol_split(u16(filename_));
+#else
+    AVInputFormat* input_format = nullptr;
+#endif
+    auto url_parts = caspar::protocol_split(u16(filename_));
     if (url_parts.first == L"http" || url_parts.first == L"https") {
         FF(av_dict_set(&options, "multiple_requests", "1", 0));
         FF(av_dict_set(&options, "reconnect", "1", 0));

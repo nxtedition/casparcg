@@ -1,0 +1,35 @@
+#!/bin/bash
+
+apt-get install -yq --no-install-recommends \
+	autoconf \
+	automake \
+	cmake \
+	ninja-build \
+	curl \
+	bzip2 \
+	clang \
+	g++ \
+	gcc \
+	git \
+	gperf \
+	libtool \
+	make \
+	perl \
+	pkg-config \
+	python3 \
+	zlib1g-dev \
+	libexpat1-dev \
+	lsb-release \
+	libglew-dev \
+	libfreeimage-dev \
+	libtbb-dev \
+	libopenal-dev \
+	libxcursor-dev \
+	libxinerama-dev \
+	libxi-dev \
+	libsfml-dev \
+	libxrandr-dev \
+	libudev-dev \
+	libglu1-mesa-dev \
+	libboost-all-dev \
+	libnss3-dev 

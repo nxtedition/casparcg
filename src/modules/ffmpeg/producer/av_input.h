@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 
@@ -24,7 +25,7 @@ namespace caspar { namespace ffmpeg {
 class Input
 {
   public:
-    Input(const std::string& filename, std::shared_ptr<diagnostics::graph> graph, boost::optional<bool> seekable);
+    Input(const std::string& filename, std::shared_ptr<diagnostics::graph> graph, std::optional<bool> seekable);
     ~Input();
 
     static int interrupt_cb(void* ctx);
@@ -43,7 +44,7 @@ class Input
   private:
     void internal_reset();
 
-    boost::optional<bool> seekable_;
+    std::optional<bool> seekable_;
 
     std::string                         filename_;
     std::shared_ptr<diagnostics::graph> graph_;

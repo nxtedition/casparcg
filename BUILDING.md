@@ -1,5 +1,4 @@
-Building the CasparCG Server
-============================
+# Building the CasparCG Server
 
 The CasparCG Server source code uses the CMake build system in order to easily
 generate build systems for multiple platforms. CMake is basically a build
@@ -9,13 +8,21 @@ On Windows we can use CMake to generate a .sln file and .vcproj files. On
 Linux CMake can generate make files or ninja files. Qt Creator has support for
 loading CMakeLists.txt files directly.
 
-Windows
-=======
+# Dependency caching
 
-Development using Visual Studio
--------------------------------
+CMake will automatically download some dependencies as part of the build process.
+These are taken from https://github.com/CasparCG/dependencies/releases (make sure to expand the 'Assets' group under each release to see the files), most of which are direct copies of distributions from upstream.
 
-1. Install Visual Studio 2017.
+During the build, you can specify the CMake option `CASPARCG_DOWNLOAD_MIRROR` to download from an alternate HTTP server (such as an internally hosted mirror), or `CASPARCG_DOWNLOAD_CACHE` to use a specific path on disk for the local cache of these files, by default a folder called `external` will be created inside the build directory to cache these files.
+
+If you want to be able to build CasparCG offline, you may need to manually seed this cache. You can do so by placing the correct tar.gz or zip into a folder and using `CASPARCG_DOWNLOAD_CACHE` to tell CMake where to find it.
+You can figure out which files you need by looking at each of the `ExternalProject_Add` function calls inside of [Bootstrap_Linux.cmake](./src/CMakeModules/Bootstrap_Linux.cmake) or [Bootstrap_Windows.cmake](./src/CMakeModules/Bootstrap_Windows.cmake). Some of the ones listed are optional, depending on other CMake flags.
+
+# Windows
+
+## Development using Visual Studio
+
+1. Install Visual Studio 2022.
 
 2. Install CMake (http://www.cmake.org/download/).
 
@@ -27,15 +34,13 @@ Development using Visual Studio
 
 6. `cd build`
 
-7. `cmake -G "Visual Studio 15 2017" -A x64 ../src`
+7. `cmake -G "Visual Studio 17 2022" -A x64 ../src`
 
 8. Open `CasparCG Server.sln`
 
-Linux
-=====
+# Linux
 
-Building inside Docker
-----------------------
+## Building inside Docker
 
 1. `git clone --single-branch --branch master https://github.com/CasparCG/server casparcg-server-master`
 2. `cd casparcg-server-master`
@@ -43,8 +48,7 @@ Building inside Docker
 
 If all goes to plan, a docker image `casparcg/server` has been created containing CasparCG Server.
 
-Extracting CasparCG Server from Docker
---------------------------------------
+## Extracting CasparCG Server from Docker
 
 1. `./tools/linux/extract-from-docker`
 
@@ -52,24 +56,24 @@ You will then find a folder called `casparcg_server` which should contain everyt
 
 _Note: if you ran docker with sudo, CasparCG server will not be able to run without sudo out of the box. For security reasons we do not recommend to run CasparCG with sudo. Instead you can use chown to change the ownership of the CasparCG Server folder._
 
-Development
------------
+## Development
 
-1. Install dependencies `apt-get install git cmake build-essential g++ libglew-dev libfreeimage-dev libtbb-dev libsndfile1-dev libopenal-dev libjpeg-dev libfreetype6-dev libxcursor-dev libxinerama-dev libxi-dev libsfml-dev libvpx-dev libwebp-dev liblzma-dev libmp3lame-dev libopus-dev libtheora-dev libx264-dev libx265-dev libbz2-dev libcrypto++-dev librtmp-dev libgmp-dev libxcb-shm0-dev libass-dev libgconf2-dev libopencore-amrwb-dev libsnappy-dev libopenjp2-7-dev libshine-dev libspeex-dev libtwolame-dev libvo-amrwbenc-dev libwavpack-dev libxvidcore-dev libsoxr-dev libxv-dev libxml2-dev libopenmpt-dev libbluray-dev libasound-dev libsdl2-dev libxtst-dev libatspi2.0-0 libpangocairo-1.0 libatk-bridge2.0-dev libxcomposite-dev`
-2. Install Docker by following installation instructions from [Docker Docs][1]
-3. `git clone --single-branch --branch master https://github.com/CasparCG/server casparcg-server-master`
-4. `cd casparcg-server-master`
-5. Extract Boost, FFmpeg and CEF from the docker images via `sudo ./tools/linux/extract-deps-from-docker`. Alternatively these can be prepared manually by following the steps laid out in each Dockerfile
-6. `mkdir build && cd build`
-7. `cmake ../src`
-8. `make -j8`
+Before beginning, check the build options section below, to decide if you want to use any to simplify or customise your build.
+
+1. `git clone --single-branch --branch master https://github.com/CasparCG/server casparcg-server-master`
+2. `cd casparcg-server-master`
+3. Install dependencies, this can be done with `sudo ./tools/linux/install-dependencies`
+4. `mkdir build && cd build`
+5. `cmake ../src`
+6. If not using system ffmpeg, run `./_deps/ffmpeg-lib-src/ffmpeg/install-ffmpeg-dependencies` to install the dependencies needed by the ffmpeg build
+7. `make -j8`
 
 If all goes to plan, a folder called 'staging' has been created with everything you need to run CasparCG server.
 
-[1]: https://docs.docker.com/install/linux/docker-ce/ubuntu/
+## Build options
 
-Build options
--------------
+-DENABLE_HTML=OFF - useful if you lack CEF, and would like to build without that module.
 
- -DENABLE_HTML=OFF - useful if you lack CEF, and would like to build without that module.
+-DUSE_STATIC_BOOST=OFF - (Linux only) link against shared version of Boost.
 
+-DUSE_SYSTEM_FFMPEG - (Linux only) use the version of ffmpeg from your OS.

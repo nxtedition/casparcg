@@ -44,13 +44,6 @@
 #include <include/cef_version.h>
 #pragma warning(pop)
 
-#pragma comment(lib, "libcef.lib")
-#pragma comment(lib, "libcef_dll_wrapper.lib")
-
-#ifdef WIN32
-#include <accelerator/d3d/d3d_device.h>
-#endif
-
 namespace caspar { namespace html {
 
 std::unique_ptr<executor> g_cef_executor;
@@ -63,7 +56,11 @@ void caspar_log(const CefRefPtr<CefBrowser>&        browser,
         auto msg = CefProcessMessage::Create(LOG_MESSAGE_NAME);
         msg->GetArgumentList()->SetInt(0, level);
         msg->GetArgumentList()->SetString(1, message);
-        browser->SendProcessMessage(PID_BROWSER, msg);
+
+        CefRefPtr<CefFrame> mainFrame = browser->GetMainFrame();
+        if (mainFrame) {
+            mainFrame->SendProcessMessage(PID_BROWSER, msg);
+        }
     }
 }
 
@@ -87,7 +84,10 @@ class remove_handler : public CefV8Handler
             return false;
         }
 
-        browser_->SendProcessMessage(PID_BROWSER, CefProcessMessage::Create(REMOVE_MESSAGE_NAME));
+        CefRefPtr<CefFrame> mainFrame = browser_->GetMainFrame();
+        if (mainFrame) {
+            mainFrame->SendProcessMessage(PID_BROWSER, CefProcessMessage::Create(REMOVE_MESSAGE_NAME));
+        }
 
         return true;
     }
@@ -113,6 +113,9 @@ class renderer_application
     void
     OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context) override
     {
+        if (!frame->IsMain())
+            return;
+
         caspar_log(browser,
                    boost::log::trivial::trace,
                    "context for frame " + std::to_string(frame->GetIdentifier()) + " created");
@@ -126,29 +129,7 @@ class renderer_application
         CefRefPtr<CefV8Value>     ret;
         CefRefPtr<CefV8Exception> exception;
         bool                      injected = context->Eval(R"(
-			var requestedAnimationFrames	= {};
-			var currentAnimationFrameId		= 0;
-
-            window.caspar = {};
-
-			window.requestAnimationFrame = function(callback) {
-				requestedAnimationFrames[++currentAnimationFrameId] = callback;
-				return currentAnimationFrameId;
-			}
-
-			window.cancelAnimationFrame = function(animationFrameId) {
-				delete requestedAnimationFrames[animationFrameId];
-			}
-
-			function tickAnimations() {
-				var requestedFrames = requestedAnimationFrames;
-				var timestamp = performance.now();
-				requestedAnimationFrames = {};
-
-				for (var animationFrameId in requestedFrames)
-					if (requestedFrames.hasOwnProperty(animationFrameId))
-						requestedFrames[animationFrameId](timestamp);
-			}
+            window.caspar = window.casparcg = {};
 		)",
                                       CefString(),
                                       1,
@@ -164,6 +145,9 @@ class renderer_application
                            CefRefPtr<CefFrame>     frame,
                            CefRefPtr<CefV8Context> context) override
     {
+        if (!frame->IsMain())
+            return;
+
         auto removed =
             boost::remove_if(contexts_, [&](const CefRefPtr<CefV8Context>& c) { return c->IsSame(context); });
 
@@ -184,35 +168,29 @@ class renderer_application
     {
         if (enable_gpu_) {
             command_line->AppendSwitch("enable-webgl");
+
+            // This gives better performance on the gpu->cpu readback, but can perform worse with intense templates
+            auto backend = env::properties().get(L"configuration.html.angle-backend", L"gl");
+            if (backend.size() > 0) {
+                command_line->AppendSwitchWithValue("use-angle", backend);
+            }
         }
 
+        command_line->AppendSwitch("disable-web-security");
         command_line->AppendSwitch("enable-begin-frame-scheduling");
         command_line->AppendSwitch("enable-media-stream");
+        command_line->AppendSwitch("use-fake-ui-for-media-stream");
         command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
+        command_line->AppendSwitchWithValue("remote-allow-origins", "*");
 
         if (process_type.empty() && !enable_gpu_) {
             // This gives more performance, but disabled gpu effects. Without it a single 1080p producer cannot be run
             // smoothly
+
             command_line->AppendSwitch("disable-gpu");
             command_line->AppendSwitch("disable-gpu-compositing");
             command_line->AppendSwitchWithValue("disable-gpu-vsync", "gpu");
         }
-    }
-
-    bool OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser,
-                                  CefProcessId                 source_process,
-                                  CefRefPtr<CefProcessMessage> message) override
-    {
-        if (message->GetName().ToString() == TICK_MESSAGE_NAME) {
-            for (auto& context : contexts_) {
-                CefRefPtr<CefV8Value>     ret;
-                CefRefPtr<CefV8Exception> exception;
-                context->Eval("tickAnimations()", CefString(), 1, ret, exception);
-            }
-
-            return true;
-        }
-        return false;
     }
 
     IMPLEMENT_REFCOUNTING(renderer_application);
@@ -229,7 +207,7 @@ bool intercept_command_line(int argc, char** argv)
     return CefExecuteProcess(main_args, CefRefPtr<CefApp>(new renderer_application(false)), nullptr) >= 0;
 }
 
-void init(core::module_dependencies dependencies)
+void init(const core::module_dependencies& dependencies)
 {
     dependencies.producer_registry->register_producer_factory(L"HTML Producer", html::create_producer);
 
@@ -241,19 +219,17 @@ void init(core::module_dependencies dependencies)
 #endif
         const bool enable_gpu = env::properties().get(L"configuration.html.enable-gpu", false);
 
-#ifdef WIN32
-        if (enable_gpu) {
-            auto dev = accelerator::d3d::d3d_device::get_device();
-            if (!dev)
-                CASPAR_LOG(warning) << L"Failed to create directX device for cef gpu acceleration";
-        }
-#endif
-
         CefSettings settings;
         settings.command_line_args_disabled   = false;
         settings.no_sandbox                   = true;
         settings.remote_debugging_port        = env::properties().get(L"configuration.html.remote-debugging-port", 0);
         settings.windowless_rendering_enabled = true;
+
+        auto cache_path = env::properties().get(L"configuration.html.cache-path", L"");
+        if (!cache_path.empty()) {
+            CefString(&settings.cache_path).FromWString(cache_path);
+        }
+
         CefInitialize(main_args, settings, CefRefPtr<CefApp>(new renderer_application(enable_gpu)), nullptr);
     });
     g_cef_executor->begin_invoke([&] { CefRunMessageLoop(); });

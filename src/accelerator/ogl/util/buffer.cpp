@@ -25,6 +25,8 @@
 
 #include <GL/glew.h>
 
+#include <atomic>
+
 namespace caspar { namespace accelerator { namespace ogl {
 
 static std::atomic<int>         g_w_total_count;
@@ -41,7 +43,7 @@ struct buffer::impl
     GLenum     target_ = 0;
     GLbitfield flags_  = 0;
 
-    impl(const impl&) = delete;
+    impl(const impl&)            = delete;
     impl& operator=(const impl&) = delete;
 
   public:

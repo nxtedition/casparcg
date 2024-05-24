@@ -220,7 +220,7 @@ boost::tribool has_valid_extension(const boost::filesystem::path& filename)
     return boost::tribool(boost::indeterminate);
 }
 
-bool has_invalid_protocol(const boost::filesystem::path& filename)
+bool has_invalid_protocol(const std::wstring& filename)
 {
     return boost::algorithm::istarts_with(filename, L"ndi://");
 }

@@ -172,6 +172,14 @@ void set_keyer(const com_iface_ptr<IDeckLinkProfileAttributes>& attributes,
             CASPAR_LOG(error) << print << L" Failed to set key-level to max.";
         else
             CASPAR_LOG(info) << print << L" Enabled external keyer.";
+    } else if (keyer == configuration::keyer_t::none) {
+        /*
+        if (SUCCEEDED(decklink_keyer->Disable()))
+            CASPAR_LOG(error) << print << L" Failed to disable keyer.";
+        else
+            CASPAR_LOG(info) << print << L" Disabled keyer.";
+        */
+       CASPAR_LOG(info) << print << L" Skipping keyer.";
     }
 }
 
@@ -556,11 +564,12 @@ struct decklink_secondary_port final : public IDeckLinkVideoOutputCallback
     {
         auto packed_frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(
             new decklink_frame(std::move(image_data), decklink_format_desc_, nb_samples, config_.hdr, core::color_space::bt709, config_.hdr_meta));
-        if (FAILED(output_->ScheduleVideoFrame(get_raw(packed_frame),
+        auto result = output_->ScheduleVideoFrame(get_raw(packed_frame),
                                                display_time,
                                                decklink_format_desc_.duration,
-                                               decklink_format_desc_.time_scale))) {
-            CASPAR_LOG(error) << print() << L" Failed to schedule primary video.";
+                                               decklink_format_desc_.time_scale);
+        if (FAILED(result)) {
+            CASPAR_LOG(error) << print() << L" Failed to schedule primary video." << static_cast<int>(result);
         }
 
         // video_scheduled_ += decklink_format_desc_.duration;
@@ -996,9 +1005,10 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
     {
         auto fill_frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(
             new decklink_frame(std::move(image_data), decklink_format_desc_, nb_samples, config_.hdr, color_space, config_.hdr_meta));
-        if (FAILED(output_->ScheduleVideoFrame(
-                get_raw(fill_frame), display_time, decklink_format_desc_.duration, decklink_format_desc_.time_scale))) {
-            CASPAR_LOG(error) << print() << L" Failed to schedule primary video.";
+        auto result = output_->ScheduleVideoFrame(
+                get_raw(fill_frame), display_time, decklink_format_desc_.duration, decklink_format_desc_.time_scale);
+        if (FAILED(result)) {
+            CASPAR_LOG(error) << print() << L" Failed to schedule primary video." << static_cast<int>(result);
         }
     }
 

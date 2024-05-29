@@ -176,6 +176,7 @@ class renderer_application
             }
         }
 
+        command_line->AppendSwitch("disable-audio-output");
         command_line->AppendSwitch("disable-web-security");
         command_line->AppendSwitch("enable-begin-frame-scheduling");
         command_line->AppendSwitch("enable-media-stream");

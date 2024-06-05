@@ -82,7 +82,7 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
 
         if (hdr) {
             // Pack eight byte R16G16B16A16 pixels as four byte 10bit RGB R10G10B10XX
-            const int NUM_THREADS     = 4;
+            const int NUM_THREADS     = 8;
             auto      rows_per_thread = decklink_format_desc.height / NUM_THREADS;
             size_t    byte_count_line = get_row_bytes(bmdFormat10BitRGBXLE, decklink_format_desc.width);
             tbb::parallel_for(0, NUM_THREADS, [&](int i) {

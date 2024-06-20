@@ -30,16 +30,26 @@
 
 namespace caspar { namespace decklink {
 
-BMDPixelFormat get_pixel_format(bool hdr) { return hdr ? bmdFormat10BitRGBXLE : bmdFormat8BitBGRA; }
-int            get_row_bytes(const core::video_format_desc& format_desc, bool hdr)
+BMDPixelFormat get_pixel_format(bool hdr) { return hdr ? bmdFormat10BitYUV : bmdFormat8BitBGRA; }
+
+int get_row_bytes(BMDPixelFormat pix_fmt, int width)
 {
-    return hdr ? ((format_desc.width + 63) / 64) * 256 : format_desc.width * 4;
+    switch (pix_fmt) {
+        case bmdFormat10BitYUV:
+            return ((width + 47) / 48) * 128;
+        case bmdFormat10BitRGBXLE:
+            return ((width + 63) / 64) * 256;
+        default:
+            break;
+    }
+
+    return width * 4;
 }
 
-std::shared_ptr<void> allocate_frame_data(const core::video_format_desc& format_desc, bool hdr)
+std::shared_ptr<void> allocate_frame_data(const core::video_format_desc& format_desc, BMDPixelFormat pix_fmt)
 {
-    auto alignment = hdr ? 256 : 64;
-    auto size      = hdr ? get_row_bytes(format_desc, hdr) * format_desc.height : format_desc.size;
+    auto alignment = 256;
+    auto size      = get_row_bytes(pix_fmt, format_desc.width) * format_desc.height;
     return create_aligned_buffer(size, alignment);
 }
 
@@ -72,20 +82,60 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
 
         if (hdr) {
             // Pack eight byte R16G16B16A16 pixels as four byte 10bit RGB R10G10B10XX
-            const int NUM_THREADS     = 4;
+            const int NUM_THREADS     = 8;
             auto      rows_per_thread = decklink_format_desc.height / NUM_THREADS;
-            size_t    byte_count_line = get_row_bytes(decklink_format_desc, hdr);
+            size_t    byte_count_line = get_row_bytes(bmdFormat10BitRGBXLE, decklink_format_desc.width);
             tbb::parallel_for(0, NUM_THREADS, [&](int i) {
-                auto end = (i + 1) * rows_per_thread;
+                auto    end    = (i + 1) * rows_per_thread;
+                __m256i zero   = _mm256_setzero_si256();
+                __m256i fac    = _mm256_set1_epi32(876);
+                __m256i offset = _mm256_set1_epi32(64);
                 for (int y = firstLine + i * rows_per_thread; y < end; y += decklink_format_desc.field_count) {
                     auto dest = reinterpret_cast<uint32_t*>(image_data.get()) + (long long)y * byte_count_line / 4;
-                    for (int x = 0; x < decklink_format_desc.width; x += 1) {
+
+                    for (int x = 0; x < decklink_format_desc.width; x += 4) {
                         auto src = reinterpret_cast<const uint16_t*>(
                             frame.image_data(0).data() + (long long)y * decklink_format_desc.width * 8 + x * 8);
-                        uint16_t blue  = src[0] >> 6;
-                        uint16_t green = src[1] >> 6;
-                        uint16_t red   = src[2] >> 6;
-                        dest[x]        = ((uint32_t)(red) << 22) + ((uint32_t)(green) << 12) + ((uint32_t)(blue) << 2);
+
+                        // SIMD optimized
+                        // Load four pixels at once (16x4 = 64, 64 x 4 = 256 bytes)
+                        __m256i pixels = _mm256_load_si256(reinterpret_cast<const __m256i*>(src));
+
+                        __m256i pixel13 = _mm256_unpacklo_epi16(pixels, zero);
+                        __m256i pixel24 = _mm256_unpackhi_epi16(pixels, zero);
+
+                        pixel13 = _mm256_srli_epi32(pixel13, 6); // shift down to 10 bit precision
+                        pixel24 = _mm256_srli_epi32(pixel24, 6); // shift down to 10 bit precision
+
+                        pixel13 = _mm256_mullo_epi32(pixel13, fac); // multiply by 876
+                        pixel24 = _mm256_mullo_epi32(pixel24, fac); // multiply by 876
+
+                        pixel13 = _mm256_srli_epi32(pixel13, 10); // divide by 1024
+                        pixel24 = _mm256_srli_epi32(pixel24, 10); // divide by 1024
+
+                        pixel13 = _mm256_add_epi32(pixel13, offset); // add 64
+                        pixel24 = _mm256_add_epi32(pixel24, offset); // add 64
+
+                        // extract the R, G and B components
+                        __m256i blue_green = _mm256_unpacklo_epi32(pixel13, pixel24);
+                        __m256i red_alpha  = _mm256_unpackhi_epi32(pixel13, pixel24);
+                        __m128i bg_low     = _mm256_extracti128_si256(blue_green, 0);
+                        __m128i bg_high    = _mm256_extracti128_si256(blue_green, 1);
+                        __m128i blue       = _mm_unpacklo_epi64(bg_low, bg_high);
+                        __m128i green      = _mm_unpackhi_epi64(bg_low, bg_high);
+                        __m128i red        = _mm_unpacklo_epi64(_mm256_extracti128_si256(red_alpha, 0),
+                                                         _mm256_extracti128_si256(red_alpha, 1));
+
+                        // shift each component to their correct position in R10G10B10XX
+                        red   = _mm_slli_epi32(red, 22);
+                        green = _mm_slli_epi32(green, 12);
+                        blue  = _mm_slli_epi32(blue, 2);
+
+                        // combine the components
+                        __m128i result = _mm_add_epi32(_mm_add_epi32(red, green), blue);
+
+                        // store all four pixels at once
+                        _mm_store_si128(reinterpret_cast<__m128i*>(&dest[x]), result);
                     }
                 }
             });
@@ -175,7 +225,8 @@ std::shared_ptr<void> convert_frame_for_port(const core::video_format_desc& chan
                                              BMDFieldDominance              field_dominance,
                                              bool                           hdr)
 {
-        std::shared_ptr<void> image_data = allocate_frame_data(decklink_format_desc, hdr);
+    std::shared_ptr<void> image_data =
+        allocate_frame_data(decklink_format_desc, hdr ? bmdFormat10BitRGBXLE : bmdFormat8BitBGRA);
 
     if (field_dominance != bmdProgressiveFrame) {
         convert_frame(channel_format_desc,

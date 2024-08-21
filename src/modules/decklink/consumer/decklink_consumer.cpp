@@ -463,7 +463,7 @@ struct decklink_secondary_port final : public IDeckLinkVideoOutputCallback
     const core::video_format_desc decklink_format_desc_;
     com_ptr<IDeckLinkDisplayMode> mode_ = get_display_mode(output_,
                                                            decklink_format_desc_.format,
-                                                           config_.hdr ? bmdFormat10BitRGBXLE : bmdFormat8BitBGRA,
+                                                           config_.hdr ? bmdFormat10BitYUV : bmdFormat8BitBGRA,
                                                            bmdSupportedVideoModeDefault,
                                                            config_.hdr);
 
@@ -585,7 +585,7 @@ struct decklink_secondary_port final : public IDeckLinkVideoOutputCallback
                                config_.hdr,
                                core::color_space::bt709,
                                config_.hdr_meta,
-                               config_.hdr ? bmdFormat10BitRGBXLE : bmdFormat8BitBGRA,
+                               config_.hdr ? bmdFormat10BitYUV : bmdFormat8BitBGRA,
                                std::move(image_data)));
         if (FAILED(output_->ScheduleVideoFrame(get_raw(packed_frame),
                                                display_time,
@@ -655,8 +655,6 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
                                                            bmdSupportedVideoModeDefault,
                                                            config_.hdr);
 
-    com_ptr<IDeckLinkVideoConversion> video_conversion_;
-
     std::atomic<bool> abort_request_{false};
 
   public:
@@ -672,10 +670,6 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
         graph_->set_color("flushed-frame", diagnostics::color(0.4f, 0.3f, 0.8f));
         graph_->set_color("buffered-audio", diagnostics::color(0.9f, 0.9f, 0.5f));
         graph_->set_color("buffered-video", diagnostics::color(0.2f, 0.9f, 0.9f));
-
-        if (config_.hdr) {
-            video_conversion_ = create_video_converter();
-        }
 
         if (config.duplex != configuration::duplex_t::default_duplex) {
             set_duplex(iface_cast<IDeckLinkAttributes_v10_11>(decklink_),
@@ -745,12 +739,12 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
                                     nb_samples);
             }
 
-            std::shared_ptr<void> rgb_image_data =
-                allocate_frame_data(decklink_format_desc_, config_.hdr ? bmdFormat10BitRGBXLE : bmdFormat8BitBGRA);
+            std::shared_ptr<void> image_data =
+                allocate_frame_data(decklink_format_desc_, config_.hdr ? bmdFormat10BitYUV : bmdFormat8BitBGRA);
 
-            schedule_next_video(rgb_image_data, nb_samples, video_scheduled_, config_.hdr_meta.default_color_space);
+            schedule_next_video(image_data, nb_samples, video_scheduled_, config_.hdr_meta.default_color_space);
             for (auto& context : secondary_port_contexts_) {
-                context->schedule_next_video(rgb_image_data, 0, video_scheduled_);
+                context->schedule_next_video(image_data, 0, video_scheduled_);
             }
 
             video_scheduled_ += decklink_format_desc_.duration;
@@ -1036,34 +1030,17 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
                              BMDTimeValue          display_time,
                              core::color_space     color_space)
     {
-        auto rgb_frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(
+        auto frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(
             new decklink_frame(decklink_format_desc_,
                                nb_samples,
                                config_.hdr,
                                color_space,
                                config_.hdr_meta,
-                               config_.hdr ? bmdFormat10BitRGBXLE : bmdFormat8BitBGRA,
+                               config_.hdr ? bmdFormat10BitYUV : bmdFormat8BitBGRA,
                                std::move(image_data)));
 
-        if (config_.hdr) {
-            auto yuv_frame = wrap_raw<com_ptr, IDeckLinkVideoFrame>(
-                new decklink_frame(decklink_format_desc_, nb_samples, config_.hdr, color_space, config_.hdr_meta));
-
-            if (FAILED(video_conversion_->ConvertFrame(get_raw(rgb_frame), get_raw(yuv_frame)))) {
-                CASPAR_LOG(warning) << print() << L" Failed to convert video frame.";
-            }
-
-            if (FAILED(output_->ScheduleVideoFrame(get_raw(yuv_frame),
-                                                   display_time,
-                                                   decklink_format_desc_.duration,
-                                                   decklink_format_desc_.time_scale))) {
-                CASPAR_LOG(error) << print() << L" Failed to schedule primary video.";
-            }
-            return;
-        }
-
         if (FAILED(output_->ScheduleVideoFrame(
-                get_raw(rgb_frame), display_time, decklink_format_desc_.duration, decklink_format_desc_.time_scale))) {
+                get_raw(frame), display_time, decklink_format_desc_.duration, decklink_format_desc_.time_scale))) {
             CASPAR_LOG(error) << print() << L" Failed to schedule primary video.";
         }
     }

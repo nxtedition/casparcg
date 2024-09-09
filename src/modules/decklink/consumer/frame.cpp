@@ -116,34 +116,26 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
             auto      rows_per_thread = decklink_format_desc.height / NUM_THREADS;
             size_t    byte_count_line = get_row_bytes(bmdFormat10BitYUV, decklink_format_desc.width);
             int       fullspeed_x     = decklink_format_desc.width / 48;
-            tbb::parallel_for(0, NUM_THREADS, [&](int i) {
-                auto    end       = (i + 1) * rows_per_thread;
-                // __m128i luma_mult = _mm_set_epi16(4, 1, 16, 4, 1, 16, 0, 0);
-                // __m128i luma_shuf = _mm_set_epi8(-1, 0, 1, -1, 2, 3, 4, 5, -1, 6, 7, -1, 8, 9, 10, 11);
-                __m128i luma_mult = _mm_set_epi16(0, 0, 16, 1, 4, 16, 1, 4);
-                __m128i luma_shuf = _mm_set_epi8(11, 10, 9, 8, -1, 7, 6, -1, 5, 4, 3, 2, -1, 1, 0, -1);
-
-                // __m128i chroma_mult = _mm_set_epi16(1, 16, 4, 1, 16, 4, 0, 0);
-                // __m128i chroma_shuf = _mm_set_epi8(0, 1, 2, 3, -1, 4, 5, -1, 6, 7, 8, 9, -1, 10, 11, -1);
-
+            tbb::parallel_for(0, NUM_THREADS, [&](int thread_index) {
+                auto end = (thread_index + 1) * rows_per_thread;
                 __m256i zero     = _mm256_setzero_si256();
                 __m256i y_offset = _mm256_set1_epi32(64 << 20);
-                __m256i c_offset = _mm256_set1_epi32(512 << 20);
-                __m128i yc_ctmp = _mm_set_epi32(0, color_matrix[2], color_matrix[1], color_matrix[0]);
-                __m128i cb_ctmp = _mm_set_epi32(0, color_matrix[5], color_matrix[4], color_matrix[3]);
-                __m128i cr_ctmp = _mm_set_epi32(0, color_matrix[8], color_matrix[7], color_matrix[6]);
+                __m256i c_offset = _mm256_set1_epi32((1025) << 19);
+                __m128i yc_ctmp  = _mm_set_epi32(0, color_matrix[2], color_matrix[1], color_matrix[0]);
+                __m128i cb_ctmp  = _mm_set_epi32(0, color_matrix[5], color_matrix[4], color_matrix[3]);
+                __m128i cr_ctmp  = _mm_set_epi32(0, color_matrix[8], color_matrix[7], color_matrix[6]);
 
                 __m256i y_coeff  = _mm256_set_m128i(yc_ctmp, yc_ctmp);
                 __m256i cb_coeff = _mm256_set_m128i(cb_ctmp, cb_ctmp);
                 __m256i cr_coeff = _mm256_set_m128i(cr_ctmp, cr_ctmp);
-                for (int y = firstLine + i * rows_per_thread; y < end; y += decklink_format_desc.field_count) {
-                    auto dest = reinterpret_cast<uint32_t*>(image_data.get()) + (long long)y * byte_count_line / 4;
+                for (int y = firstLine + thread_index * rows_per_thread; y < end;
+                     y += decklink_format_desc.field_count) {
+                    auto     dest = reinterpret_cast<uint32_t*>(image_data.get()) + (long long)y * byte_count_line / 4;
                     __m128i* v210_dest = reinterpret_cast<__m128i*>(dest);
 
                     for (int x = 0; x < fullspeed_x; x++) {
                         auto src = reinterpret_cast<const uint16_t*>(
                             frame.image_data(0).data() + ((long long)y * decklink_format_desc.width + x * 48) * 8);
-
 
                         // Load pixels
                         const __m256i* pixeldata = reinterpret_cast<const __m256i*>(src);
@@ -151,9 +143,9 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
                         __m256i luma[6];
                         __m256i chroma[6];
 
-                        for (int i = 0; i < 6; i++) {
-                            __m256i p0123 = _mm256_load_si256(pixeldata + i * 2);
-                            __m256i p4567 = _mm256_load_si256(pixeldata + i * 2 + 1);
+                        for (int batch_index = 0; batch_index < 6; batch_index++) {
+                            __m256i p0123 = _mm256_load_si256(pixeldata + batch_index * 2);
+                            __m256i p4567 = _mm256_load_si256(pixeldata + batch_index * 2 + 1);
 
                             // shift down to 10 bit precision
                             p0123 = _mm256_srli_epi16(p0123, 6);
@@ -178,8 +170,9 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
                                 __m256i y2_sum0123    = _mm256_hadd_epi32(y4[0], y4[1]);
                                 __m256i y2_sum4567    = _mm256_hadd_epi32(y4[2], y4[3]);
                                 __m256i y_sum01452367 = _mm256_hadd_epi32(y2_sum0123, y2_sum4567);
-                                luma[i]               = _mm256_srli_epi32(_mm256_add_epi32(y_sum01452367, y_offset),
-                                                            20); // add offset and shift down to 10 bit precision
+                                luma[batch_index] =
+                                    _mm256_srli_epi32(_mm256_add_epi32(y_sum01452367, y_offset),
+                                                      20); // add offset and shift down to 10 bit precision
                             }
 
                             /* COMPUTE CHROMA */
@@ -192,11 +185,12 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
                                 }
 
                                 // sum products
-                                __m256i cb_sum0426    = _mm256_hadd_epi32(cbcr4[0], cbcr4[2]);
-                                __m256i cr_sum0426    = _mm256_hadd_epi32(cbcr4[1], cbcr4[3]);
-                                __m256i cbcr_sum_0426 = _mm256_hadd_epi32(cb_sum0426, cr_sum0426);
-                                chroma[i]             = _mm256_srli_epi32(_mm256_add_epi32(cbcr_sum_0426, c_offset),
-                                                              20); // add offset and shift down to 10 bit precision
+                                __m256i cbcr_sum02    = _mm256_hadd_epi32(cbcr4[1], cbcr4[0]);
+                                __m256i cbcr_sum46    = _mm256_hadd_epi32(cbcr4[3], cbcr4[2]);
+                                __m256i cbcr_sum_0426 = _mm256_hadd_epi32(cbcr_sum02, cbcr_sum46);
+                                chroma[batch_index] =
+                                    _mm256_srli_epi32(_mm256_add_epi32(cbcr_sum_0426, c_offset),
+                                                      20); // add offset and shift down to 10 bit precision
                             }
                         }
 
@@ -207,14 +201,14 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
 
                         __m256i luma_16bit[3];
                         __m256i chroma_16bit[3];
-                        __m256i offsets = _mm256_set_epi32(7, 3, 6, 2, 5, 1, 4, 0);// (0, 4, 1, 5, 2, 6, 3, 7);
+                        __m256i offsets = _mm256_set_epi32(7, 3, 6, 2, 5, 1, 4, 0); // (0, 4, 1, 5, 2, 6, 3, 7);
                         for (int i = 0; i < 3; i++) {
                             auto y16 =
                                 _mm256_packus_epi32(luma[i * 2], luma[i * 2 + 1]); // layout 0 1   4 5   8 9   12 13   2
                                                                                    // 3   6 7   10 11   14 15
                             auto cbcr16 = _mm256_packus_epi32(chroma[i * 2],
-                                                                  chroma[i * 2 + 1]); // cbcr0 cbcr4 cbcr8 cbcr12
-                                                                                      // cbcr2 cbcr6 cbcr10 cbcr14
+                                                              chroma[i * 2 + 1]); // cbcr0 cbcr4 cbcr8 cbcr12
+                                                                                  // cbcr2 cbcr6 cbcr10 cbcr14
                             luma_16bit[i] = _mm256_permutevar8x32_epi32(
                                 y16,
                                 offsets); // layout 0 1   2 3   4 5   6 7   8 9   10 11   12 13   14 15
@@ -226,11 +220,14 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
                         __m128i chroma_mult = _mm_set_epi16(0, 0, 4, 16, 1, 4, 16, 1);
                         __m128i chroma_shuf = _mm_set_epi8(-1, 11, 10, -1, 9, 8, 7, 6, -1, 5, 4, -1, 3, 2, 1, 0);
 
+                        __m128i luma_mult = _mm_set_epi16(0, 0, 16, 1, 4, 16, 1, 4);
+                        __m128i luma_shuf = _mm_set_epi8(11, 10, 9, 8, -1, 7, 6, -1, 5, 4, 3, 2, -1, 1, 0, -1);
+
                         uint16_t* luma_ptr   = reinterpret_cast<uint16_t*>(luma_16bit);
                         uint16_t* chroma_ptr = reinterpret_cast<uint16_t*>(chroma_16bit);
                         for (int i = 0; i < 8; ++i) {
-                            __m128i  luma      = _mm_loadu_si128(reinterpret_cast<__m128i*>(luma_ptr));
-                            __m128i  chroma    = _mm_loadu_si128(reinterpret_cast<__m128i*>(chroma_ptr));
+                            __m128i luma          = _mm_loadu_si128(reinterpret_cast<__m128i*>(luma_ptr));
+                            __m128i chroma        = _mm_loadu_si128(reinterpret_cast<__m128i*>(chroma_ptr));
                             __m128i luma_packed   = _mm_mullo_epi16(luma, luma_mult);
                             __m128i chroma_packed = _mm_mullo_epi16(chroma, chroma_mult);
 
@@ -333,7 +330,7 @@ std::shared_ptr<void> convert_frame_for_port(const core::video_format_desc& chan
                                              bool                           hdr)
 {
     std::shared_ptr<void> image_data =
-        allocate_frame_data(decklink_format_desc, hdr ? bmdFormat10BitRGBXLE : bmdFormat8BitBGRA);
+        allocate_frame_data(decklink_format_desc, hdr ? bmdFormat10BitYUV : bmdFormat8BitBGRA);
 
     if (field_dominance != bmdProgressiveFrame) {
         convert_frame(channel_format_desc,

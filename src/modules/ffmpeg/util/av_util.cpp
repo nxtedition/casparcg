@@ -47,7 +47,8 @@ core::mutable_frame make_frame(void*                    tag,
                                core::frame_factory&     frame_factory,
                                std::shared_ptr<AVFrame> video,
                                std::shared_ptr<AVFrame> audio,
-                               core::color_space        color_space)
+                               core::color_space        color_space,
+                               core::frame_geometry::scale_mode scale_mode)
 {
     std::vector<int> data_map; // TODO(perf) when using data_map, avoid uploading duplicate planes
 
@@ -57,6 +58,9 @@ core::mutable_frame make_frame(void*                    tag,
               : core::pixel_format_desc(core::pixel_format::invalid);
 
     auto frame = frame_factory.create_frame(tag, pix_desc);
+    if (scale_mode != core::frame_geometry::scale_mode::stretch) {
+        frame.geometry() = core::frame_geometry::get_default(scale_mode);
+    }
 
     tbb::parallel_invoke(
         [&]() {
@@ -77,7 +81,13 @@ core::mutable_frame make_frame(void*                    tag,
                 const int channel_count = 16;
                 frame.audio_data()      = std::vector<int32_t>(audio->nb_samples * channel_count, 0);
 
-                if (audio->channels == channel_count) {
+#if FFMPEG_NEW_CHANNEL_LAYOUT
+                auto source_channel_count = audio->ch_layout.nb_channels;
+#else
+                auto source_channel_count = audio->channels;
+#endif
+
+                if (source_channel_count == channel_count) {
                     std::memcpy(frame.audio_data().data(),
                                 reinterpret_cast<int32_t*>(audio->data[0]),
                                 sizeof(int32_t) * channel_count * audio->nb_samples);
@@ -87,8 +97,8 @@ core::mutable_frame make_frame(void*                    tag,
                     auto dst = frame.audio_data().data();
                     auto src = reinterpret_cast<int32_t*>(audio->data[0]);
                     for (auto i = 0; i < audio->nb_samples; i++) {
-                        for (auto j = 0; j < std::min(channel_count, audio->channels); ++j) {
-                            dst[i * channel_count + j] = src[i * audio->channels + j];
+                        for (auto j = 0; j < std::min(channel_count, source_channel_count); ++j) {
+                            dst[i * channel_count + j] = src[i * source_channel_count + j];
                         }
                     }
                 }
@@ -159,23 +169,27 @@ core::pixel_format_desc pixel_format_desc(AVPixelFormat     pix_fmt,
     const auto fmt   = get_pixel_format(pix_fmt);
     auto       desc  = core::pixel_format_desc(std::get<0>(fmt), color_space);
     auto       depth = std::get<1>(fmt);
+    auto       bpc   = depth == common::bit_depth::bit8 ? 1 : 2;
+
+    for (int i = 0; i < 4; i++)
+        linesizes[i] /= bpc;
 
     switch (desc.format) {
         case core::pixel_format::gray:
         case core::pixel_format::luma: {
-            desc.planes.push_back(core::pixel_format_desc::plane(width, height, 1, depth));
+            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[0], height, 1, depth));
             return desc;
         }
         case core::pixel_format::bgr:
         case core::pixel_format::rgb: {
-            desc.planes.push_back(core::pixel_format_desc::plane(width / 3, height, 3, depth));
+            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[0] / 3, height, 3, depth));
             return desc;
         }
         case core::pixel_format::bgra:
         case core::pixel_format::argb:
         case core::pixel_format::rgba:
         case core::pixel_format::abgr: {
-            desc.planes.push_back(core::pixel_format_desc::plane(width / 4, height, 4, depth));
+            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[0] / 4, height, 4, depth));
             return desc;
         }
         case core::pixel_format::ycbcr:
@@ -197,21 +211,19 @@ core::pixel_format_desc pixel_format_desc(AVPixelFormat     pix_fmt,
             auto size2 = static_cast<int>(dummy_pict_data[2] - dummy_pict_data[1]);
 #endif
             auto h2      = size2 / linesizes[1];
-            auto factor1 = linesizes[0] / linesizes[1];
-            auto factor2 = linesizes[0] / linesizes[2];
 
-            desc.planes.push_back(core::pixel_format_desc::plane(width, height, 1, depth));
-            desc.planes.push_back(core::pixel_format_desc::plane(width / factor1, h2, 1, depth));
-            desc.planes.push_back(core::pixel_format_desc::plane(width / factor2, h2, 1, depth));
+            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[0], height, 1, depth));
+            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[1], h2, 1, depth));
+            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[2], h2, 1, depth));
 
             if (desc.format == core::pixel_format::ycbcra)
-                desc.planes.push_back(core::pixel_format_desc::plane(width, height, 1, depth));
+                desc.planes.push_back(core::pixel_format_desc::plane(linesizes[3], height, 1, depth));
 
             return desc;
         }
         case core::pixel_format::uyvy: {
-            desc.planes.push_back(core::pixel_format_desc::plane(width / 2, height, 2, depth));
-            desc.planes.push_back(core::pixel_format_desc::plane(width / 4, height, 4, depth));
+            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[0] / 2, height, 2, depth));
+            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[0] / 4, height, 4, depth));
 
             data_map.clear();
             data_map.push_back(0);
@@ -313,11 +325,15 @@ std::shared_ptr<AVFrame> make_av_audio_frame(const core::const_frame& frame, con
     const auto& buffer = frame.audio_data();
 
     // TODO (fix) Use sample_format_desc.
+#if FFMPEG_NEW_CHANNEL_LAYOUT
+    av_channel_layout_default(&av_frame->ch_layout, format_desc.audio_channels);
+#else
     av_frame->channels       = format_desc.audio_channels;
     av_frame->channel_layout = av_get_default_channel_layout(av_frame->channels);
+#endif
     av_frame->sample_rate    = format_desc.audio_sample_rate;
     av_frame->format         = AV_SAMPLE_FMT_S32;
-    av_frame->nb_samples     = static_cast<int>(buffer.size() / av_frame->channels);
+    av_frame->nb_samples     = static_cast<int>(buffer.size() / format_desc.audio_channels);
     FF(av_frame_get_buffer(av_frame.get(), 32));
     std::memcpy(av_frame->data[0], buffer.data(), buffer.size() * sizeof(buffer.data()[0]));
 
@@ -350,6 +366,20 @@ std::map<std::string, std::string> to_map(AVDictionary** dict)
     }
     av_dict_free(dict);
     return map;
+}
+
+
+uint64_t get_channel_layout_mask_for_channels(int channel_count) {
+#if FFMPEG_NEW_CHANNEL_LAYOUT
+    AVChannelLayout layout = AV_CHANNEL_LAYOUT_STEREO;
+    av_channel_layout_default(&layout, channel_count);
+    uint64_t channel_layout = layout.u.mask;
+    av_channel_layout_uninit(&layout);
+
+    return channel_layout;
+#else
+    return av_get_default_channel_layout(channel_count);
+#endif
 }
 
 }} // namespace caspar::ffmpeg

@@ -2,6 +2,10 @@ cmake_minimum_required (VERSION 3.16)
 
 include(ExternalProject)
 
+if(POLICY CMP0135)
+	cmake_policy(SET CMP0135 NEW)
+endif()
+
 set(BOOST_USE_PRECOMPILED ON CACHE BOOL "Use precompiled boost")
 
 set(CASPARCG_RUNTIME_DEPENDENCIES_RELEASE "" CACHE INTERNAL "")
@@ -32,21 +36,21 @@ casparcg_add_runtime_dependency("${PROJECT_SOURCE_DIR}/shell/casparcg.config")
 casparcg_add_external_project(boost)
 if (BOOST_USE_PRECOMPILED)
 	ExternalProject_Add(boost
-	URL ${CASPARCG_DOWNLOAD_MIRROR}/boost/boost_1_67_0-win32-x64-debug-release.zip
-	URL_HASH MD5=a10a3c92c79cde3aa4ab6e60137b54d5
+	URL ${CASPARCG_DOWNLOAD_MIRROR}/boost/boost_1_74_0-win32-x64-debug-release.zip
+	URL_HASH MD5=8d379b0da9a5ae50a3980d2fc1a24d34
 	DOWNLOAD_DIR ${CASPARCG_DOWNLOAD_CACHE}
 	CONFIGURE_COMMAND ""
 	BUILD_COMMAND ""
 	INSTALL_COMMAND ""
 	)
 	ExternalProject_Get_Property(boost SOURCE_DIR)
-	set(BOOST_INCLUDE_PATH "${SOURCE_DIR}/include/boost-1_67")
+	set(BOOST_INCLUDE_PATH "${SOURCE_DIR}/include/boost-1_74")
 	link_directories("${SOURCE_DIR}/lib")
 else ()
 	set(BOOST_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/boost-install)
 	ExternalProject_Add(boost
-	URL ${CASPARCG_DOWNLOAD_MIRROR}/boost/boost_1_67_0.zip
-	URL_HASH MD5=6da1ba65f8d33b1d306616e5acd87f67
+	URL ${CASPARCG_DOWNLOAD_MIRROR}/boost/boost_1_74_0.zip
+	URL_HASH MD5=df1456965493f05952b7c06205688ae9
 	DOWNLOAD_DIR ${CASPARCG_DOWNLOAD_CACHE}
 	BUILD_IN_SOURCE 1
 	CONFIGURE_COMMAND ./bootstrap.bat
@@ -60,7 +64,7 @@ else ()
 	BUILD_COMMAND ./b2 install debug release --prefix=${BOOST_INSTALL_DIR} link=static threading=multi runtime-link=shared -j ${CONFIG_CPU_COUNT} 
 	INSTALL_COMMAND ""
 	)
-	set(BOOST_INCLUDE_PATH "${BOOST_INSTALL_DIR}/include/boost-1_67")
+	set(BOOST_INCLUDE_PATH "${BOOST_INSTALL_DIR}/include/boost-1_74")
 	link_directories("${BOOST_INSTALL_DIR}/lib")
 endif ()
 add_definitions( -DBOOST_CONFIG_SUPPRESS_OUTDATED_MESSAGE )
@@ -70,8 +74,8 @@ add_definitions( -DBOOST_LOCALE_HIDE_AUTO_PTR )
 # FFMPEG
 casparcg_add_external_project(ffmpeg-lib)
 ExternalProject_Add(ffmpeg-lib
-	URL ${CASPARCG_DOWNLOAD_MIRROR}/ffmpeg/ffmpeg-5.1.2-full_build-shared.zip
-	URL_HASH MD5=bcb1efb68701a4b71e8a7efd9b817965
+	URL ${CASPARCG_DOWNLOAD_MIRROR}/ffmpeg/ffmpeg-7.0.2-full_build-shared.7z
+	URL_HASH MD5=c5127aeed36a9a86dd3b84346be182f8
 	DOWNLOAD_DIR ${CASPARCG_DOWNLOAD_CACHE}
 	CONFIGURE_COMMAND ""
 	BUILD_COMMAND ""
@@ -81,14 +85,14 @@ ExternalProject_Get_Property(ffmpeg-lib SOURCE_DIR)
 set(FFMPEG_INCLUDE_PATH "${SOURCE_DIR}/include")
 set(FFMPEG_BIN_PATH "${SOURCE_DIR}/bin")
 link_directories("${SOURCE_DIR}/lib")
-casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/avcodec-59.dll")
-casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/avdevice-59.dll")
-casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/avfilter-8.dll")
-casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/avformat-59.dll")
-casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/avutil-57.dll")
-casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/postproc-56.dll")
-casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/swresample-4.dll")
-casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/swscale-6.dll")
+casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/avcodec-61.dll")
+casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/avdevice-61.dll")
+casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/avfilter-10.dll")
+casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/avformat-61.dll")
+casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/avutil-59.dll")
+casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/postproc-58.dll")
+casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/swresample-5.dll")
+casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/swscale-8.dll")
 # for scanner:
 casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/ffmpeg.exe")
 casparcg_add_runtime_dependency("${FFMPEG_BIN_PATH}/ffprobe.exe")
@@ -155,8 +159,8 @@ casparcg_add_runtime_dependency("${SFML_BIN_PATH}/sfml-system-2.dll" "Release")
 # FREEIMAGE
 casparcg_add_external_project(freeimage)
 ExternalProject_Add(freeimage
-	URL ${CASPARCG_DOWNLOAD_MIRROR}/freeimage/FreeImage3180Win32Win64.zip
-	URL_HASH MD5=393d3df75b14cbcb4887da1c395596e2
+	URL ${CASPARCG_DOWNLOAD_MIRROR}/freeimage/FreeImage319-r1909.zip
+	URL_HASH MD5=c19087de6b42c7e17f71c6c8d4ad158d
 	DOWNLOAD_DIR ${CASPARCG_DOWNLOAD_CACHE}
 	CONFIGURE_COMMAND ""
 	BUILD_COMMAND ""
@@ -265,7 +269,3 @@ add_definitions(-D_WIN32_WINNT=0x601)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHa /Zi /W4 /WX /MP /fp:fast /Zm192 /FIcommon/compiler/vs/disable_silly_warnings.h")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}	/D TBB_USE_ASSERT=1 /D TBB_USE_DEBUG /bigobj")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}	/Oi /Ot /Gy /bigobj")
-
-if (POLICY CMP0045)
-	cmake_policy(SET CMP0045 OLD)
-endif ()

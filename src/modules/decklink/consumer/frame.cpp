@@ -124,7 +124,7 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
         if (config.region_h > 0) // If the user chose a height, respect that
             copy_line_count = std::min(copy_line_count, config.region_h);
 
-        int max_y_content = std::min(y_skip_dest_lines + copy_line_count, channel_format_desc.height);
+        int max_y_content = y_skip_dest_lines + std::min(copy_line_count, channel_format_desc.height);
 
         for (int y = firstLine; y < y_skip_dest_lines; y += decklink_format_desc.field_count) {
             // Fill the line with black
@@ -137,7 +137,7 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
             firstFillLine += 1;
         for (int y = firstFillLine; y < max_y_content; y += decklink_format_desc.field_count) {
             auto line_start_ptr   = reinterpret_cast<char*>(image_data.get()) + (long long)y * byte_count_dest_line;
-            auto line_content_ptr = line_start_ptr + byte_offset_dest_line; // Future
+            auto line_content_ptr = line_start_ptr + byte_offset_dest_line;
 
             // Fill the start with black
             if (byte_offset_dest_line > 0) {
@@ -145,9 +145,9 @@ void convert_frame(const core::video_format_desc& channel_format_desc,
             }
 
             // Copy the pixels
+            long long src_y = y + y_skip_src_lines - y_skip_dest_lines;
             std::memcpy(line_content_ptr,
-                        frame.image_data(0).data() + (long long)(y + y_skip_src_lines) * byte_count_src_line +
-                            byte_offset_src_line,
+                        frame.image_data(0).data() + src_y * byte_count_src_line + byte_offset_src_line,
                         byte_copy_per_line);
 
             // Fill the end with black
@@ -175,7 +175,7 @@ std::shared_ptr<void> convert_frame_for_port(const core::video_format_desc& chan
                                              BMDFieldDominance              field_dominance,
                                              bool                           hdr)
 {
-        std::shared_ptr<void> image_data = allocate_frame_data(decklink_format_desc, hdr);
+    std::shared_ptr<void> image_data = allocate_frame_data(decklink_format_desc, hdr);
 
     if (field_dominance != bmdProgressiveFrame) {
         convert_frame(channel_format_desc,

@@ -220,6 +220,42 @@ struct image_kernel::impl
             coord.vertex_y += f_p[1];
         };
 
+		auto const first_plane = params.pix_desc.planes.at(0);
+		if (params.geometry.mode() != core::frame_geometry::scale_mode::stretch && first_plane.width > 0 && first_plane.height > 0) {
+			auto width_scale = static_cast<double>(params.target_width) / static_cast<double>(first_plane.width);
+			auto height_scale = static_cast<double>(params.target_height) / static_cast<double>(first_plane.height);
+
+            double target_scale;
+			switch (params.geometry.mode()) {
+                case core::frame_geometry::scale_mode::fit:
+                    target_scale = std::min(width_scale, height_scale);
+                    f_s[0] *= target_scale / width_scale;
+                    f_s[1] *= target_scale / height_scale;
+                    break;
+
+                case core::frame_geometry::scale_mode::fill:
+                    target_scale = std::max(width_scale, height_scale);
+                    f_s[0] *= target_scale / width_scale;
+                    f_s[1] *= target_scale / height_scale;
+                    break;
+
+                case core::frame_geometry::scale_mode::original:
+                    f_s[0] /= width_scale;
+                    f_s[1] /= height_scale;
+                    break;
+
+                case core::frame_geometry::scale_mode::hfill:
+                    f_s[1] *= width_scale / height_scale;
+                    break;
+
+                case core::frame_geometry::scale_mode::vfill:
+                    f_s[0] *= height_scale / width_scale;
+                    break;
+
+                default:;
+			}
+		}
+
         int corner = 0;
         for (auto& coord : coords) {
             do_crop(coord);
@@ -253,19 +289,20 @@ struct image_kernel::impl
         if (params.layer_key) {
             params.layer_key->bind(static_cast<int>(texture_id::layer_key));
         }
-        
-        const auto is_hd = params.pix_desc.planes.at(0).height > 700;
+
+        const auto is_hd       = params.pix_desc.planes.at(0).height > 700;
         const auto color_space = is_hd ? params.pix_desc.color_space : core::color_space::bt601;
 
-        const float color_matrices[3][9] = {{1.0, 0.0, 1.402, 1.0, -0.344, -0.509, 1.0, 1.772, 0.0},            //bt.601
-                                            {1.0, 0.0, 1.5748, 1.0, -0.1873, -0.4681, 1.0, 1.8556, 0.0},        //bt.709
-                                            {1.0, 0.0, 1.4746, 1.0, -0.16455312684366, -0.57135312684366, 1.0, 1.8814, 0.0}};   //bt.2020
+        const float color_matrices[3][9] = {
+            {1.0, 0.0, 1.402, 1.0, -0.344, -0.509, 1.0, 1.772, 0.0},                          // bt.601
+            {1.0, 0.0, 1.5748, 1.0, -0.1873, -0.4681, 1.0, 1.8556, 0.0},                      // bt.709
+            {1.0, 0.0, 1.4746, 1.0, -0.16455312684366, -0.57135312684366, 1.0, 1.8814, 0.0}}; // bt.2020
         const auto color_matrix = color_matrices[static_cast<int>(color_space)];
 
-        const float luma_coefficients[3][3] = {{0.299, 0.587, 0.114},       //bt.601
-                                               {0.2126, 0.7152, 0.0722},    //bt.709
-                                               {0.2627, 0.6780, 0.0593}};   //bt.2020
-        const auto luma_coeff = luma_coefficients[static_cast<int>(color_space)];
+        const float luma_coefficients[3][3] = {{0.299, 0.587, 0.114},     // bt.601
+                                               {0.2126, 0.7152, 0.0722},  // bt.709
+                                               {0.2627, 0.6780, 0.0593}}; // bt.2020
+        const auto  luma_coeff              = luma_coefficients[static_cast<int>(color_space)];
 
         // Setup shader
         shader_->use();

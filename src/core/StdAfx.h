@@ -19,6 +19,8 @@
  * Author: Robert Nagy, ronag89@gmail.com
  */
 
+#include <common/compiler/vs/disable_silly_warnings.h>
+
 #include <GL/glew.h>
 #include <SFML/Graphics.hpp>
 #include <algorithm>
@@ -38,13 +40,11 @@
 #include <boost/variant.hpp>
 #include <common/array.h>
 #include <common/assert.h>
-#include <common/compiler/vs/disable_silly_warnings.h>
 #include <common/diagnostics/graph.h>
 #include <common/enum_class.h>
 #include <common/env.h>
 #include <common/except.h>
 #include <common/executor.h>
-#include <common/forward.h>
 #include <common/future.h>
 #include <common/log.h>
 #include <common/memory.h>

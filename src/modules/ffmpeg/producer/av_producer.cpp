@@ -844,6 +844,8 @@ struct AVProducer::Impl
         timer decode_timer;
 
         int warning_debounce = 0;
+        uint8_t warning_count    = 0;
+        const uint8_t max_warnings = 5;
 
         while (!thread_.interruption_requested()) {
             {
@@ -904,13 +906,17 @@ struct AVProducer::Impl
 
             if ((!video_filter_.frame && !video_filter_.eof) || (!audio_filter_.frame && !audio_filter_.eof)) {
                 if (!progress) {
-                    if (warning_debounce++ % 500 == 100) {
+                    if (warning_debounce++ % 500 == 100 && warning_count < max_warnings) {
                         if (!video_filter_.frame && !video_filter_.eof) {
                             CASPAR_LOG(warning) << print() << " Waiting for video frame...";
                         } else if (!audio_filter_.frame && !audio_filter_.eof) {
                             CASPAR_LOG(warning) << print() << " Waiting for audio frame...";
                         } else {
                             CASPAR_LOG(warning) << print() << " Waiting for frame...";
+                        }
+                        warning_count++;
+                        if(warning_count == max_warnings) {
+                            CASPAR_LOG(warning) << print() << " Too many warnings. Silencing.";
                         }
                     }
 
@@ -920,7 +926,7 @@ struct AVProducer::Impl
                 continue;
             }
 
-            warning_debounce = 0;
+            warning_debounce = warning_count = 0;
 
             // TODO (fix)
             // if (start_ != AV_NOPTS_VALUE && frame.pts < start_) {

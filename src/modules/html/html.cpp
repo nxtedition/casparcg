@@ -20,6 +20,7 @@
  */
 
 #include "html.h"
+#include "util.h"
 
 #include "producer/html_cg_proxy.h"
 #include "producer/html_producer.h"
@@ -44,7 +45,7 @@
 #include <include/cef_version.h>
 #pragma warning(pop)
 
-namespace caspar { namespace html {
+namespace caspar::html {
 
 std::unique_ptr<executor> g_cef_executor;
 
@@ -116,9 +117,8 @@ class renderer_application
         if (!frame->IsMain())
             return;
 
-        caspar_log(browser,
-                   boost::log::trivial::trace,
-                   "context for frame " + std::to_string(frame->GetIdentifier()) + " created");
+        caspar_log(
+            browser, boost::log::trivial::trace, "context for frame " + frame->GetIdentifier().ToString() + " created");
         contexts_.push_back(context);
 
         auto window = context->GetGlobal();
@@ -154,11 +154,11 @@ class renderer_application
         if (removed != contexts_.end()) {
             caspar_log(browser,
                        boost::log::trivial::trace,
-                       "context for frame " + std::to_string(frame->GetIdentifier()) + " released");
+                       "context for frame " + frame->GetIdentifier().ToString() + " released");
         } else {
             caspar_log(browser,
                        boost::log::trivial::warning,
-                       "context for frame " + std::to_string(frame->GetIdentifier()) + " released, but not found");
+                       "context for frame " + frame->GetIdentifier().ToString() + " released, but not found");
         }
     }
 
@@ -252,6 +252,9 @@ void init(const core::module_dependencies& dependencies)
 
 void uninit()
 {
+    if (!g_cef_executor)
+        return;
+
     invoke([] { CefQuitMessageLoop(); });
     g_cef_executor->begin_invoke([&] { CefShutdown(); });
     g_cef_executor.reset();
@@ -306,4 +309,4 @@ std::future<void> begin_invoke(const std::function<void()>& func)
     CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info("[cef_executor] Could not post task"));
 }
 
-}} // namespace caspar::html
+} // namespace caspar::html

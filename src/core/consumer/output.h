@@ -29,7 +29,9 @@
 
 #include <memory>
 
-namespace caspar::diagnostics { class graph; }
+namespace caspar::diagnostics {
+class graph;
+}
 
 namespace caspar { namespace core {
 
@@ -51,6 +53,8 @@ class output final
     void add(int index, const spl::shared_ptr<frame_consumer>& consumer);
     bool remove(const spl::shared_ptr<frame_consumer>& consumer);
     bool remove(int index);
+
+    size_t consumer_count() const;
 
     core::monitor::state state() const;
 

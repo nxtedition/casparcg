@@ -30,7 +30,6 @@
 #include "../util/http_request.h"
 #include "AMCPCommandQueue.h"
 #include "amcp_args.h"
-#include "amcp_command_repository.h"
 
 #include <common/env.h>
 
@@ -42,6 +41,8 @@
 #include <common/param.h>
 
 #include <core/consumer/output.h>
+#include <core/consumer/frame_consumer.h>
+#include <core/consumer/frame_consumer_registry.h>
 #include <core/diagnostics/call_context.h>
 #include <core/diagnostics/osd_graph.h>
 #include <core/frame/frame_transform.h>
@@ -49,6 +50,7 @@
 #include <core/producer/cg_proxy.h>
 #include <core/producer/color/color_producer.h>
 #include <core/producer/frame_producer.h>
+#include <core/producer/frame_producer_registry.h>
 #include <core/producer/stage.h>
 #include <core/producer/transition/sting_producer.h>
 #include <core/producer/transition/transition_producer.h>
@@ -515,11 +517,14 @@ std::wstring remove_command(command_context& ctx)
 
 std::wstring print_command(command_context& ctx)
 {
-    ctx.channel.raw_channel->output().add(
-        ctx.static_context->consumer_registry->create_consumer({L"IMAGE"},
-                                                               ctx.static_context->format_repository,
-                                                               get_channels(ctx),
-                                                               ctx.channel.raw_channel->mixer().depth()));
+    std::vector<std::wstring> params = {L"IMAGE"};
+    if (!ctx.parameters.empty()) {
+        params.resize(ctx.parameters.size() + 1);
+        std::copy(std::cbegin(ctx.parameters), std::cend(ctx.parameters), params.begin() + 1);
+    }
+
+    ctx.channel.raw_channel->output().add(ctx.static_context->consumer_registry->create_consumer(
+        params, ctx.static_context->format_repository, get_channels(ctx), ctx.channel.raw_channel->mixer().depth()));
 
     return L"202 PRINT OK\r\n";
 }

@@ -20,26 +20,32 @@
  */
 #pragma once
 
-namespace caspar::accelerator { class accelerator; }
-namespace caspar::accelerator::ogl { class device; }
+namespace caspar::accelerator {
+class accelerator;
+}
+namespace caspar::accelerator::ogl {
+class device;
+}
 
-namespace caspar::core { class stage; }
-namespace caspar::core { class mixer; }
-namespace caspar::core { class output; }
-namespace caspar::core { class image_mixer; }
-namespace caspar::core { struct video_format_desc; }
-namespace caspar::core { class frame_factory; }
-namespace caspar::core { class frame_producer; }
-namespace caspar::core { class frame_consumer; }
-namespace caspar::core { class draw_frame; }
-namespace caspar::core { class mutable_frame; }
-namespace caspar::core { class const_frame; }
-namespace caspar::core { class video_channel; }
-namespace caspar::core { struct pixel_format_desc; }
-namespace caspar::core { class cg_producer_registry; }
-namespace caspar::core { struct frame_transform; }
-namespace caspar::core { struct write_frame_consumer; }
-namespace caspar::core { struct frame_producer_dependencies; }
-namespace caspar::core { struct module_dependencies; }
-namespace caspar::core { class frame_producer_registry; }
-namespace caspar::core { class video_format_repository; }
+namespace caspar::core {
+class stage;
+class mixer;
+class output;
+class image_mixer;
+struct video_format_desc;
+class frame_factory;
+class frame_producer;
+class frame_consumer;
+class draw_frame;
+class mutable_frame;
+class const_frame;
+class video_channel;
+struct pixel_format_desc;
+struct frame_transform;
+struct frame_producer_dependencies;
+struct module_dependencies;
+class cg_producer_registry;
+class frame_producer_registry;
+class frame_consumer_registry;
+class video_format_repository;
+}

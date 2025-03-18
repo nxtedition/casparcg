@@ -241,19 +241,24 @@ struct Filter
 #pragma warning(disable : 4245)
 #endif
 
-            AVSampleFormat sample_fmts[]     = {AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_NONE};
-            int            sample_rates[]    = {format_desc.audio_sample_rate, 0};
+            AVSampleFormat sample_fmts[]  = {AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_NONE};
+            int            sample_rates[] = {format_desc.audio_sample_rate, 0};
             FF(av_opt_set_int_list(sink, "sample_fmts", sample_fmts, -1, AV_OPT_SEARCH_CHILDREN));
             FF(av_opt_set_int_list(sink, "sample_rates", sample_rates, 0, AV_OPT_SEARCH_CHILDREN));
 
 #if FFMPEG_NEW_CHANNEL_LAYOUT
+            // TODO - we might want to force the filter to produce 16 channels
+            // But this segfaults (changing the property name causes it to fail with an error)
+            // As 16 channel packets are fed into the filter, with the filter set to the same, that is what we get out
+            /*
             AVChannelLayout channel_layout = AV_CHANNEL_LAYOUT_STEREO;
             av_channel_layout_default(&channel_layout, format_desc.audio_channels);
 
             FF(av_opt_set_chlayout(sink, "ch_layouts", &channel_layout, AV_OPT_SEARCH_CHILDREN));
             av_channel_layout_uninit(&channel_layout);
+             */
 #else
-            int64_t        channel_layouts[] = {av_get_default_channel_layout(format_desc.audio_channels), 0};
+            int64_t channel_layouts[] = {av_get_default_channel_layout(format_desc.audio_channels), 0};
             FF(av_opt_set_int_list(sink, "channel_layouts", channel_layouts, 0, AV_OPT_SEARCH_CHILDREN));
 #endif
 
@@ -696,8 +701,8 @@ class decklink_producer : public IDeckLinkInputCallback
             }
 
             if (audio) {
-                auto src      = std::shared_ptr<AVFrame>(av_frame_alloc(), [](AVFrame* ptr) { av_frame_free(&ptr); });
-                src->format   = AV_SAMPLE_FMT_S32;
+                auto src    = std::shared_ptr<AVFrame>(av_frame_alloc(), [](AVFrame* ptr) { av_frame_free(&ptr); });
+                src->format = AV_SAMPLE_FMT_S32;
 #if FFMPEG_NEW_CHANNEL_LAYOUT
                 av_channel_layout_default(&src->ch_layout, format_desc_.audio_channels);
 #else
@@ -958,7 +963,7 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
     auto vfilter = boost::to_lower_copy(get_param(L"VF", params, filter_str));
     auto afilter = boost::to_lower_copy(get_param(L"AF", params, get_param(L"FILTER", params, L"")));
 
-    auto producer = spl::make_shared<decklink_producer_proxy>(dependencies.format_desc,
+    return spl::make_shared<decklink_producer_proxy>(dependencies.format_desc,
                                                               dependencies.frame_factory,
                                                               dependencies.format_repository,
                                                               device_index,
@@ -968,6 +973,5 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
                                                               format_str,
                                                               freeze_on_lost,
                                                               hdr);
-    return core::create_destroy_proxy(producer);
 }
 }} // namespace caspar::decklink

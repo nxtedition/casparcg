@@ -697,13 +697,13 @@ struct AVProducer::Impl
     std::string afilter_;
     std::string vfilter_;
 
-    int              seekable_       = 2;
+    int                              seekable_ = 2;
     core::frame_geometry::scale_mode scale_mode_;
-    int64_t          frame_count_    = 0;
-    bool             frame_flush_    = true;
-    int64_t          frame_time_     = AV_NOPTS_VALUE;
-    int64_t          frame_duration_ = AV_NOPTS_VALUE;
-    core::draw_frame frame_;
+    int64_t                          frame_count_    = 0;
+    bool                             frame_flush_    = true;
+    int64_t                          frame_time_     = AV_NOPTS_VALUE;
+    int64_t                          frame_duration_ = AV_NOPTS_VALUE;
+    core::draw_frame                 frame_;
 
     std::deque<Frame>         buffer_;
     mutable boost::mutex      buffer_mutex_;
@@ -818,7 +818,7 @@ struct AVProducer::Impl
         }
 
         {
-            const auto start =  start_.load();
+            const auto start = start_.load();
             if (duration_ == AV_NOPTS_VALUE && input_->duration > 0) {
                 if (start != AV_NOPTS_VALUE) {
                     duration_ = input_->duration - start;
@@ -864,14 +864,11 @@ struct AVProducer::Impl
                 auto start    = start_.load();
                 auto duration = duration_.load();
 
-                start = start != AV_NOPTS_VALUE ? start : 0;
-                // duration is inclusive, end must be set one frame duration earlier
-                auto end      = duration != AV_NOPTS_VALUE ? start + duration - frame.duration : INT64_MAX;
-                auto next_pts = frame.pts != AV_NOPTS_VALUE ? frame.pts + frame.duration : 0;
-                // check whether the next frame will last beyond the end time
-                auto time = next_pts ? next_pts + frame.duration : 0;
-
-                buffer_eof_ = (video_filter_.eof && audio_filter_.eof) || time > end;
+                start     = start != AV_NOPTS_VALUE ? start : 0;
+                auto end  = duration != AV_NOPTS_VALUE ? start + duration : INT64_MAX;
+                auto time = frame.pts != AV_NOPTS_VALUE ? frame.pts + frame.duration : 0;
+                buffer_eof_ = (video_filter_.eof && audio_filter_.eof) ||
+                              av_rescale_q(time, TIME_BASE_Q, format_tb_) >= av_rescale_q(end, TIME_BASE_Q, format_tb_);
 
                 if (buffer_eof_) {
                     if (loop_ && frame_count_ > 2) {
@@ -955,8 +952,7 @@ struct AVProducer::Impl
             }
 
             frame.frame = core::draw_frame(
-                make_frame(this, *frame_factory_, frame.video, frame.audio, get_color_space(frame.video), scale_mode_)
-            );
+                make_frame(this, *frame_factory_, frame.video, frame.audio, get_color_space(frame.video), scale_mode_));
             frame.frame_count = frame_count_++;
 
             graph_->set_value("decode-time", decode_timer.elapsed() * format_desc_.fps * 0.5);

@@ -64,32 +64,46 @@ struct image_producer : public core::frame_producer
     const uint32_t                             length_ = 0;
     core::draw_frame                           frame_;
 
-    image_producer(const spl::shared_ptr<core::frame_factory>& frame_factory, std::wstring description, uint32_t length, core::frame_geometry::scale_mode scale_mode) :
-        description_(std::move(description)), frame_factory_(frame_factory), length_(length)
+    image_producer(const spl::shared_ptr<core::frame_factory>& frame_factory,
+                   std::wstring                                description,
+                   uint32_t                                    length,
+                   core::frame_geometry::scale_mode            scale_mode)
+        : description_(std::move(description))
+        , frame_factory_(frame_factory)
+        , length_(length)
     {
-        load(load_image(description_), scale_mode);
+        load(load_image(description_, true), scale_mode);
+
+        state_["file/path"] = description_;
 
         CASPAR_LOG(info) << print() << L" Initialized";
     }
 
-    image_producer(const spl::shared_ptr<core::frame_factory>& frame_factory, const void* png_data, size_t size, uint32_t length, core::frame_geometry::scale_mode scale_mode) :
-        description_(L"png from memory"), frame_factory_(frame_factory), length_(length)
+    image_producer(const spl::shared_ptr<core::frame_factory>& frame_factory,
+                   const void*                                 png_data,
+                   size_t                                      size,
+                   uint32_t                                    length,
+                   core::frame_geometry::scale_mode            scale_mode)
+        : description_(L"png from memory")
+        , frame_factory_(frame_factory)
+        , length_(length)
     {
-        load(load_png_from_memory(png_data, size), scale_mode);
+        load(load_png_from_memory(png_data, size, true), scale_mode);
 
         CASPAR_LOG(info) << print() << L" Initialized";
     }
 
-    void load(const std::shared_ptr<FIBITMAP>& bitmap, core::frame_geometry::scale_mode scale_mode)
+    void load(const loaded_image& image, core::frame_geometry::scale_mode scale_mode)
     {
-        FreeImage_FlipVertical(bitmap.get());
-        core::pixel_format_desc desc(core::pixel_format::bgra);
-        desc.planes.emplace_back(FreeImage_GetWidth(bitmap.get()), FreeImage_GetHeight(bitmap.get()), 4);
+        core::pixel_format_desc desc(image.format);
+        desc.is_straight_alpha = image.is_straight;
+        desc.planes.emplace_back(
+            FreeImage_GetWidth(image.bitmap.get()), FreeImage_GetHeight(image.bitmap.get()), image.stride, image.depth);
 
-        auto frame = frame_factory_->create_frame(this, desc);
-        frame.geometry() = core::frame_geometry::get_default(scale_mode);
+        auto frame       = frame_factory_->create_frame(this, desc);
+        frame.geometry() = core::frame_geometry::get_default_vflip(scale_mode);
 
-        std::copy_n(FreeImage_GetBits(bitmap.get()), frame.image_data(0).size(), frame.image_data(0).begin());
+        std::copy_n(FreeImage_GetBits(image.bitmap.get()), frame.image_data(0).size(), frame.image_data(0).begin());
         frame_ = core::draw_frame(std::move(frame));
     }
 
@@ -103,7 +117,6 @@ struct image_producer : public core::frame_producer
 
     core::draw_frame receive_impl(const core::video_field field, int nb_samples) override
     {
-        state_["file/path"] = description_;
         return frame_;
     }
 
@@ -123,7 +136,7 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
         return core::frame_producer::empty();
     }
 
-    auto length = get_param(L"LENGTH", params, std::numeric_limits<uint32_t>::max());
+    auto length     = get_param(L"LENGTH", params, std::numeric_limits<uint32_t>::max());
     auto scale_mode = core::scale_mode_from_string(get_param(L"SCALE_MODE", params, L"STRETCH"));
 
     auto filename = find_file_within_dir_or_absolute(env::media_folder(), params.at(0), is_valid_file);

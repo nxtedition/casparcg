@@ -28,14 +28,11 @@
 #include "frame.h"
 #include "monitor.h"
 
-#include "../decklink.h"
 #include "../util/util.h"
 
 #include <core/consumer/frame_consumer.h>
-#include <core/diagnostics/call_context.h>
 #include <core/frame/frame.h>
 #include <core/frame/pixel_format.h>
-#include <core/mixer/audio/audio_mixer.h>
 #include <core/video_format.h>
 
 #include <common/diagnostics/graph.h>
@@ -48,7 +45,6 @@
 #include <boost/circular_buffer.hpp>
 
 #include <atomic>
-#include <common/memshfl.h>
 #include <common/prec_timer.h>
 #include <condition_variable>
 #include <future>
@@ -253,20 +249,10 @@ class decklink_frame
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, LPVOID* ppv) override
     {
-        /* Implementation from the SignalGenHDR example in the Decklink SDK */
-
-#ifdef _WIN32
-        IID iunknown = IID_IUnknown;
-#else
-        REFIID iunknown = IID_IUnknown;
-#endif
-        HRESULT result = E_NOINTERFACE;
-
         if (ppv == nullptr)
             return E_INVALIDARG;
 
-        //// Initialise the return result
-        *ppv = nullptr;
+        REFIID iunknown = IID_IUnknown;
 
         if (std::memcmp(&iid, &iunknown, sizeof(REFIID)) == 0) {
             *ppv = this;
@@ -277,9 +263,12 @@ class decklink_frame
         } else if (hdr_ && std::memcmp(&iid, &IID_IDeckLinkVideoFrameMetadataExtensions, sizeof(REFIID)) == 0) {
             *ppv = static_cast<IDeckLinkVideoFrameMetadataExtensions*>(this);
             AddRef();
+        } else {
+            *ppv = nullptr;
+            return E_NOINTERFACE;
         }
 
-        return result;
+        return S_OK;
     }
 
     ULONG STDMETHODCALLTYPE AddRef() override { return ++ref_count_; }
@@ -319,7 +308,7 @@ class decklink_frame
     [[nodiscard]] int nb_samples() const { return nb_samples_; }
 
     // IDeckLinkVideoFrameMetadataExtensions
-    HRESULT STDMETHODCALLTYPE GetInt(BMDDeckLinkFrameMetadataID metadataID, int64_t* value)
+    HRESULT STDMETHODCALLTYPE GetInt(BMDDeckLinkFrameMetadataID metadataID, int64_t* value) override
     {
         HRESULT result = S_OK;
 
@@ -340,7 +329,7 @@ class decklink_frame
         return result;
     }
 
-    HRESULT STDMETHODCALLTYPE GetFloat(BMDDeckLinkFrameMetadataID metadataID, double* value)
+    HRESULT STDMETHODCALLTYPE GetFloat(BMDDeckLinkFrameMetadataID metadataID, double* value) override
     {
         const auto color_space = (color_space_ == core::color_space::bt2020) ? &REC_2020 : &REC_709;
         HRESULT    result      = S_OK;
@@ -402,25 +391,27 @@ class decklink_frame
         return result;
     }
 
-    HRESULT STDMETHODCALLTYPE GetFlag(BMDDeckLinkFrameMetadataID, BOOL* value)
+    HRESULT STDMETHODCALLTYPE GetFlag(BMDDeckLinkFrameMetadataID, BOOL* value) override
     {
         // Not expecting GetFlag
         *value = false;
         return E_INVALIDARG;
     }
 
-    HRESULT STDMETHODCALLTYPE GetString(BMDDeckLinkFrameMetadataID, String* value)
+    HRESULT STDMETHODCALLTYPE GetString(BMDDeckLinkFrameMetadataID, String* value) override
     {
         // Not expecting GetString
         *value = nullptr;
         return E_INVALIDARG;
     }
 
+    /*
     HRESULT STDMETHODCALLTYPE GetBytes(BMDDeckLinkFrameMetadataID metadataID, void* buffer, uint32_t* bufferSize)
     {
         *bufferSize = 0;
         return E_INVALIDARG;
     }
+     */
 };
 
 struct decklink_secondary_port final : public IDeckLinkVideoOutputCallback

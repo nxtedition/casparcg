@@ -281,6 +281,9 @@ struct Stream
         if (codec->type == AVMEDIA_TYPE_VIDEO) {
             st->time_base = av_inv_q(av_buffersink_get_frame_rate(sink));
 
+            // Ensure the frame_rate is set in a way that rtmp will find it
+            st->avg_frame_rate = av_buffersink_get_frame_rate(sink);
+
             enc->width               = av_buffersink_get_w(sink);
             enc->height              = av_buffersink_get_h(sink);
             enc->framerate           = av_buffersink_get_frame_rate(sink);
@@ -290,9 +293,9 @@ struct Stream
         } else if (codec->type == AVMEDIA_TYPE_AUDIO) {
             st->time_base = {1, av_buffersink_get_sample_rate(sink)};
 
-            enc->sample_fmt     = static_cast<AVSampleFormat>(av_buffersink_get_format(sink));
-            enc->sample_rate    = av_buffersink_get_sample_rate(sink);
-            enc->time_base      = st->time_base;
+            enc->sample_fmt  = static_cast<AVSampleFormat>(av_buffersink_get_format(sink));
+            enc->sample_rate = av_buffersink_get_sample_rate(sink);
+            enc->time_base   = st->time_base;
 
 #if FFMPEG_NEW_CHANNEL_LAYOUT
             FF(av_buffersink_get_ch_layout(sink, &enc->ch_layout));
@@ -469,7 +472,7 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                 static boost::regex prot_exp("^.+:.*");
                 if (!boost::regex_match(path_, prot_exp)) {
-                    if (!full_path.is_complete()) {
+                    if (!full_path.is_absolute()) {
                         full_path = u8(env::media_folder()) + path_;
                     }
 

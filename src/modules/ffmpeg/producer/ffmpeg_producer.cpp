@@ -91,7 +91,8 @@ struct ffmpeg_producer : public core::frame_producer
                                    loop,
                                    seekable,
                                    scale_mode))
-    { }
+    {
+    }
 
     ~ffmpeg_producer()
     {
@@ -222,10 +223,7 @@ boost::tribool has_valid_extension(const boost::filesystem::path& filename)
     return boost::tribool(boost::indeterminate);
 }
 
-bool has_invalid_protocol(const std::wstring& filename)
-{
-    return boost::algorithm::istarts_with(filename, L"ndi://");
-}
+bool has_invalid_protocol(const std::wstring& filename) { return boost::algorithm::istarts_with(filename, L"ndi://"); }
 
 bool is_readable(const boost::filesystem::path& filename)
 {
@@ -340,7 +338,7 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
     auto afilter = get_param(L"AF", params, filter_str);
 
     try {
-        auto producer = spl::make_shared<ffmpeg_producer>(dependencies.frame_factory,
+        return spl::make_shared<ffmpeg_producer>(dependencies.frame_factory,
                                                           dependencies.format_desc,
                                                           name,
                                                           path,
@@ -352,7 +350,6 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
                                                           loop,
                                                           seekable,
                                                           scale_mode);
-        return core::create_destroy_proxy(std::move(producer));
     } catch (...) {
         CASPAR_LOG_CURRENT_EXCEPTION();
     }

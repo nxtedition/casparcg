@@ -3,24 +3,20 @@ project (oal)
 
 set(SOURCES
 		consumer/oal_consumer.cpp
-
-		oal.cpp
-)
-set(HEADERS
 		consumer/oal_consumer.h
 
+		oal.cpp
 		oal.h
 )
 
 casparcg_add_module_project(oal
-	SOURCES ${SOURCES} ${HEADERS}
+	SOURCES ${SOURCES}
 	INIT_FUNCTION "oal::init"
 )
 target_include_directories(oal PRIVATE
-    ..
     ../..
     ${FFMPEG_INCLUDE_PATH}
-    ${OPENAL_INCLUDE_PATH}
+	${OPENAL_INCLUDE_PATH}
     )
 
 set_target_properties(oal PROPERTIES FOLDER modules)
@@ -33,4 +29,5 @@ if(MSVC)
 else()
 	target_link_libraries(oal
 			openal)
+			# OpenAL::OpenAL) # This is better but breaks ubuntu22.04
 endif()

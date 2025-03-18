@@ -95,13 +95,14 @@ class image_renderer
             return make_ready_future(array<const std::uint8_t>(buffer.data(), format_desc.size, true));
         }
 
-        return flatten(ogl_->dispatch_async([=, layers = std::move(layers)]() mutable -> std::shared_future<array<const std::uint8_t>> {
-            auto target_texture = ogl_->create_texture(format_desc.width, format_desc.height, 4, depth_);
+        return flatten(ogl_->dispatch_async(
+            [=, layers = std::move(layers)]() mutable -> std::shared_future<array<const std::uint8_t>> {
+                auto target_texture = ogl_->create_texture(format_desc.width, format_desc.height, 4, depth_);
 
-            draw(target_texture, std::move(layers), format_desc);
+                draw(target_texture, std::move(layers), format_desc);
 
-            return ogl_->copy_async(target_texture);
-        }));
+                return ogl_->copy_async(target_texture);
+            }));
     }
 
     common::bit_depth depth() const { return depth_; }
@@ -228,14 +229,13 @@ class image_renderer
         draw_params.target_width    = format_desc.square_width;
         draw_params.target_height   = format_desc.square_height;
         draw_params.pix_desc.format = core::pixel_format::bgra;
-        draw_params.pix_desc.planes = {
-            core::pixel_format_desc::plane(source_texture->width(), source_texture->height(), 4, source_texture->depth())
-        };
-        draw_params.textures   = { spl::make_shared_ptr(source_texture) };
-        draw_params.transform  = core::image_transform();
-        draw_params.blend_mode = blend_mode;
-        draw_params.background = target_texture;
-        draw_params.geometry   = core::frame_geometry::get_default();
+        draw_params.pix_desc.planes = {core::pixel_format_desc::plane(
+            source_texture->width(), source_texture->height(), 4, source_texture->depth())};
+        draw_params.textures        = {spl::make_shared_ptr(source_texture)};
+        draw_params.transform       = core::image_transform();
+        draw_params.blend_mode      = blend_mode;
+        draw_params.background      = target_texture;
+        draw_params.geometry        = core::frame_geometry::get_default();
 
         kernel_.draw(std::move(draw_params));
     }
@@ -376,7 +376,7 @@ image_mixer::~image_mixer() {}
 void image_mixer::push(const core::frame_transform& transform) { impl_->push(transform); }
 void image_mixer::visit(const core::const_frame& frame) { impl_->visit(frame); }
 void image_mixer::pop() { impl_->pop(); }
-std::future<array<const std::uint8_t>> image_mixer::operator()(const core::video_format_desc& format_desc)
+std::future<array<const std::uint8_t>> image_mixer::render(const core::video_format_desc& format_desc)
 {
     return impl_->render(format_desc);
 }

@@ -40,9 +40,9 @@
 #include <common/os/filesystem.h>
 #include <common/param.h>
 
-#include <core/consumer/output.h>
 #include <core/consumer/frame_consumer.h>
 #include <core/consumer/frame_consumer_registry.h>
+#include <core/consumer/output.h>
 #include <core/diagnostics/call_context.h>
 #include <core/diagnostics/osd_graph.h>
 #include <core/frame/frame_transform.h>
@@ -471,6 +471,29 @@ std::wstring swap_command(command_context& ctx)
     }
 
     return L"202 SWAP OK\r\n";
+}
+
+std::future<std::wstring> apply_command(command_context& ctx)
+{
+    const auto result = ctx.channel.raw_channel->output().call(ctx.layer_index(), ctx.parameters).share();
+
+    // TODO: because of std::async deferred timed waiting does not work
+
+    /*auto wait_res = result.wait_for(std::chrono::seconds(2));
+    if (wait_res == std::future_status::timeout)
+    CASPAR_THROW_EXCEPTION(timed_out());*/
+
+    return std::async(std::launch::deferred, [result]() -> std::wstring {
+        bool res = result.get();
+
+        std::wstringstream replyString;
+        if (res)
+            replyString << L"202 APPLY OK\r\n";
+        else
+            replyString << L"403 APPLY FAILED\r\n";
+
+        return replyString.str();
+    });
 }
 
 std::wstring add_command(command_context& ctx)
@@ -1721,6 +1744,7 @@ void register_commands(std::shared_ptr<amcp_command_repository_wrapper>& repo)
     repo->register_channel_command(L"Basic Commands", L"SWAP", swap_command, 1);
     repo->register_channel_command(L"Basic Commands", L"ADD", add_command, 1);
     repo->register_channel_command(L"Basic Commands", L"REMOVE", remove_command, 0);
+    repo->register_channel_command(L"Basic Commands", L"APPLY", apply_command, 1);
     repo->register_channel_command(L"Basic Commands", L"PRINT", print_command, 0);
     repo->register_command(L"Basic Commands", L"CLEAR ALL", clear_all_command, 0);
     repo->register_command(L"Basic Commands", L"LOG LEVEL", log_level_command, 0);

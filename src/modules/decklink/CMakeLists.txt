@@ -9,7 +9,9 @@ set(SOURCES
 		consumer/config.cpp
 		consumer/config.h
 		consumer/monitor.cpp
-		consumer/monitor.h
+		consumer/monitor.h		
+		consumer/vanc.cpp
+		consumer/vanc.h
 
 		producer/decklink_producer.cpp
 		producer/decklink_producer.h
@@ -61,7 +63,7 @@ target_include_directories(decklink PRIVATE
     ..
     ../..
     ${FFMPEG_INCLUDE_PATH}
-	/srv/code/caspar/libklvanc/dist/include
+		/srv/code/caspar/libklvanc/dist/include
     )
 target_precompile_headers(decklink PRIVATE "StdAfx.h")
 

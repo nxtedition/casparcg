@@ -86,6 +86,7 @@ struct configuration
     };
 
     bool                 embedded_audio              = false;
+    bool                 vanc                        = false;
     keyer_t              keyer                       = keyer_t::default_keyer;
     duplex_t             duplex                      = duplex_t::default_duplex;
     latency_t            latency                     = latency_t::default_latency;

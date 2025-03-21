@@ -118,6 +118,7 @@ configuration parse_xml_config(const boost::property_tree::wptree&  ptree,
     }
 
     config.embedded_audio    = ptree.get(L"embedded-audio", config.embedded_audio);
+    config.vanc              = ptree.get(L"vanc", config.vanc); // TODO: add scte-104 line number
     config.base_buffer_depth = ptree.get(L"buffer-depth", config.base_buffer_depth);
 
     if (ptree.get_child_optional(L"ports")) {

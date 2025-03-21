@@ -82,6 +82,14 @@ static com_ptr<IDeckLinkIterator> create_iterator()
     return pDecklinkIterator;
 }
 
+static com_ptr<IDeckLinkVideoFrameAncillaryPackets> create_ancillary_packets()
+{
+    CComPtr<IDeckLinkVideoFrameAncillaryPackets> pDecklinkAncillaryPackets;
+    if (FAILED(pDecklinkAncillaryPackets.CoCreateInstance(CLSID_CDeckLinkAncillaryPackets)))
+        CASPAR_THROW_EXCEPTION(not_supported() << msg_info("Decklink drivers not found."));
+    return pDecklinkAncillaryPackets;
+}
+
 template <typename I, typename T>
 static com_iface_ptr<I> iface_cast(const com_ptr<T>& ptr, bool optional = false)
 {
@@ -162,6 +170,16 @@ static com_ptr<IDeckLinkIterator> create_iterator()
         CASPAR_THROW_EXCEPTION(not_supported() << msg_info("Decklink drivers not found."));
 
     return wrap_raw<com_ptr>(iterator, true);
+}
+
+static com_ptr<IDeckLinkVideoFrameAncillaryPackets> create_ancillary_packets()
+{
+    IDeckLinkVideoFrameAncillaryPackets* ancillaryPackets = CreateVideoFrameAncillaryPacketsInstance();
+
+    if (ancillaryPackets == nullptr)
+        CASPAR_THROW_EXCEPTION(not_supported() << msg_info("Decklink drivers not found."));
+
+    return wrap_raw<com_ptr>(ancillaryPackets, true);
 }
 
 template <typename T>

@@ -11,6 +11,8 @@ set(SOURCES
 	consumer/ffmpeg_consumer.cpp
 	consumer/ffmpeg_consumer.h
 
+	util/audio_resampler.cpp
+	util/audio_resampler.h
 	util/av_util.cpp
 	util/av_util.h
 	util/av_assert.h

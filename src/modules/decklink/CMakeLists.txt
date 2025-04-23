@@ -61,6 +61,7 @@ target_include_directories(decklink PRIVATE
     ..
     ../..
     ${FFMPEG_INCLUDE_PATH}
+	/srv/code/caspar/libklvanc/dist/include
     )
 target_precompile_headers(decklink PRIVATE "StdAfx.h")
 
@@ -78,8 +79,8 @@ if (MSVC)
 else()
 	target_link_libraries(decklink
 			ffmpeg
-
 			dl
+			klvanc.a
 	)
 endif ()
 

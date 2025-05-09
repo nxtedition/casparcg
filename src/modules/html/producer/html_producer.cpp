@@ -425,6 +425,16 @@ class html_client
 
     CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
 
+    void OnLoadError(CefRefPtr<CefBrowser> browser,
+                     CefRefPtr<CefFrame>   frame,
+                     ErrorCode             errorCode,
+                     const CefString&      errorText,
+                     const CefString&      failedUrl) override
+    {
+        CASPAR_LOG(warning) << "[html_producer] " << errorText.ToString() << " while loading url: \""
+                            << failedUrl.ToString() << "\"";
+    }
+
     void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) override
     {
         loaded_ = true;

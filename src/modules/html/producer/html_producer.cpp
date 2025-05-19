@@ -127,6 +127,7 @@ class html_client
     bool                                 gpu_enabled_;
     tbb::concurrent_queue<std::wstring>  javascript_before_load_;
     std::atomic<bool>                    loaded_;
+    std::atomic<bool>                    not_found_;
     std::queue<presentation_frame>       frames_;
     std::queue<presentation_frame>       audio_frames_;
     mutable std::mutex                   frames_mutex_;
@@ -168,8 +169,9 @@ class html_client
             state_["file/path"] = u8(url_);
         }
 
-        loaded_  = false;
-        closing_ = false;
+        loaded_    = false;
+        not_found_ = false;
+        closing_   = false;
     }
 
     void reload()
@@ -431,12 +433,16 @@ class html_client
                      const CefString&      errorText,
                      const CefString&      failedUrl) override
     {
+        not_found_ = true;
         CASPAR_LOG(warning) << "[html_producer] " << errorText.ToString() << " while loading url: \""
                             << failedUrl.ToString() << "\"";
     }
 
     void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) override
     {
+        if (not_found_)
+            return;
+
         loaded_ = true;
         execute_queued_javascript();
     }

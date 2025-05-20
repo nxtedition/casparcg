@@ -330,7 +330,7 @@ class html_client
                  int                   width,
                  int                   height) override
     {
-        if (closing_)
+        if (closing_ || not_found_)
             return;
 
         graph_->set_value("browser-tick-time", paint_timer_.elapsed() * format_desc_.fps * 0.5);
@@ -436,6 +436,17 @@ class html_client
         not_found_ = true;
         CASPAR_LOG(warning) << "[html_producer] " << errorText.ToString() << " while loading url: \""
                             << failedUrl.ToString() << "\"";
+
+        // Stop producing if the page fails to load
+        {
+            std::lock_guard<std::mutex> lock(frames_mutex_);
+            frames_.push(presentation_frame());
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            state_ = {};
+        }
     }
 
     void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) override

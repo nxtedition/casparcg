@@ -693,7 +693,7 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
                                                                                          device_sync_group_));
         }
 
-        if (config.vanc) {
+        if (config.vanc.enable) {
             BOOL flag = TRUE;
             attributes_->GetFlag(BMDDeckLinkVANCRequires10BitYUVVideoFrames, &flag);
             if (flag) {
@@ -702,7 +702,7 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
                                        L"data are both 10-bit YUV pixel format.";
             } else {
                 CASPAR_LOG(info) << print() << L"DeckLink hardware supports VANC.";
-                vanc_ = create_vanc();
+                vanc_ = create_vanc(config.vanc);
             }
         }
 
@@ -830,7 +830,7 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
         if (device_sync_group_ > 0) {
             output_flags |= bmdVideoOutputSynchronizeToPlaybackGroup;
         }
-        if (config_.vanc) {
+        if (vanc_) {
             output_flags |= bmdVideoOutputVANC;
         }
 
@@ -1035,7 +1035,7 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
                                                                                     decklink_format_desc_,
                                                                                     nb_samples,
                                                                                     config_.hdr,
-                                                                                    config_.vanc,
+                                                                                    config_.vanc.enable,
                                                                                     color_space,
                                                                                     config_.hdr_meta));
 

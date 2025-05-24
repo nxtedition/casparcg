@@ -21,26 +21,41 @@
 
 #pragma once
 #include "../decklink_api.h"
+#include "config.h"
 #include <common/memory.h>
-#include <libklvanc/vanc-lines.h>
-#include <libklvanc/vanc-scte_104.h>
-#include <libklvanc/vanc.h>
-#include <mutex>
 
 namespace caspar { namespace decklink {
-class decklink_vanc
-{
-    std::shared_ptr<klvanc_context_s>         ctx_;
-    std::mutex                                mutex_;
-    std::shared_ptr<klvanc_packet_scte_104_s> scte_104_pkt_;
 
-  public:
-    decklink_vanc();
-    bool has_data() const { return scte_104_pkt_.get() != nullptr; }
-    std::vector<caspar::decklink::com_ptr<IDeckLinkAncillaryPacket>> create_vanc_packets();
-    bool create_scte104_package(const std::vector<std::wstring>& params);
-    bool create_op47_package(const std::vector<std::wstring>& params);
+struct vanc_packet
+{
+    uint8_t              did;
+    uint8_t              sdid;
+    uint32_t             line_number;
+    std::vector<uint8_t> data;
 };
 
-std::shared_ptr<decklink_vanc> create_vanc();
+class decklink_vanc_strategy
+{
+  public:
+    virtual bool                has_data() const                                       = 0;
+    virtual vanc_packet         pop_packet()                                           = 0;
+    virtual bool                try_push_data(const std::vector<std::wstring>& params) = 0;
+    virtual const std::wstring& get_name() const                                       = 0;
+};
+
+class decklink_vanc
+{
+    std::vector<std::shared_ptr<decklink_vanc_strategy>> strategies_;
+
+  public:
+    explicit decklink_vanc(const vanc_configuration& config);
+    bool                                                             has_data() const;
+    std::vector<caspar::decklink::com_ptr<IDeckLinkAncillaryPacket>> pop_packets();
+    bool try_push_data(const std::vector<std::wstring>& params);
+};
+
+std::shared_ptr<decklink_vanc_strategy> create_op47_strategy(uint8_t line_number, std::wstring dummy_header);
+std::shared_ptr<decklink_vanc_strategy> create_scte104_strategy(uint8_t line_number);
+
+std::shared_ptr<decklink_vanc> create_vanc(const vanc_configuration& config);
 }} // namespace caspar::decklink

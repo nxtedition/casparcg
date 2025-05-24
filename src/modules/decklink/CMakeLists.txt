@@ -12,6 +12,7 @@ set(SOURCES
 		consumer/monitor.h		
 		consumer/vanc.cpp
 		consumer/vanc.h
+		consumer/vanc_scte104_strategy.cpp
 
 		producer/decklink_producer.cpp
 		producer/decklink_producer.h
@@ -63,7 +64,7 @@ target_include_directories(decklink PRIVATE
     ..
     ../..
     ${FFMPEG_INCLUDE_PATH}
-		/srv/code/caspar/libklvanc/dist/include
+	/srv/code/caspar/libklvanc/dist/include
     )
 target_precompile_headers(decklink PRIVATE "StdAfx.h")
 
@@ -82,7 +83,7 @@ else()
 	target_link_libraries(decklink
 			ffmpeg
 			dl
-			klvanc.a
+			/srv/code/caspar/libklvanc/dist/lib/libklvanc.a
 	)
 endif ()
 

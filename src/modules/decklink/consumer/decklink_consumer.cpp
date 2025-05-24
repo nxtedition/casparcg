@@ -1057,13 +1057,13 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
                                                            L"AUTO_RETURN_FLAG",
                                                            L"1"};
 
-            vanc_->create_scte104_package(scte104_params);
+            vanc_->try_push_data(scte104_params);
         }
 
         if (vanc_ && vanc_->has_data()) {
-            // CASPAR_LOG(info) << print() << L" Adding VANC data to video frame.";
+            CASPAR_LOG(info) << print() << L" Adding VANC data to video frame.";
             auto ancillary_packets = iface_cast<IDeckLinkVideoFrameAncillaryPackets>(fill_frame);
-            auto packets           = vanc_->create_vanc_packets();
+            auto packets           = vanc_->pop_packets();
             for (auto& packet : packets) {
                 if (FAILED(ancillary_packets->AttachPacket(get_raw(packet)))) {
                     CASPAR_LOG(error) << print() << L" Failed to add ancillary packet.";
@@ -1080,7 +1080,7 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
     bool call(const std::vector<std::wstring>& params)
     {
         if (boost::iequals(params.at(0), L"SCTE104")) {
-            return vanc_->create_scte104_package(params);
+            return vanc_->try_push_data(params);
         }
         return false;
     }

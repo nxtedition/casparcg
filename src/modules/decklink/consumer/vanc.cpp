@@ -66,7 +66,15 @@ class decklink_vanc_packet : public IDeckLinkAncillaryPacket
     unsigned char STDMETHODCALLTYPE GetDataStreamIndex(void) override { return 0; }
 };
 
-decklink_vanc::decklink_vanc(const vanc_configuration& config) { strategies_.push_back(create_scte104_strategy(9)); }
+decklink_vanc::decklink_vanc(const vanc_configuration& config)
+{
+    if (config.enable_scte104) {
+        strategies_.push_back(create_scte104_strategy(config.scte104_line));
+    }
+    if (config.enable_op47) {
+        strategies_.push_back(create_op47_strategy(config.op47_line, config.op47_dummy_header));
+    }
+}
 
 std::vector<caspar::decklink::com_ptr<IDeckLinkAncillaryPacket>> decklink_vanc::pop_packets()
 {

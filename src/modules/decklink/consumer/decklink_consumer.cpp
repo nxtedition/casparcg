@@ -698,10 +698,10 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
             attributes_->GetFlag(BMDDeckLinkVANCRequires10BitYUVVideoFrames, &flag);
             if (flag) {
                 CASPAR_LOG(warning) << print()
-                                    << L"DeckLink hardware only supports VANC when the active picture and ancillary "
+                                    << L" DeckLink hardware only supports VANC when the active picture and ancillary "
                                        L"data are both 10-bit YUV pixel format.";
             } else {
-                CASPAR_LOG(info) << print() << L"DeckLink hardware supports VANC.";
+                CASPAR_LOG(info) << print() << L" DeckLink hardware supports VANC.";
                 vanc_ = create_vanc(config.vanc);
             }
         }
@@ -1039,29 +1039,7 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
                                                                                     color_space,
                                                                                     config_.hdr_meta));
 
-        if (vanc_ && !vanc_->has_data()) {
-            const std::vector<std::wstring> scte104_params{L"SCTE104",
-                                                           L"SPLICE_REQUEST_DATA",
-                                                           L"SPLICE_INSERT_TYPE",
-                                                           L"1",
-                                                           L"PRE_ROLL_TIME",
-                                                           L"0",
-                                                           L"SPLICE_EVENT_ID",
-                                                           L"0",
-                                                           L"BREAK_DURATION",
-                                                           L"600",
-                                                           L"AVAIL_NUM",
-                                                           L"0",
-                                                           L"AVAILS_EXPECTED",
-                                                           L"0",
-                                                           L"AUTO_RETURN_FLAG",
-                                                           L"1"};
-
-            vanc_->try_push_data(scte104_params);
-        }
-
         if (vanc_ && vanc_->has_data()) {
-            CASPAR_LOG(info) << print() << L" Adding VANC data to video frame.";
             auto ancillary_packets = iface_cast<IDeckLinkVideoFrameAncillaryPackets>(fill_frame);
             auto packets           = vanc_->pop_packets();
             for (auto& packet : packets) {
@@ -1079,10 +1057,12 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
 
     bool call(const std::vector<std::wstring>& params)
     {
-        if (boost::iequals(params.at(0), L"SCTE104")) {
-            return vanc_->try_push_data(params);
+        bool result = vanc_->try_push_data(params);
+        if (!result) {
+            CASPAR_LOG(warning) << print() << L" Unknown command: " << (params.empty() ? L"N/A" : params[0]);
         }
-        return false;
+
+        return result;
     }
 
     bool send(core::video_field field, core::const_frame frame)

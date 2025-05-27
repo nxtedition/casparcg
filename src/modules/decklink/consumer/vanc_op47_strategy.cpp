@@ -30,7 +30,7 @@ class vanc_op47_strategy : public decklink_vanc_strategy
     explicit vanc_op47_strategy(uint8_t line_number, const std::wstring& dummy_header)
         : line_number_(line_number)
         , sd_line_(21)
-        , counter_(0)
+        , counter_(1)
         , dummy_header_(dummy_header.empty() ? std::vector<uint8_t>() : base64_decode(dummy_header))
     {
     }
@@ -91,12 +91,14 @@ class vanc_op47_strategy : public decklink_vanc_strategy
         memcpy(result.data() + 9, packet.data(), packet.size());
         memcpy(result.data() + 9 + packet.size(), packet.data(), packet.size());
         result[99]  = 0x74;                      // footer id
-        result[100] = (counter_ && 0xFF00) >> 8; // footer sequence counter
-        result[101] = counter_ && 0x00FF;        // footer sequence counter
+        result[100] = (counter_ & 0xFF00) >> 8; // footer sequence counter
+        result[101] = counter_ & 0x00FF;        // footer sequence counter
         result[102] = 0x0;                       // SPD checksum, will be set when calculated
 
         auto sum    = accumulate(result.begin(), result.end(), (uint8_t)0);
         result[102] = ~sum + 1;
+
+        counter_++; // this is rolling over at 65535 by design
 
         return result;
     }

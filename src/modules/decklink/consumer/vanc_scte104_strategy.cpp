@@ -1,3 +1,4 @@
+#include "../util/base64.hpp"
 #include "vanc.h"
 #include <boost/lexical_cast.hpp>
 #include <libklvanc/vanc-lines.h>
@@ -18,6 +19,8 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
     std::shared_ptr<klvanc_packet_scte_104_s> scte_104_pkt_;
     uint8_t                                   line_number_;
 
+    std::vector<uint8_t> payload_ = {};
+
   public:
     explicit vanc_scte104_strategy(uint8_t line_number)
         : line_number_(line_number)
@@ -27,9 +30,17 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
         ctx_.reset(vanchdl, klvanc_context_destroy);
     }
 
-    virtual bool        has_data() const { return scte_104_pkt_.get() != nullptr; }
+    virtual bool        has_data() const { return scte_104_pkt_.get() != nullptr || !payload_.empty(); }
     virtual vanc_packet pop_packet()
     {
+        // If we have a payload, return it as a vanc_packet.
+        if (payload_.size() > 0) {
+            vanc_packet pkt{SCTE104_DID, SCTE104_SDID, line_number_, payload_};
+            payload_.clear();
+            return pkt;
+        }
+
+        // If we have a SCTE-104 packet, convert it to bytes and return as vanc_packet.
         uint8_t* bytes;
         uint16_t bytesCount;
 
@@ -53,18 +64,18 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
 
         std::lock_guard<std::mutex> lock(mutex_);
 
-        std::shared_ptr<klvanc_packet_scte_104_s> new_packet;
-        {
-            klvanc_packet_scte_104_s* pkt;
-            if (FAILED(klvanc_alloc_SCTE_104(0xffff, &pkt))) {
-                CASPAR_LOG(error) << "Failed to allocate SCTE 104 packet.";
-                return false;
-            }
-            new_packet.reset(pkt, klvanc_free_SCTE_104);
-        }
-
         try {
             if (boost::iequals(params.at(idx++), L"SPLICE_REQUEST_DATA")) {
+                std::shared_ptr<klvanc_packet_scte_104_s> new_packet;
+                {
+                    klvanc_packet_scte_104_s* pkt;
+                    if (FAILED(klvanc_alloc_SCTE_104(0xffff, &pkt))) {
+                        CASPAR_LOG(error) << "Failed to allocate SCTE 104 packet.";
+                        return false;
+                    }
+                    new_packet.reset(pkt, klvanc_free_SCTE_104);
+                }
+
                 klvanc_multiple_operation_message_operation* op = nullptr;
 
                 if (FAILED(klvanc_SCTE_104_Add_MOM_Op(new_packet.get(), MO_SPLICE_REQUEST_DATA, &op))) {
@@ -95,6 +106,10 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
                     }
                 }
                 scte_104_pkt_ = new_packet;
+            } else if (params.size() == 2) {
+                // try to parse the payload as a base64 encoded raw SCTE-104 packet.
+                auto base64_payload = params.at(1);
+                payload_            = base64_decode(base64_payload);
             }
         } catch (const boost::bad_lexical_cast& e) {
             CASPAR_LOG(error) << "Failed to parse SCTE 104 parameters: " << e.what();
@@ -102,12 +117,25 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
         } catch (const std::out_of_range& e) {
             CASPAR_LOG(error) << "Failed to parse SCTE 104 parameters: Invalid number of arguments";
             return false;
+        } catch (const std::exception& e) {
+            CASPAR_LOG(error) << "Failed to parse SCTE 104 parameters: " << e.what();
+            return false;
         }
 
         return true;
     }
 
     virtual const std::wstring& get_name() const { return vanc_scte104_strategy::Name; }
+
+  private:
+    std::vector<uint8_t> base64_decode(const std::wstring& encoded)
+    {
+        std::vector<char> buffer(encoded.size());
+        std::use_facet<std::ctype<wchar_t>>(std::locale())
+            .narrow(encoded.data(), encoded.data() + encoded.size(), '?', buffer.data());
+        auto str = std::string(buffer.data(), buffer.size());
+        return base64::decode_into<std::vector<uint8_t>>(str);
+    }
 };
 
 const std::wstring vanc_scte104_strategy::Name = L"SCTE104";

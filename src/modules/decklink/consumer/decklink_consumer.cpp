@@ -1057,12 +1057,17 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
 
     bool call(const std::vector<std::wstring>& params)
     {
-        bool result = vanc_->try_push_data(params);
-        if (!result) {
-            CASPAR_LOG(warning) << print() << L" Unknown command: " << (params.empty() ? L"N/A" : params[0]);
-        }
+        try {
+            bool result = vanc_->try_push_data(params);
+            if (!result) {
+                CASPAR_LOG(warning) << print() << L" Unknown command: " << (params.empty() ? L"N/A" : params[0]);
+            }
 
-        return result;
+            return result;
+        } catch (...) {
+            CASPAR_LOG(warning) << print() << L" Failed to apply: " << (params.empty() ? L"N/A" : params[0]);
+        }
+        return false;
     }
 
     bool send(core::video_field field, core::const_frame frame)

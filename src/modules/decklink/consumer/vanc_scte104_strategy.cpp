@@ -33,33 +33,39 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
     virtual bool        has_data() const { return scte_104_pkt_.get() != nullptr || !payload_.empty(); }
     virtual vanc_packet pop_packet(bool field2)
     {
-        if (field2 || scte_104_pkt_.get() == nullptr) {
+        if (field2) {
             return {0, 0, 0, {}};
         }
 
         // If we have a payload, return it as a vanc_packet.
         if (payload_.size() > 0) {
-            vanc_packet pkt{SCTE104_DID, SCTE104_SDID, line_number_, payload_};
+            auto        data = std::vector<uint8_t>(payload_.begin(), payload_.end());
+            vanc_packet pkt{SCTE104_DID, SCTE104_SDID, line_number_, data};
             payload_.clear();
             return pkt;
         }
 
-        // If we have a SCTE-104 packet, convert it to bytes and return as vanc_packet.
-        uint8_t* bytes;
-        uint16_t bytesCount;
+        if (scte_104_pkt_) {
+            // If we have a SCTE-104 packet, convert it to bytes and return as vanc_packet.
+            uint8_t* bytes;
+            uint16_t bytesCount;
 
-        klvanc_convert_SCTE_104_to_packetBytes(ctx_.get(),
-                                               scte_104_pkt_.get(),
-                                               &bytes,
-                                               &bytesCount); // TODO: Check for failure.
+            klvanc_convert_SCTE_104_to_packetBytes(ctx_.get(),
+                                                   scte_104_pkt_.get(),
+                                                   &bytes,
+                                                   &bytesCount); // TODO: Check for failure.
 
-        void*                 ptr = reinterpret_cast<void*>(bytes);
-        std::shared_ptr<void> data(ptr, free);
+            void*                 ptr = reinterpret_cast<void*>(bytes);
+            std::shared_ptr<void> data(ptr, free);
 
-        scte_104_pkt_.reset();
+            scte_104_pkt_.reset();
 
-        std::vector<uint8_t> data_vector(bytes, bytes + bytesCount);
-        return {SCTE104_DID, SCTE104_SDID, line_number_, data_vector};
+            std::vector<uint8_t> data_vector(bytes, bytes + bytesCount);
+            return {SCTE104_DID, SCTE104_SDID, line_number_, data_vector};
+        }
+
+        // If we have no data, return an empty vanc_packet.
+        return {0, 0, 0, {}};
     }
 
     virtual bool try_push_data(const std::vector<std::wstring>& params)

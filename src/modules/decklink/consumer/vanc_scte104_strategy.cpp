@@ -31,8 +31,12 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
     }
 
     virtual bool        has_data() const { return scte_104_pkt_.get() != nullptr || !payload_.empty(); }
-    virtual vanc_packet pop_packet()
+    virtual vanc_packet pop_packet(bool field2)
     {
+        if (field2 || scte_104_pkt_.get() == nullptr) {
+            return {0, 0, 0, {}};
+        }
+
         // If we have a payload, return it as a vanc_packet.
         if (payload_.size() > 0) {
             vanc_packet pkt{SCTE104_DID, SCTE104_SDID, line_number_, payload_};

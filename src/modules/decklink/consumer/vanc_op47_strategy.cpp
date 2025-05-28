@@ -20,6 +20,7 @@ class vanc_op47_strategy : public decklink_vanc_strategy
 
     std::mutex mutex_;
     uint8_t    line_number_;
+    uint8_t    line_number_2_;
     uint8_t    sd_line_;
     uint16_t   counter_;
 
@@ -27,8 +28,9 @@ class vanc_op47_strategy : public decklink_vanc_strategy
     std::queue<std::vector<uint8_t>> packets_;
 
   public:
-    explicit vanc_op47_strategy(uint8_t line_number, const std::wstring& dummy_header)
+    explicit vanc_op47_strategy(uint8_t line_number, uint8_t line_number_2, const std::wstring& dummy_header)
         : line_number_(line_number)
+        , line_number_2_(line_number_2)
         , sd_line_(21)
         , counter_(1)
         , dummy_header_(dummy_header.empty() ? std::vector<uint8_t>() : base64_decode(dummy_header))
@@ -36,17 +38,21 @@ class vanc_op47_strategy : public decklink_vanc_strategy
     }
 
     virtual bool        has_data() const { return !packets_.empty() || !dummy_header_.empty(); }
-    virtual vanc_packet pop_packet()
+    virtual vanc_packet pop_packet(bool field2)
     {
+        if (field2 && line_number_2_ == 0) {
+            return {0, 0, 0, {}};
+        }
+
         std::lock_guard<std::mutex> lock(mutex_);
 
         if (packets_.empty()) {
-            return {OP47_DID, OP47_SDID, line_number_, sdp_encode(dummy_header_)};
+            return {OP47_DID, OP47_SDID, field2 ? line_number_2_ : line_number_, sdp_encode(dummy_header_)};
         }
         auto packet = packets_.front();
         packets_.pop();
 
-        return {OP47_DID, OP47_SDID, line_number_, packet};
+        return {OP47_DID, OP47_SDID, field2 ? line_number_2_ : line_number_, packet};
     }
 
     virtual bool try_push_data(const std::vector<std::wstring>& params)
@@ -90,10 +96,10 @@ class vanc_op47_strategy : public decklink_vanc_strategy
 
         memcpy(result.data() + 9, packet.data(), packet.size());
         memcpy(result.data() + 9 + packet.size(), packet.data(), packet.size());
-        result[99]  = 0x74;                      // footer id
+        result[99]  = 0x74;                     // footer id
         result[100] = (counter_ & 0xFF00) >> 8; // footer sequence counter
         result[101] = counter_ & 0x00FF;        // footer sequence counter
-        result[102] = 0x0;                       // SPD checksum, will be set when calculated
+        result[102] = 0x0;                      // SPD checksum, will be set when calculated
 
         auto sum    = accumulate(result.begin(), result.end(), (uint8_t)0);
         result[102] = ~sum + 1;
@@ -115,9 +121,10 @@ class vanc_op47_strategy : public decklink_vanc_strategy
 
 const std::wstring vanc_op47_strategy::Name = L"OP47";
 
-std::shared_ptr<decklink_vanc_strategy> create_op47_strategy(uint8_t line_number, const std::wstring& dummy_header)
+std::shared_ptr<decklink_vanc_strategy>
+create_op47_strategy(uint8_t line_number, uint8_t line_number_2, const std::wstring& dummy_header)
 {
-    return std::make_shared<vanc_op47_strategy>(line_number, dummy_header);
+    return std::make_shared<vanc_op47_strategy>(line_number, line_number_2, dummy_header);
 }
 
 }} // namespace caspar::decklink

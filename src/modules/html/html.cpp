@@ -170,12 +170,14 @@ class renderer_application
             command_line->AppendSwitch("enable-webgl");
 
             // This gives better performance on the gpu->cpu readback, but can perform worse with intense templates
-            auto backend = env::properties().get(L"configuration.html.angle-backend", L"gl");
+            auto backend = env::properties().get(L"configuration.html.angle-backend", L"vulkan");
             if (backend.size() > 0) {
                 command_line->AppendSwitchWithValue("use-angle", backend);
             }
         }
 
+        unsetenv("DISPLAY");
+        command_line->AppendSwitchWithValue("ozone-platform", "headless");
         command_line->AppendSwitch("disable-web-security");
         command_line->AppendSwitch("enable-begin-frame-scheduling");
         command_line->AppendSwitch("enable-media-stream");
@@ -213,7 +215,7 @@ void init(const core::module_dependencies& dependencies)
 
     CefMainArgs main_args;
     g_cef_executor = std::make_unique<executor>(L"cef");
-    g_cef_executor->invoke([&] {
+    bool result    = g_cef_executor->invoke([&] {
 #ifdef WIN32
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 #endif
@@ -230,8 +232,14 @@ void init(const core::module_dependencies& dependencies)
             CefString(&settings.cache_path).FromWString(cache_path);
         }
 
-        CefInitialize(main_args, settings, CefRefPtr<CefApp>(new renderer_application(enable_gpu)), nullptr);
+        return CefInitialize(main_args, settings, CefRefPtr<CefApp>(new renderer_application(enable_gpu)), nullptr);
     });
+
+    if (!result) {
+        CASPAR_LOG(error) << "[html] Failed to initialize CEF";
+        return;
+    }
+
     g_cef_executor->begin_invoke([&] { CefRunMessageLoop(); });
     dependencies.cg_registry->register_cg_producer(
         L"html",

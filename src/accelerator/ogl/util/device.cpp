@@ -74,30 +74,38 @@ struct device::impl : public std::enable_shared_from_this<impl>
     std::thread                         thread_;
 
     impl()
-        : eglDisplay_(EGL_NO_DISPLAY), eglContext_(EGL_NO_CONTEXT)
+        : eglDisplay_(EGL_NO_DISPLAY)
+        , eglContext_(EGL_NO_CONTEXT)
         , work_(make_work_guard(service_))
     {
         CASPAR_LOG(info) << L"Initializing OpenGL Device.";
 
         // Forces EGL headless mode
-        std::string envDisplay = getenv("DISPLAY");
-        unsetenv("DISPLAY");
+        auto        envStr = getenv("DISPLAY");
+        std::string envDisplay;
+        if (envStr != nullptr) {
+            envDisplay = envStr;
+            unsetenv("DISPLAY");
+        }
 
         eglDisplay_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 
         EGLint major, minor;
         eglInitialize(eglDisplay_, &major, &minor);
 
-        const EGLint configAttribs[] = {
-          EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-          EGL_BLUE_SIZE, 8,
-          EGL_GREEN_SIZE, 8,
-          EGL_RED_SIZE, 8,
-          EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-          EGL_NONE
-        };
+        const EGLint configAttribs[] = {EGL_SURFACE_TYPE,
+                                        EGL_PBUFFER_BIT,
+                                        EGL_BLUE_SIZE,
+                                        8,
+                                        EGL_GREEN_SIZE,
+                                        8,
+                                        EGL_RED_SIZE,
+                                        8,
+                                        EGL_RENDERABLE_TYPE,
+                                        EGL_OPENGL_BIT,
+                                        EGL_NONE};
 
-        EGLint numConfigs;
+        EGLint    numConfigs;
         EGLConfig eglConfig;
         if (!eglChooseConfig(eglDisplay_, configAttribs, &eglConfig, 1, &numConfigs)) {
             CASPAR_THROW_EXCEPTION(gl::ogl_exception() << msg_info("Failed to initialize OpenGL: eglChooseConfig"));
@@ -142,7 +150,9 @@ struct device::impl : public std::enable_shared_from_this<impl>
         }
 
         // Restore DISPLAY
-        setenv("DISPLAY", envDisplay.c_str(), 0);
+        if (!envDisplay.empty()) {
+            setenv("DISPLAY", envDisplay.c_str(), 0);
+        }
 
         GL(glCreateFramebuffers(1, &fbo_));
         GL(glBindFramebuffer(GL_FRAMEBUFFER, fbo_));

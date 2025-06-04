@@ -170,12 +170,14 @@ class renderer_application
             command_line->AppendSwitch("enable-webgl");
 
             // This gives better performance on the gpu->cpu readback, but can perform worse with intense templates
-            auto backend = env::properties().get(L"configuration.html.angle-backend", L"gl");
+            auto backend = env::properties().get(L"configuration.html.angle-backend", L"vulkan");
             if (backend.size() > 0) {
                 command_line->AppendSwitchWithValue("use-angle", backend);
             }
         }
 
+        unsetenv("DISPLAY");
+        command_line->AppendSwitchWithValue("ozone-platform", "headless");
         command_line->AppendSwitch("disable-web-security");
         command_line->AppendSwitch("enable-begin-frame-scheduling");
         command_line->AppendSwitch("enable-media-stream");

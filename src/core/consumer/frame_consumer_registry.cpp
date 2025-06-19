@@ -48,9 +48,9 @@ class destroy_consumer_proxy : public frame_consumer
 {
     std::shared_ptr<frame_consumer> consumer_;
 
-public:
+  public:
     destroy_consumer_proxy(spl::shared_ptr<frame_consumer>&& consumer)
-            : consumer_(std::move(consumer))
+        : consumer_(std::move(consumer))
     {
         destroy_consumers_in_separate_thread() = true;
     }
@@ -94,6 +94,7 @@ public:
     {
         return consumer_->initialize(format_desc, channel_index);
     }
+    std::future<bool>    call(const std::vector<std::wstring>& params) override { return consumer_->call(params); }
     std::wstring         print() const override { return consumer_->print(); }
     std::wstring         name() const override { return consumer_->name(); }
     bool                 has_synchronization_clock() const override { return consumer_->has_synchronization_clock(); }
@@ -105,9 +106,9 @@ class print_consumer_proxy : public frame_consumer
 {
     std::shared_ptr<frame_consumer> consumer_;
 
-public:
+  public:
     print_consumer_proxy(spl::shared_ptr<frame_consumer>&& consumer)
-            : consumer_(std::move(consumer))
+        : consumer_(std::move(consumer))
     {
     }
 
@@ -128,6 +129,7 @@ public:
         consumer_->initialize(format_desc, channel_index);
         CASPAR_LOG(info) << consumer_->print() << L" Initialized.";
     }
+    std::future<bool>    call(const std::vector<std::wstring>& params) override { return consumer_->call(params); }
     std::wstring         print() const override { return consumer_->print(); }
     std::wstring         name() const override { return consumer_->name(); }
     bool                 has_synchronization_clock() const override { return consumer_->has_synchronization_clock(); }
@@ -135,10 +137,7 @@ public:
     core::monitor::state state() const override { return consumer_->state(); }
 };
 
-
-frame_consumer_registry::frame_consumer_registry()
-{
-}
+frame_consumer_registry::frame_consumer_registry() {}
 
 void frame_consumer_registry::register_consumer_factory(const std::wstring& name, const consumer_factory_t& factory)
 {
@@ -215,7 +214,5 @@ const spl::shared_ptr<frame_consumer>& frame_consumer::empty()
     static spl::shared_ptr<frame_consumer> consumer = spl::make_shared<empty_frame_consumer>();
     return consumer;
 }
-
-
 
 }} // namespace caspar::core

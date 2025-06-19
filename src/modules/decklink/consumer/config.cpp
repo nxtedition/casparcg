@@ -54,6 +54,21 @@ port_configuration parse_output_config(const boost::property_tree::wptree&  ptre
     return port_config;
 }
 
+vanc_configuration parse_vanc_config(const boost::property_tree::wptree& vanc_tree)
+{
+    vanc_configuration vanc_config;
+
+    vanc_config.enable            = true;
+    vanc_config.op47_line         = vanc_tree.get(L"op47-line", vanc_config.op47_line);
+    vanc_config.op47_line_2       = vanc_tree.get(L"op47-line-2", vanc_config.op47_line_2);
+    vanc_config.enable_op47       = vanc_config.op47_line > 0;
+    vanc_config.scte104_line      = vanc_tree.get(L"scte104-line", vanc_config.scte104_line);
+    vanc_config.enable_scte104    = vanc_config.scte104_line > 0;
+    vanc_config.op47_dummy_header = vanc_tree.get(L"op47-dummy-header", L"");
+
+    return vanc_config;
+};
+
 core::color_space get_color_space(const std::wstring& str)
 {
     auto color_space_str = boost::to_lower_copy(str);
@@ -140,6 +155,11 @@ configuration parse_xml_config(const boost::property_tree::wptree&  ptree,
         config.hdr_meta.max_cll  = hdr_metadata->get(L"max-cll", config.hdr_meta.max_cll);
 
         config.hdr_meta.default_color_space = color_space;
+    }
+
+    auto vanc = ptree.get_child_optional(L"vanc");
+    if (vanc) {
+        config.vanc = parse_vanc_config(vanc.get());
     }
 
     return config;

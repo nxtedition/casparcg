@@ -9,12 +9,17 @@ set(SOURCES
 		consumer/config.cpp
 		consumer/config.h
 		consumer/monitor.cpp
-		consumer/monitor.h
+		consumer/monitor.h		
+		consumer/vanc.cpp
+		consumer/vanc.h
+		consumer/vanc_scte104_strategy.cpp
+		consumer/vanc_op47_strategy.cpp
 
 		producer/decklink_producer.cpp
 		producer/decklink_producer.h
 
 		util/util.h
+		util/base64.hpp
 
 		decklink.cpp
 		decklink.h
@@ -61,6 +66,7 @@ target_include_directories(decklink PRIVATE
     ..
     ../..
     ${FFMPEG_INCLUDE_PATH}
+	/srv/code/caspar/libklvanc/dist/include
     )
 target_precompile_headers(decklink PRIVATE "StdAfx.h")
 
@@ -78,8 +84,8 @@ if (MSVC)
 else()
 	target_link_libraries(decklink
 			ffmpeg
-
 			dl
+			/srv/code/caspar/libklvanc/dist/lib/libklvanc.a
 	)
 endif ()
 

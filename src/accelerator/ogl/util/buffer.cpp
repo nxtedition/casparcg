@@ -23,7 +23,6 @@
 #include <boost/property_tree/ptree.hpp>
 
 #include <common/gl/gl_check.h>
-#include <atomic>
 
 #include <GL/glew.h>
 

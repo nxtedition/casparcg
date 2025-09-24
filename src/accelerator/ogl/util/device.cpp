@@ -21,6 +21,7 @@
 #include "device.h"
 
 #include "buffer.h"
+#include "context.h"
 #include "shader.h"
 #include "texture.h"
 
@@ -31,7 +32,6 @@
 #include <common/gl/gl_check.h>
 #include <common/os/thread.h>
 
-#include <EGL/egl.h>
 #include <GL/glew.h>
 
 #ifdef WIN32
@@ -59,8 +59,7 @@ struct device::impl : public std::enable_shared_from_this<impl>
     using texture_queue_t = tbb::concurrent_bounded_queue<std::shared_ptr<texture>>;
     using buffer_queue_t  = tbb::concurrent_bounded_queue<std::shared_ptr<buffer>>;
 
-    EGLDisplay eglDisplay_;
-    EGLContext eglContext_;
+    std::unique_ptr<device_context> context_;
 
     std::array<std::array<tbb::concurrent_unordered_map<size_t, texture_queue_t>, 4>, 2> device_pools_;
     std::array<tbb::concurrent_unordered_map<size_t, buffer_queue_t>, 2>                 host_pools_;
@@ -69,52 +68,17 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
     std::wstring version_;
 
-    io_context                          service_;
-    decltype(make_work_guard(service_)) work_;
+    io_context                          io_context_;
+    decltype(make_work_guard(io_context_)) work_;
     std::thread                         thread_;
 
     impl()
-        : eglDisplay_(EGL_NO_DISPLAY), eglContext_(EGL_NO_CONTEXT)
-        , work_(make_work_guard(service_))
+        : context_(new device_context())
+        , work_(make_work_guard(io_context_))
     {
         CASPAR_LOG(info) << L"Initializing OpenGL Device.";
 
-        // Forces EGL headless mode
-        std::string envDisplay = getenv("DISPLAY");
-        unsetenv("DISPLAY");
-
-        eglDisplay_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-
-        EGLint major, minor;
-        eglInitialize(eglDisplay_, &major, &minor);
-
-        const EGLint configAttribs[] = {
-          EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-          EGL_BLUE_SIZE, 8,
-          EGL_GREEN_SIZE, 8,
-          EGL_RED_SIZE, 8,
-          EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-          EGL_NONE
-        };
-
-        EGLint numConfigs;
-        EGLConfig eglConfig;
-        if (!eglChooseConfig(eglDisplay_, configAttribs, &eglConfig, 1, &numConfigs)) {
-            CASPAR_THROW_EXCEPTION(gl::ogl_exception() << msg_info("Failed to initialize OpenGL: eglChooseConfig"));
-        }
-
-        if (!eglBindAPI(EGL_OPENGL_API)) {
-            CASPAR_THROW_EXCEPTION(gl::ogl_exception() << msg_info("Failed to initialize OpenGL: eglBindAPI"));
-        }
-
-        eglContext_ = eglCreateContext(eglDisplay_, eglConfig, EGL_NO_CONTEXT, NULL);
-        if (eglContext_ == EGL_NO_CONTEXT) {
-            CASPAR_THROW_EXCEPTION(gl::ogl_exception() << msg_info("Failed to initialize OpenGL: eglCreateContext"));
-        }
-
-        if (!eglMakeCurrent(eglDisplay_, EGL_NO_SURFACE, EGL_NO_SURFACE, eglContext_)) {
-            CASPAR_THROW_EXCEPTION(gl::ogl_exception() << msg_info("Failed to initialize OpenGL: eglMakeCurrent"));
-        }
+        context_->bind();
 
         auto err = glewInit();
         if (err != GLEW_OK && err != 4) { // GLEW_ERROR_NO_GLX_DISPLAY
@@ -141,19 +105,16 @@ struct device::impl : public std::enable_shared_from_this<impl>
                                                "since it does not support OpenGL 4.5 or higher."));
         }
 
-        // Restore DISPLAY
-        setenv("DISPLAY", envDisplay.c_str(), 0);
-
         GL(glCreateFramebuffers(1, &fbo_));
         GL(glBindFramebuffer(GL_FRAMEBUFFER, fbo_));
 
-        eglMakeCurrent(eglDisplay_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        context_->unbind();
 
         thread_ = std::thread([&] {
-            eglMakeCurrent(eglDisplay_, EGL_NO_SURFACE, EGL_NO_SURFACE, eglContext_);
+            context_->bind();
             set_thread_name(L"OpenGL Device");
-            service_.run();
-            eglMakeCurrent(eglDisplay_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            io_context_.run();
+            context_->unbind();
         });
     }
 
@@ -162,7 +123,7 @@ struct device::impl : public std::enable_shared_from_this<impl>
         work_.reset();
         thread_.join();
 
-        eglMakeCurrent(eglDisplay_, EGL_NO_SURFACE, EGL_NO_SURFACE, eglContext_);
+        context_->bind();
 
         for (auto& pool : host_pools_)
             pool.clear();
@@ -172,14 +133,6 @@ struct device::impl : public std::enable_shared_from_this<impl>
                 pool.clear();
 
         GL(glDeleteFramebuffers(1, &fbo_));
-
-        eglMakeCurrent(eglDisplay_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-
-        if (eglContext_ != EGL_NO_CONTEXT) {
-            eglDestroyContext(eglDisplay_, eglContext_);
-        }
-
-        eglTerminate(eglDisplay_);
     }
 
     template <typename Func>
@@ -190,7 +143,7 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
         auto task   = task_type(std::forward<Func>(func));
         auto future = task.get_future();
-        boost::asio::spawn(service_,
+        boost::asio::spawn(io_context_,
                            std::move(task)
 #if BOOST_VERSION >= 108000
                                ,
@@ -211,7 +164,7 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
         auto task   = task_type(std::forward<Func>(func));
         auto future = task.get_future();
-        boost::asio::dispatch(service_, std::move(task));
+        boost::asio::dispatch(io_context_, std::move(task));
         return future;
     }
 
@@ -307,7 +260,7 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
             GL(glFlush());
 
-            deadline_timer timer(service_);
+            deadline_timer timer(io_context_);
             for (auto n = 0; true; ++n) {
                 // TODO (perf) Smarter non-polling solution?
                 timer.expires_from_now(boost::posix_time::milliseconds(2));
@@ -455,7 +408,7 @@ std::future<array<const uint8_t>> device::copy_async(const std::shared_ptr<textu
 {
     return impl_->copy_async(source);
 }
-void         device::dispatch(std::function<void()> func) { boost::asio::dispatch(impl_->service_, std::move(func)); }
+void         device::dispatch(std::function<void()> func) { boost::asio::dispatch(impl_->io_context_, std::move(func)); }
 std::wstring device::version() const { return impl_->version(); }
 boost::property_tree::wptree device::info() const { return impl_->info(); }
 std::future<void>            device::gc() { return impl_->gc(); }

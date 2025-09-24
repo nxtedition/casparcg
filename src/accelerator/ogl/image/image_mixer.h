@@ -40,8 +40,7 @@ class image_mixer final : public core::image_mixer
     image_mixer(const spl::shared_ptr<class device>& ogl,
                 int                                  channel_id,
                 const size_t                         max_frame_size,
-                common::bit_depth                    depth,
-                core::color_space                    color_space);
+                common::bit_depth                    depth);
     image_mixer(const image_mixer&) = delete;
 
     ~image_mixer();
@@ -53,13 +52,14 @@ class image_mixer final : public core::image_mixer
     core::mutable_frame
     create_frame(const void* video_stream_tag, const core::pixel_format_desc& desc, common::bit_depth depth) override;
 
+    void update_aspect_ratio(double aspect_ratio) override;
+
     // core::image_mixer
 
     void              push(const core::frame_transform& frame) override;
     void              visit(const core::const_frame& frame) override;
     void              pop() override;
     common::bit_depth depth() const override;
-    core::color_space color_space() const override;
 
   private:
     struct impl;

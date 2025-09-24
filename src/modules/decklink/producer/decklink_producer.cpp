@@ -362,11 +362,20 @@ struct Decoder
                 frame->height      = video->GetHeight();
                 frame->data[0]     = reinterpret_cast<uint8_t*>(video_bytes);
                 frame->linesize[0] = video->GetRowBytes();
-                frame->key_frame   = 1;
+#if LIBAVCODEC_VERSION_MAJOR < 61
+                frame->key_frame = 1;
+#else
+                frame->flags |= AV_FRAME_FLAG_KEY;
+#endif
             }
 
+#if LIBAVCODEC_VERSION_MAJOR < 61
             frame->interlaced_frame = mode->GetFieldDominance() != bmdProgressiveFrame;
             frame->top_field_first  = mode->GetFieldDominance() == bmdUpperFieldFirst ? 1 : 0;
+#else
+            frame->flags |= mode->GetFieldDominance() != bmdProgressiveFrame ? AV_FRAME_FLAG_INTERLACED : 0;
+            frame->flags |= mode->GetFieldDominance() == bmdUpperFieldFirst ? AV_FRAME_FLAG_TOP_FIELD_FIRST : 0;
+#endif
 
             return frame;
         }
@@ -417,7 +426,7 @@ com_ptr<IDeckLinkDisplayMode> get_display_mode(const com_iface_ptr<IDeckLinkInpu
     BOOL           supported  = false;
 
     if (FAILED(device->DoesSupportVideoMode(
-            bmdVideoConnectionUnspecified, mode->GetDisplayMode(), pix_fmt, flag, &supported)))
+            bmdVideoConnectionUnspecified, mode->GetDisplayMode(), pix_fmt, bmdNoVideoInputConversion, flag, &actualMode, &supported)))
         CASPAR_THROW_EXCEPTION(caspar_exception()
                                << msg_info(L"Could not determine whether device supports requested video format: " +
                                            get_mode_name(mode)));
@@ -732,6 +741,7 @@ class decklink_producer : public IDeckLinkInputCallback
                 }
             }
 
+            av_buffersink_set_frame_size(audio_filter_.sink, audio_cadence_[0]);
             while (true) {
                 {
                     auto av_video = alloc_frame();
@@ -744,7 +754,6 @@ class decklink_producer : public IDeckLinkInputCallback
                         return S_OK;
                     }
 
-                    audio_filter_.sink->inputs[0]->min_samples = audio_cadence_[0];
                     if (av_buffersink_get_frame_flags(audio_filter_.sink, av_audio.get(), AV_BUFFERSINK_FLAG_PEEK) <
                         0) {
                         return S_OK;
@@ -964,14 +973,14 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
     auto afilter = boost::to_lower_copy(get_param(L"AF", params, get_param(L"FILTER", params, L"")));
 
     return spl::make_shared<decklink_producer_proxy>(dependencies.format_desc,
-                                                              dependencies.frame_factory,
-                                                              dependencies.format_repository,
-                                                              device_index,
-                                                              u8(vfilter),
-                                                              u8(afilter),
-                                                              length,
-                                                              format_str,
-                                                              freeze_on_lost,
-                                                              hdr);
+                                                     dependencies.frame_factory,
+                                                     dependencies.format_repository,
+                                                     device_index,
+                                                     u8(vfilter),
+                                                     u8(afilter),
+                                                     length,
+                                                     format_str,
+                                                     freeze_on_lost,
+                                                     hdr);
 }
 }} // namespace caspar::decklink

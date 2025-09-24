@@ -41,6 +41,8 @@
 #include <boost/logic/tribool.hpp>
 #include <common/filesystem.h>
 
+#include <chrono>
+
 #pragma warning(push, 1)
 
 extern "C" {
@@ -339,17 +341,17 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
 
     try {
         return spl::make_shared<ffmpeg_producer>(dependencies.frame_factory,
-                                                          dependencies.format_desc,
-                                                          name,
-                                                          path,
-                                                          vfilter,
-                                                          afilter,
-                                                          start,
-                                                          seek2,
-                                                          duration,
-                                                          loop,
-                                                          seekable,
-                                                          scale_mode);
+                                                 dependencies.format_desc,
+                                                 name,
+                                                 path,
+                                                 vfilter,
+                                                 afilter,
+                                                 start,
+                                                 seek2,
+                                                 duration,
+                                                 loop,
+                                                 seekable,
+                                                 scale_mode);
     } catch (...) {
         CASPAR_LOG_CURRENT_EXCEPTION();
     }

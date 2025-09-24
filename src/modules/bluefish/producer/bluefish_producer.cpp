@@ -286,7 +286,7 @@ struct bluefish_producer
                 return std::make_shared<blue_dma_buffer>(static_cast<int>(format_desc_.size), n++);
             });
 
-            // Allocate a single UHD buffer for converison Buffer if we need it! .
+            // Allocate a single UHD buffer for conversion Buffer if we need it! .
             if (uhd_mode_ == 2) {
                 conversion_buffer_.resize(static_cast<int>(format_desc_.size));
             }
@@ -471,7 +471,7 @@ struct bluefish_producer
                 src_audio->nb_samples  = 0;
                 int samples_decoded    = 0;
 
-                // hmm is audio on first frame or do we need to wait till snd feild to get audio?
+                // hmm is audio on first frame or do we need to wait till snd field to get audio?
                 if (sync_format_ == UPD_FMT_FRAME || (sync_format_ == UPD_FMT_FIELD && first_frame_)) {
                     void* audio_bytes = nullptr;
                     auto  hanc_buffer = reinterpret_cast<uint8_t*>(reserved_frames_.front()->hanc_data());
@@ -741,11 +741,11 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
     auto in_format_desc = dependencies.format_repository.find(get_param(L"FORMAT", params, L"INVALID"));
 
     return spl::make_shared<bluefish_producer_proxy>(dependencies.format_desc,
-                                                              dependencies.frame_factory,
-                                                              dependencies.format_repository,
-                                                              device_index,
-                                                              stream_index,
-                                                              uhd_mode,
-                                                              length);
+                                                     dependencies.frame_factory,
+                                                     dependencies.format_repository,
+                                                     device_index,
+                                                     stream_index,
+                                                     uhd_mode,
+                                                     length);
 }
 }} // namespace caspar::bluefish

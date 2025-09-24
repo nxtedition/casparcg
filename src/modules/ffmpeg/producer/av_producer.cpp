@@ -223,10 +223,18 @@ class Decoder
                     } else {
                         FF_RET(ret, "avcodec_receive_frame");
 
+                        // TODO: Maybe Fixed in:
+                        // https://github.com/FFmpeg/FFmpeg/commit/33203a08e0a26598cb103508327a1dc184b27bc6
                         // NOTE This is a workaround for DVCPRO HD.
+#if LIBAVCODEC_VERSION_MAJOR < 61
                         if (av_frame->width > 1024 && av_frame->interlaced_frame) {
                             av_frame->top_field_first = 1;
                         }
+#else
+                        if (av_frame->width > 1024 && (av_frame->flags & AV_FRAME_FLAG_INTERLACED)) {
+                            av_frame->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
+                        }
+#endif
 
                         // TODO (fix) is this always best?
                         av_frame->pts = av_frame->best_effort_timestamp;
@@ -238,10 +246,19 @@ class Decoder
 #endif
                         if (duration_pts <= 0) {
                             if (ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+#if LIBAVCODEC_VERSION_MAJOR < 62
+                                const int ticks_per_frame = ctx->ticks_per_frame;
+#else
+                                // https://github.com/FFmpeg/FFmpeg/commit/e930b834a928546f9cbc937f6633709053448232#diff-115616f8a2b59cab3aac4e7f4c8c31e69e94e7fcfa339b9f65b0bf34308aa80fR682
+                                const int ticks_per_frame =
+                                    (ctx->codec_descriptor && (ctx->codec_descriptor->props & AV_CODEC_PROP_FIELDS))
+                                        ? 2
+                                        : 1;
+#endif
                                 const auto ticks = av_stream_get_parser(st) ? av_stream_get_parser(st)->repeat_pict + 1
-                                                                            : ctx->ticks_per_frame;
+                                                                            : ticks_per_frame;
                                 duration_pts     = static_cast<int64_t>(AV_TIME_BASE) * ctx->framerate.den * ticks /
-                                               ctx->framerate.num / ctx->ticks_per_frame;
+                                               ctx->framerate.num / ticks_per_frame;
                                 duration_pts = av_rescale_q(duration_pts, {1, AV_TIME_BASE}, st->time_base);
                             } else if (ctx->codec_type == AVMEDIA_TYPE_AUDIO) {
                                 duration_pts = av_rescale_q(av_frame->nb_samples, {1, ctx->sample_rate}, st->time_base);
@@ -591,6 +608,13 @@ struct Filter
                                               AV_PIX_FMT_YUVA422P,
                                               AV_PIX_FMT_YUVA420P,
                                               AV_PIX_FMT_UYVY422,
+                                              // bwdif needs planar rgb
+                                              AV_PIX_FMT_GBRP,
+                                              AV_PIX_FMT_GBRP10,
+                                              AV_PIX_FMT_GBRP12,
+                                              AV_PIX_FMT_GBRP16,
+                                              AV_PIX_FMT_GBRAP,
+                                              AV_PIX_FMT_GBRAP16,
                                               AV_PIX_FMT_NONE};
             FF(av_opt_set_int_list(sink, "pix_fmts", pix_fmts, -1, AV_OPT_SEARCH_CHILDREN));
 #ifdef _MSC_VER
@@ -866,9 +890,9 @@ struct AVProducer::Impl
                 auto start    = start_.load();
                 auto duration = duration_.load();
 
-                start     = start != AV_NOPTS_VALUE ? start : 0;
-                auto end  = duration != AV_NOPTS_VALUE ? start + duration : INT64_MAX;
-                auto time = frame.pts != AV_NOPTS_VALUE ? frame.pts + frame.duration : 0;
+                start       = start != AV_NOPTS_VALUE ? start : 0;
+                auto end    = duration != AV_NOPTS_VALUE ? start + duration : INT64_MAX;
+                auto time   = frame.pts != AV_NOPTS_VALUE ? frame.pts + frame.duration : 0;
                 buffer_eof_ = (video_filter_.eof && audio_filter_.eof) ||
                               av_rescale_q(time, TIME_BASE_Q, format_tb_) >= av_rescale_q(end, TIME_BASE_Q, format_tb_);
 

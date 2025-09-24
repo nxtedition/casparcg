@@ -13,6 +13,8 @@ set(SOURCES
 
 		util/image_algorithms.cpp
 		util/image_algorithms.h
+		util/image_converter.cpp
+		util/image_converter.h
 		util/image_loader.cpp
 		util/image_loader.h
 		util/image_view.h
@@ -26,8 +28,8 @@ casparcg_add_module_project(image
 	INIT_FUNCTION "image::init"
 )
 target_include_directories(image PRIVATE
-    ../..
-    ${FREEIMAGE_INCLUDE_PATH}
+	..
+	${FFMPEG_INCLUDE_PATH}
     )
 
 set_target_properties(image PROPERTIES FOLDER modules)
@@ -36,13 +38,7 @@ source_group(sources\\producer producer/*)
 source_group(sources\\util util/*)
 source_group(sources ./*)
 
-if(MSVC)
-	target_link_libraries(image
-		FreeImage.lib
-	)
-else()
-	target_link_libraries(image
-		freeimage
-	)
-endif()
+target_link_libraries(image PRIVATE
+	ffmpeg
+)
 

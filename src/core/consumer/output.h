@@ -40,7 +40,7 @@ class output final
   public:
     explicit output(const spl::shared_ptr<diagnostics::graph>& graph,
                     const video_format_desc&                   format_desc,
-                    int                                        channel_index);
+                    const core::channel_info&                  channel_info);
 
     output(const output&)            = delete;
     output& operator=(const output&) = delete;
@@ -53,6 +53,8 @@ class output final
     void add(int index, const spl::shared_ptr<frame_consumer>& consumer);
     bool remove(const spl::shared_ptr<frame_consumer>& consumer);
     bool remove(int index);
+
+    std::future<bool> call(int index, const std::vector<std::wstring>& params);
 
     size_t consumer_count() const;
 

@@ -21,31 +21,17 @@
 
 #pragma once
 
-#include <core/frame/pixel_format.h>
-
-#include <common/bit_depth.h>
+#include <ffmpeg/util/av_util.h>
 
 #include <memory>
-#include <set>
 #include <string>
 
 #include <boost/filesystem.hpp>
 
-struct FIBITMAP;
-
 namespace caspar { namespace image {
 
-struct loaded_image
-{
-    std::shared_ptr<FIBITMAP> bitmap;
-    core::pixel_format        format;
-    int                       stride;
-    common::bit_depth         depth;
-    bool                      is_straight;
-};
-
-loaded_image load_image(const std::wstring& filename, bool allow_all_formats);
-loaded_image load_png_from_memory(const void* memory_location, size_t size, bool allow_all_formats);
+std::shared_ptr<AVFrame> load_image(const std::wstring& filename);
+std::shared_ptr<AVFrame> load_from_memory(std::vector<unsigned char> image_data);
 
 bool is_valid_file(const boost::filesystem::path& filename);
 

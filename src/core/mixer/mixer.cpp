@@ -62,6 +62,9 @@ struct mixer::impl
 
     const_frame operator()(std::vector<draw_frame> frames, const video_format_desc& format_desc, int nb_samples)
     {
+        image_mixer_->update_aspect_ratio(static_cast<double>(format_desc.square_width) /
+                                          static_cast<double>(format_desc.square_height));
+
         for (auto& frame : frames) {
             frame.accept(audio_mixer_);
             frame.transform().image_transform.layer_depth = 1;
@@ -73,23 +76,21 @@ struct mixer::impl
 
         state_["audio"] = audio_mixer_.state();
 
-        auto depth       = image_mixer_->depth();
-        auto color_space = image_mixer_->color_space();
+        auto depth = image_mixer_->depth();
 
         buffer_.push(std::async(std::launch::deferred,
                                 [image = std::move(image),
                                  audio = std::move(audio),
                                  graph = graph_,
                                  depth,
-                                 color_space,
                                  format_desc,
                                  tag = this]() mutable {
-                                    auto desc = pixel_format_desc(pixel_format::bgra, color_space);
+                                    auto desc = pixel_format_desc(pixel_format::bgra);
                                     desc.planes.push_back(
                                         pixel_format_desc::plane(format_desc.width, format_desc.height, 4, depth));
                                     std::vector<array<const uint8_t>> image_data;
                                     image_data.emplace_back(std::move(image.get()));
-                                    return const_frame(std::move(image_data), std::move(audio), desc);
+                                    return const_frame(tag, std::move(image_data), std::move(audio), desc);
                                 }));
 
         if (buffer_.size() <= format_desc.field_count) {

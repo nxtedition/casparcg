@@ -54,6 +54,21 @@ port_configuration parse_output_config(const boost::property_tree::wptree&  ptre
     return port_config;
 }
 
+vanc_configuration parse_vanc_config(const boost::property_tree::wptree& vanc_tree)
+{
+    vanc_configuration vanc_config;
+
+    vanc_config.enable            = true;
+    vanc_config.op47_line         = vanc_tree.get(L"op47-line", vanc_config.op47_line);
+    vanc_config.op47_line_field2  = vanc_tree.get(L"op47-line-field2", vanc_config.op47_line_field2);
+    vanc_config.enable_op47       = vanc_config.op47_line > 0;
+    vanc_config.scte104_line      = vanc_tree.get(L"scte104-line", vanc_config.scte104_line);
+    vanc_config.enable_scte104    = vanc_config.scte104_line > 0;
+    vanc_config.op47_dummy_header = vanc_tree.get(L"op47-dummy-header", L"");
+
+    return vanc_config;
+};
+
 core::color_space get_color_space(const std::wstring& str)
 {
     auto color_space_str = boost::to_lower_copy(str);
@@ -96,6 +111,25 @@ configuration parse_xml_config(const boost::property_tree::wptree&  ptree,
         config.wait_for_reference = configuration::wait_for_reference_t::automatic;
     }
     config.wait_for_reference_duration = ptree.get(L"wait-for-reference-duration", config.wait_for_reference_duration);
+
+    {
+        auto is_8bit              = channel_info.depth == common::bit_depth::bit8;
+        auto default_pixel_format = is_8bit ? L"rgba" : L"yuv";
+        auto pixel_format         = ptree.get(L"pixel-format", default_pixel_format);
+        if (pixel_format == L"yuv") {
+            config.pixel_format = configuration::pixel_format_t::yuv;
+        } else if (pixel_format == L"rgba") {
+            config.pixel_format = configuration::pixel_format_t::rgba;
+        } else {
+            CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"Invalid pixel format, must be rgba or yuv"));
+        }
+
+        if (channel_info.depth != common::bit_depth::bit8 &&
+            config.pixel_format == configuration::pixel_format_t::rgba) {
+            CASPAR_THROW_EXCEPTION(user_error()
+                                   << msg_info(L"The decklink consumer only supports rgba output on 8-bit channels"));
+        }
+    }
 
     config.primary = parse_output_config(ptree, format_repository);
     if (config.primary.device_index == -1)
@@ -142,6 +176,11 @@ configuration parse_xml_config(const boost::property_tree::wptree&  ptree,
         config.hdr_meta.max_dml  = hdr_metadata->get(L"max-dml", config.hdr_meta.max_dml);
         config.hdr_meta.max_fall = hdr_metadata->get(L"max-fall", config.hdr_meta.max_fall);
         config.hdr_meta.max_cll  = hdr_metadata->get(L"max-cll", config.hdr_meta.max_cll);
+    }
+
+    auto vanc = ptree.get_child_optional(L"vanc");
+    if (vanc) {
+        config.vanc = parse_vanc_config(vanc.get());
     }
 
     return config;

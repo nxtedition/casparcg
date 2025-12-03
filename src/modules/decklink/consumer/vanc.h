@@ -31,7 +31,7 @@ struct vanc_packet
     uint8_t              did;
     uint8_t              sdid;
     uint32_t             line_number;
-    std::vector<uint8_t> data;
+    std::vector<uint16_t> data;
 };
 
 class decklink_vanc_strategy
@@ -61,4 +61,6 @@ create_op47_strategy(uint8_t line_number, uint8_t line_number_2, const std::wstr
 std::shared_ptr<decklink_vanc_strategy> create_scte104_strategy(uint8_t line_number);
 
 std::shared_ptr<decklink_vanc> create_vanc(const vanc_configuration& config);
+
+std::vector<uint16_t> apply_parity(const std::vector<uint8_t>& data);
 }} // namespace caspar::decklink

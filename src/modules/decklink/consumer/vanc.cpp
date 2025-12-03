@@ -21,8 +21,20 @@
 
 #include "vanc.h"
 #include <boost/lexical_cast.hpp>
+#include <bitset>
 
 namespace caspar { namespace decklink {
+
+
+std::vector<uint16_t> apply_parity(const std::vector<uint8_t>& data) {
+    std::vector<uint16_t> result(data.size());
+    std::transform(data.cbegin(), data.cend(), result.begin(), [](uint8_t value) {
+        auto bits = std::bitset<16>(value).count();
+        uint16_t parity = (bits % 2 == 0) ? 0x200 : 0x100; // even parity
+        return static_cast<uint16_t>(value) | parity; 
+    });
+    return result;
+}
 
 class decklink_vanc_packet : public IDeckLinkAncillaryPacket
 {
@@ -52,7 +64,7 @@ class decklink_vanc_packet : public IDeckLinkAncillaryPacket
     // IDeckLinkAncillaryPacket
     HRESULT STDMETHODCALLTYPE GetBytes(BMDAncillaryPacketFormat format, const void** data, unsigned int* size) override
     {
-        if (format == bmdAncillaryPacketFormatUInt8) {
+        if (format == bmdAncillaryPacketFormatUInt16) {
             *data = pkt_.data.data();
             *size = static_cast<unsigned int>(pkt_.data.size());
             return S_OK;

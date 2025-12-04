@@ -13,12 +13,12 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
     static const std::wstring Name;
 
     mutable std::mutex mutex_;
-    uint8_t            line_number_;
+    uint32_t           line_number_;
 
     std::vector<uint16_t> payload_ = {};
 
   public:
-    explicit vanc_scte104_strategy(uint8_t line_number)
+    explicit vanc_scte104_strategy(uint32_t line_number)
         : line_number_(line_number)
     {
     }
@@ -60,8 +60,8 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
 
                 // try to parse the payload as a base64 encoded raw SCTE-104 packet.
                 auto base64_payload = params.at(1);
-                auto payload = base64_decode(base64_payload);
-                
+                auto payload        = base64_decode(base64_payload);
+
                 payload_ = apply_parity(payload);
             }
         } catch (const std::exception& e) {
@@ -87,7 +87,7 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
 
 const std::wstring vanc_scte104_strategy::Name = L"SCTE104";
 
-std::shared_ptr<decklink_vanc_strategy> create_scte104_strategy(uint8_t line_number)
+std::shared_ptr<decklink_vanc_strategy> create_scte104_strategy(uint32_t line_number)
 {
     return std::make_shared<vanc_scte104_strategy>(line_number);
 }

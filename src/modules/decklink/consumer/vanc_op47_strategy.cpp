@@ -16,15 +16,14 @@ namespace caspar { namespace decklink {
 const uint8_t OP47_DID  = 0x43;
 const uint8_t OP47_SDID = 0x02;
 
-
 class vanc_op47_strategy : public decklink_vanc_strategy
 {
   private:
     static const std::wstring Name;
 
     mutable std::mutex mutex_;
-    uint8_t            line_number_;
-    uint8_t            line_number_2_;
+    uint32_t           line_number_;
+    uint32_t           line_number_2_;
     uint8_t            sd_line_;
     uint16_t           counter_;
 
@@ -32,7 +31,7 @@ class vanc_op47_strategy : public decklink_vanc_strategy
     std::queue<std::vector<uint8_t>> queue_;
 
   public:
-    vanc_op47_strategy(uint8_t line_number, uint8_t line_number_2, const std::wstring& dummy_header)
+    vanc_op47_strategy(uint32_t line_number, uint32_t line_number_2, const std::wstring& dummy_header)
         : line_number_(line_number)
         , line_number_2_(line_number_2)
         , sd_line_(21)
@@ -55,7 +54,10 @@ class vanc_op47_strategy : public decklink_vanc_strategy
         }
 
         if (queue_.empty()) {
-            return {OP47_DID, OP47_SDID, field2 ? line_number_2_ : line_number_, apply_parity(sdp_encode(dummy_header_, field2))};
+            return {OP47_DID,
+                    OP47_SDID,
+                    field2 ? line_number_2_ : line_number_,
+                    apply_parity(sdp_encode(dummy_header_, field2))};
         }
         auto payload = queue_.front();
         queue_.pop();
@@ -96,19 +98,19 @@ class vanc_op47_strategy : public decklink_vanc_strategy
         result[2] = static_cast<uint8_t>(result.size()); // size of the packet
         result[3] = 0x02;                                // format-code
 
-        result[4] = (sd_line_-6) | (field2 ? 0x60 : 0xE0);    // VBI packet descriptor (odd field)
-        result[5] = 0;                      // VBI packet descriptor (not used)
-        result[6] = 0;                      // VBI packet descriptor (not used)
-        result[7] = 0;                      // VBI packet descriptor (not used)
-        result[8] = 0;                      // VBI packet descriptor (not used)
+        result[4] = (sd_line_ - 6) | (field2 ? 0x60 : 0xE0); // VBI packet descriptor (odd field)
+        result[5] = 0;                                       // VBI packet descriptor (not used)
+        result[6] = 0;                                       // VBI packet descriptor (not used)
+        result[7] = 0;                                       // VBI packet descriptor (not used)
+        result[8] = 0;                                       // VBI packet descriptor (not used)
 
         memcpy(result.data() + 9, packet.data(), packet.size());
-        result[54]  = 0x74;                     // footer id
+        result[54] = 0x74;                     // footer id
         result[55] = (counter_ & 0xFF00) >> 8; // footer sequence counter
         result[56] = counter_ & 0x00FF;        // footer sequence counter
         result[57] = 0x0;                      // SPD checksum, will be set when calculated
 
-        auto sum    = accumulate(result.begin(), result.end(), (uint8_t)0);
+        auto sum   = accumulate(result.begin(), result.end(), (uint8_t)0);
         result[57] = ~sum + 1;
 
         counter_++; // this is rolling over at 65535 by design
@@ -129,7 +131,7 @@ class vanc_op47_strategy : public decklink_vanc_strategy
 const std::wstring vanc_op47_strategy::Name = L"OP47";
 
 std::shared_ptr<decklink_vanc_strategy>
-create_op47_strategy(uint8_t line_number, uint8_t line_number_2, const std::wstring& dummy_header)
+create_op47_strategy(uint32_t line_number, uint32_t line_number_2, const std::wstring& dummy_header)
 {
     return std::make_shared<vanc_op47_strategy>(line_number, line_number_2, dummy_header);
 }

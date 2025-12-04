@@ -15,7 +15,7 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
     mutable std::mutex mutex_;
     uint32_t           line_number_;
 
-    std::vector<uint16_t> payload_ = {};
+    std::vector<uint8_t> payload_ = {};
 
   public:
     explicit vanc_scte104_strategy(uint32_t line_number)
@@ -41,7 +41,7 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
 
             // If we have a payload, return it as a vanc_packet.
             if (payload_.size() > 0) {
-                auto        data = std::vector<uint16_t>(payload_.begin(), payload_.end());
+                auto        data = std::vector<uint8_t>(payload_.begin(), payload_.end());
                 vanc_packet pkt{SCTE104_DID, SCTE104_SDID, line_number_, data};
                 payload_.clear();
                 return pkt;
@@ -60,9 +60,7 @@ class vanc_scte104_strategy : public decklink_vanc_strategy
 
                 // try to parse the payload as a base64 encoded raw SCTE-104 packet.
                 auto base64_payload = params.at(1);
-                auto payload        = base64_decode(base64_payload);
-
-                payload_ = apply_parity(payload);
+                payload_            = base64_decode(base64_payload);
             }
         } catch (const std::exception& e) {
             CASPAR_LOG(error) << "Failed to parse SCTE 104 parameters: " << e.what();

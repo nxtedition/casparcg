@@ -54,15 +54,12 @@ class vanc_op47_strategy : public decklink_vanc_strategy
         }
 
         if (queue_.empty()) {
-            return {OP47_DID,
-                    OP47_SDID,
-                    field2 ? line_number_2_ : line_number_,
-                    apply_parity(sdp_encode(dummy_header_, field2))};
+            return {OP47_DID, OP47_SDID, field2 ? line_number_2_ : line_number_, sdp_encode(dummy_header_, field2)};
         }
         auto payload = queue_.front();
         queue_.pop();
 
-        return {OP47_DID, OP47_SDID, field2 ? line_number_2_ : line_number_, apply_parity(sdp_encode(payload, field2))};
+        return {OP47_DID, OP47_SDID, field2 ? line_number_2_ : line_number_, sdp_encode(payload, field2)};
     }
 
     virtual bool try_push_data(const std::vector<std::wstring>& params) override

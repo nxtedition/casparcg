@@ -28,10 +28,10 @@ namespace caspar { namespace decklink {
 
 struct vanc_packet
 {
-    uint8_t               did;
-    uint8_t               sdid;
-    uint32_t              line_number;
-    std::vector<uint16_t> data;
+    uint8_t              did;
+    uint8_t              sdid;
+    uint32_t             line_number;
+    std::vector<uint8_t> data;
 };
 
 class decklink_vanc_strategy

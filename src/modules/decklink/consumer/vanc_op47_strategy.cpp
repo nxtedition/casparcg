@@ -31,10 +31,10 @@ class vanc_op47_strategy : public decklink_vanc_strategy
     std::queue<std::vector<uint8_t>> queue_;
 
   public:
-    vanc_op47_strategy(uint32_t line_number, uint32_t line_number_2, const std::wstring& dummy_header)
+    vanc_op47_strategy(uint32_t line_number, uint32_t line_number_2, uint32_t sd_line, const std::wstring& dummy_header)
         : line_number_(line_number)
         , line_number_2_(line_number_2)
-        , sd_line_(21)
+        , sd_line_(static_cast<uint8_t>(sd_line & 0xFF))
         , counter_(1)
         , dummy_header_(dummy_header.empty() ? std::vector<uint8_t>() : base64_decode(dummy_header))
     {
@@ -128,9 +128,9 @@ class vanc_op47_strategy : public decklink_vanc_strategy
 const std::wstring vanc_op47_strategy::Name = L"OP47";
 
 std::shared_ptr<decklink_vanc_strategy>
-create_op47_strategy(uint32_t line_number, uint32_t line_number_2, const std::wstring& dummy_header)
+create_op47_strategy(uint32_t line_number, uint32_t line_number_2, uint32_t sd_line, const std::wstring& dummy_header)
 {
-    return std::make_shared<vanc_op47_strategy>(line_number, line_number_2, dummy_header);
+    return std::make_shared<vanc_op47_strategy>(line_number, line_number_2, sd_line, dummy_header);
 }
 
 }} // namespace caspar::decklink

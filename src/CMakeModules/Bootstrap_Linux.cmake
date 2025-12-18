@@ -54,8 +54,8 @@ if (ENABLE_HTML)
     else()
         casparcg_add_external_project(cef)
         ExternalProject_Add(cef
-            URL ${CASPARCG_DOWNLOAD_MIRROR}/cef/cef_binary_142.0.17+g60aac24+chromium-142.0.7444.176_linux64_minimal.tar.bz2
-            URL_HASH SHA256=1d89e19b2f446105f9a1fe6fdc96bced86249b5884241dcc4013b7c94dabf424
+            URL https://nxt-artifacts.s3.eu-central-1.amazonaws.com/cef_binary_142.0.17%2Bg60aac24%2Bchromium-142.0.7444.176_linux64_minimal.tar.bz2
+            URL_HASH SHA256=136ffdc219f7cdf14c1c55db2ee95b547633880eebfda4a0d980bab6c52fd85c
             DOWNLOAD_DIR ${CASPARCG_DOWNLOAD_CACHE}
             CMAKE_ARGS -DUSE_SANDBOX=Off
             INSTALL_COMMAND ""

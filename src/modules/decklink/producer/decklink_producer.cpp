@@ -246,7 +246,6 @@ struct Filter
             FF(av_opt_set_int_list(sink, "sample_fmts", sample_fmts, -1, AV_OPT_SEARCH_CHILDREN));
             FF(av_opt_set_int_list(sink, "sample_rates", sample_rates, 0, AV_OPT_SEARCH_CHILDREN));
 
-#if FFMPEG_NEW_CHANNEL_LAYOUT
             // TODO - we might want to force the filter to produce 16 channels
             // But this segfaults (changing the property name causes it to fail with an error)
             // As 16 channel packets are fed into the filter, with the filter set to the same, that is what we get out
@@ -257,10 +256,6 @@ struct Filter
             FF(av_opt_set_chlayout(sink, "ch_layouts", &channel_layout, AV_OPT_SEARCH_CHILDREN));
             av_channel_layout_uninit(&channel_layout);
              */
-#else
-            int64_t channel_layouts[] = {av_get_default_channel_layout(format_desc.audio_channels), 0};
-            FF(av_opt_set_int_list(sink, "channel_layouts", channel_layouts, 0, AV_OPT_SEARCH_CHILDREN));
-#endif
 
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -425,8 +420,13 @@ com_ptr<IDeckLinkDisplayMode> get_display_mode(const com_iface_ptr<IDeckLinkInpu
     BMDDisplayMode actualMode = bmdModeUnknown;
     BOOL           supported  = false;
 
-    if (FAILED(device->DoesSupportVideoMode(
-            bmdVideoConnectionUnspecified, mode->GetDisplayMode(), pix_fmt, bmdNoVideoInputConversion, flag, &actualMode, &supported)))
+    if (FAILED(device->DoesSupportVideoMode(bmdVideoConnectionUnspecified,
+                                            mode->GetDisplayMode(),
+                                            pix_fmt,
+                                            bmdNoVideoInputConversion,
+                                            flag,
+                                            &actualMode,
+                                            &supported)))
         CASPAR_THROW_EXCEPTION(caspar_exception()
                                << msg_info(L"Could not determine whether device supports requested video format: " +
                                            get_mode_name(mode)));
@@ -593,6 +593,14 @@ class decklink_producer : public IDeckLinkInputCallback
             auto newMode = newDisplayMode->GetDisplayMode();
             auto fmt     = get_caspar_video_format(newMode);
 
+            if (fmt == input_format.format) {
+                // This gets called often if the enabled pixel format doesn't match the signal
+                // https://forum.blackmagicdesign.com/viewtopic.php?f=12&t=144234 So if the video format hasn't actually
+                // changed, then we can ignore this event. In the future we may wish to respect this in order to unpack
+                // the pixels ourselves
+                return S_OK;
+            }
+
             auto new_fmt = format_repository_.find_format(fmt);
 
             CASPAR_LOG(info) << print() << L" Input format changed from " << input_format.name << L" to "
@@ -712,11 +720,7 @@ class decklink_producer : public IDeckLinkInputCallback
             if (audio) {
                 auto src    = std::shared_ptr<AVFrame>(av_frame_alloc(), [](AVFrame* ptr) { av_frame_free(&ptr); });
                 src->format = AV_SAMPLE_FMT_S32;
-#if FFMPEG_NEW_CHANNEL_LAYOUT
                 av_channel_layout_default(&src->ch_layout, format_desc_.audio_channels);
-#else
-                src->channels = format_desc_.audio_channels;
-#endif
                 src->sample_rate = format_desc_.audio_sample_rate;
 
                 void* audio_bytes = nullptr;

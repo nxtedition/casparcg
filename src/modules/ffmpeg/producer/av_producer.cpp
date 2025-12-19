@@ -530,6 +530,14 @@ struct Filter
                         args += (boost::format(":frame_rate=%d/%d") % st->framerate.num % st->framerate.den).str();
                     }
 
+                    if (st->colorspace != AVCOL_SPC_UNSPECIFIED) {
+                        args += (boost::format(":colorspace=%d") % st->colorspace).str();
+                    }
+
+                    if (st->color_range != AVCOL_RANGE_UNSPECIFIED) {
+                        args += (boost::format(":range=%d") % st->color_range).str();
+                    }
+
                     AVFilterContext* source = nullptr;
                     FF(avfilter_graph_create_filter(
                         &source, avfilter_get_by_name("buffer"), name.c_str(), args.c_str(), nullptr, graph.get()));

@@ -618,12 +618,11 @@ struct Filter
             const AVSampleFormat sample_fmts[] = {AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_NONE};
             const int sample_rates[] = {format_desc.audio_sample_rate, -1};
 
-            FF(av_opt_set_int(sink, "all_channel_counts", 1, AV_OPT_SEARCH_CHILDREN));
-
 #if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100) && LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 36, 100)
             FF(av_opt_set_array(sink, "sample_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(sample_fmts) - 1, AV_OPT_TYPE_SAMPLE_FMT, sample_fmts));
             FF(av_opt_set_array(sink, "samplerates", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(sample_rates) - 1, AV_OPT_TYPE_INT, sample_rates));
 #else
+            FF(av_opt_set_int(sink, "all_channel_counts", 1, AV_OPT_SEARCH_CHILDREN));
             FF(av_opt_set_int_list(sink, "sample_fmts", sample_fmts, -1, AV_OPT_SEARCH_CHILDREN));
             FF(av_opt_set_int_list(sink, "sample_rates", sample_rates, -1, AV_OPT_SEARCH_CHILDREN));
 #endif

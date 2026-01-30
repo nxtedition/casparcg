@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace caspar { namespace accelerator { namespace vk {
 
@@ -36,6 +37,7 @@ class texture;
  *
  * Phase 5: Extended with full transform matrix and geometry parameters.
  * Phase 6: Extended with color adjustments and chroma key parameters.
+ * Phase 7: Extended with pixel format decoding and color space conversion.
  */
 struct blend_push_constants
 {
@@ -113,6 +115,29 @@ struct blend_push_constants
 
     float   chroma_spill_suppress_saturation; // 0.0-1.0
     int32_t _pad4[3];                       // Padding for alignment
+
+    // Phase 7: Pixel format and color space
+    int32_t pixel_format;       // 0-12 (gray, bgra, rgba, argb, abgr, ycbcr, ycbcra, luma, bgr, rgb, uyvy, gbrp, gbrap)
+    int32_t color_space;        // 0=bt601, 1=bt709, 2=bt2020
+    int32_t num_planes;         // 1-4 number of texture planes
+    int32_t is_straight_alpha;  // 1 if alpha is straight (non-premultiplied)
+
+    // Precision factors for bit depth scaling (per plane)
+    float   precision_factor[4];  // 1.0 for 8-bit, 64.0 for 10-bit, 16.0 for 12-bit, 1.0 for 16-bit
+
+    // Color matrix for YCbCr to RGB conversion (row-major 3x3)
+    // Row 0: [1.0, 0.0, Cr_R]  - Y contribution, Cb contribution (0), Cr->R contribution
+    // Row 1: [1.0, Cb_G, Cr_G] - Y contribution, Cb->G contribution, Cr->G contribution
+    // Row 2: [1.0, Cb_B, 0.0]  - Y contribution, Cb->B contribution, Cr contribution (0)
+    float   color_matrix[12];     // 3x3 matrix + 3 padding for alignment
+
+    // Luma coefficients for saturation/contrast calculations
+    float   luma_coeff[4];        // R, G, B coefficients + padding
+
+    // Plane dimensions for chroma subsampling (plane 1 = Cb/Cr for YCbCr)
+    int32_t plane1_width;         // Chroma plane width (may be src_width/2 for YUV420/422)
+    int32_t plane1_height;        // Chroma plane height (may be src_height/2 for YUV420)
+    int32_t _pad5[2];             // Padding for alignment
 };
 
 /**
@@ -141,11 +166,20 @@ class blend_pipeline final
     /**
      * Execute blend operation using compute shader.
      *
-     * @param src Source texture (read-only)
+     * @param src Source texture (read-only) - for single-plane formats (BGRA, etc.)
      * @param dst Destination texture (read-write)
      * @param params Blend parameters
      */
     void execute(texture& src, texture& dst, const blend_push_constants& params);
+
+    /**
+     * Execute blend operation using compute shader with multi-plane support.
+     *
+     * @param planes Source textures for each plane (1-4 planes)
+     * @param dst Destination texture (read-write)
+     * @param params Blend parameters including pixel format info
+     */
+    void execute(const std::vector<std::shared_ptr<texture>>& planes, texture& dst, const blend_push_constants& params);
 
   private:
     struct impl;

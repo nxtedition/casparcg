@@ -280,26 +280,43 @@ All MIXER color commands functional (BRIGHTNESS, CONTRAST, SATURATION, LEVELS, C
 
 ---
 
-## Phase 7: Pixel Formats & Color Spaces
+## Phase 7: Pixel Formats & Color Spaces ✅
 
 **Goal:** Support all input pixel formats and color space conversions.
 
+**Status:** COMPLETED
+
 ### Tasks
 
-- [ ] Implement pixel format decoding in fragment shader:
-  - [ ] BGRA, RGBA, ARGB, ABGR
-  - [ ] BGR, RGB
-  - [ ] Gray/Luma
-  - [ ] YCbCr (planar 4:2:0, 4:2:2)
-  - [ ] YCbCra (planar with alpha)
-  - [ ] UYVY (packed 4:2:2)
-  - [ ] GBRP, GBRAP (planar for ProRes)
-- [ ] Implement color space conversion matrices:
-  - [ ] BT.601 (SD)
-  - [ ] BT.709 (HD)
-  - [ ] BT.2020 (UHD)
-- [ ] Support 8-bit, 10-bit, 12-bit, 16-bit depths
-- [ ] Handle color range (limited vs full)
+- [x] Implement pixel format decoding in compute shader:
+  - [x] BGRA, RGBA, ARGB, ABGR
+  - [x] BGR, RGB
+  - [x] Gray/Luma
+  - [x] YCbCr (planar 4:2:0, 4:2:2, 4:4:4)
+  - [x] YCbCra (planar with alpha)
+  - [x] UYVY (packed 4:2:2)
+  - [x] GBRP, GBRAP (planar for ProRes)
+- [x] Implement color space conversion matrices:
+  - [x] BT.601 (SD)
+  - [x] BT.709 (HD)
+  - [x] BT.2020 (UHD)
+- [x] Support 8-bit, 10-bit, 12-bit, 16-bit depths via precision factors
+- [ ] Handle color range (limited vs full) - partially implemented (limited range YCbCr supported)
+
+### Files Created/Modified
+
+- `src/accelerator/vk/util/pipeline.h` - Extended blend_push_constants with pixel format parameters
+- `src/accelerator/vk/util/pipeline.cpp` - Added multi-plane texture binding support (4 source planes)
+- `src/accelerator/vk/image/shaders/blend.comp` - Added pixel format decoding and YCbCr→RGB conversion
+- `src/accelerator/vk/image/image_kernel.cpp` - Pass pixel format, color space, precision factors to shader
+
+### Technical Notes
+
+- All 13 pixel formats from OGL backend ported to Vulkan compute shader
+- Color matrices for BT.601/709/2020 color spaces
+- Precision factors for 8/10/12/16-bit depth scaling
+- Chroma subsampling handled via separate plane dimensions
+- YCbCr limited range (16-235/16-240) decoding implemented
 
 ### Deliverable
 

@@ -24,15 +24,20 @@
  * Phase 4: All 29 blend modes
  * Phase 5: Full geometric transforms (FILL, ROTATION, PERSPECTIVE, CLIP, CROP)
  * Phase 6: Color processing (CSB, levels, invert, chroma key)
+ * Phase 7: Pixel format decoding and color space conversion
  */
 
 #version 450
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// Input/output images
-layout(binding = 0, rgba8) uniform readonly image2D src_image;
-layout(binding = 1, rgba8) uniform image2D dst_image;
+// Input planes (up to 4 for planar formats like YCbCrA)
+layout(binding = 0, rgba8) uniform readonly image2D plane0;
+layout(binding = 1, rgba8) uniform readonly image2D plane1;
+layout(binding = 2, rgba8) uniform readonly image2D plane2;
+layout(binding = 3, rgba8) uniform readonly image2D plane3;
+// Output destination
+layout(binding = 4, rgba8) uniform image2D dst_image;
 
 // Push constants for parameters
 // Must match blend_push_constants in pipeline.h
@@ -107,10 +112,208 @@ layout(push_constant) uniform PushConstants {
 
     float chroma_spill_suppress_saturation;
     int   _pad4[3];
+
+    // Phase 7: Pixel format and color space
+    int   pixel_format;        // 0-12
+    int   color_space;         // 0=bt601, 1=bt709, 2=bt2020
+    int   num_planes;          // 1-4
+    int   is_straight_alpha;   // 1 if non-premultiplied
+
+    // Precision factors (per plane)
+    vec4  precision_factor;
+
+    // Color matrix (3x3 + padding, row-major)
+    mat3  color_matrix;
+    vec3  _pad_cm;
+
+    // Luma coefficients
+    vec4  luma_coeff;
+
+    // Plane 1 dimensions (for chroma subsampling)
+    int   plane1_width;
+    int   plane1_height;
+    int   _pad5[2];
 } params;
 
-// Default luma coefficients (BT.709)
-const vec3 luma_coeff = vec3(0.2126, 0.7152, 0.0722);
+// ============================================================================
+// Pixel Format Constants
+// ============================================================================
+
+#define PIXEL_FORMAT_GRAY    0
+#define PIXEL_FORMAT_BGRA    1
+#define PIXEL_FORMAT_RGBA    2
+#define PIXEL_FORMAT_ARGB    3
+#define PIXEL_FORMAT_ABGR    4
+#define PIXEL_FORMAT_YCBCR   5
+#define PIXEL_FORMAT_YCBCRA  6
+#define PIXEL_FORMAT_LUMA    7
+#define PIXEL_FORMAT_BGR     8
+#define PIXEL_FORMAT_RGB     9
+#define PIXEL_FORMAT_UYVY    10
+#define PIXEL_FORMAT_GBRP    11
+#define PIXEL_FORMAT_GBRAP   12
+
+// ============================================================================
+// YCbCr to RGBA Conversion
+// ============================================================================
+
+vec4 ycbcra_to_rgba(float Y, float Cb, float Cr, float A)
+{
+    // Standard coefficients for limited range YCbCr
+    const float luma_coefficient = 255.0 / 219.0;
+    const float chroma_coefficient = 255.0 / 224.0;
+
+    // Convert from 0-1 normalized to 0-255 range
+    vec3 YCbCr = vec3(Y, Cb, Cr) * 255.0;
+
+    // Remove offsets (Y: 16, Cb/Cr: 128)
+    YCbCr -= vec3(16.0, 128.0, 128.0);
+
+    // Apply range coefficients
+    YCbCr *= vec3(luma_coefficient, chroma_coefficient, chroma_coefficient);
+
+    // Apply color matrix and convert back to 0-1 range
+    // The color_matrix converts YCbCr to RGB
+    vec3 rgb = params.color_matrix * YCbCr / 255.0;
+
+    // Return as BGRA (swizzle to match internal format)
+    return vec4(rgb.bgr, A);
+}
+
+// ============================================================================
+// Pixel Format Decoding
+// ============================================================================
+
+vec4 get_rgba_color(ivec2 src_coords)
+{
+    // Calculate normalized coordinates for texture sampling
+    vec2 norm_coords = vec2(src_coords) / vec2(params.src_width, params.src_height);
+
+    switch (params.pixel_format)
+    {
+    case PIXEL_FORMAT_GRAY:
+        {
+            vec4 texel = imageLoad(plane0, src_coords);
+            float gray = texel.r * params.precision_factor[0];
+            return vec4(gray, gray, gray, 1.0);
+        }
+
+    case PIXEL_FORMAT_BGRA:
+        {
+            vec4 texel = imageLoad(plane0, src_coords);
+            return texel.bgra * params.precision_factor[0];
+        }
+
+    case PIXEL_FORMAT_RGBA:
+        {
+            vec4 texel = imageLoad(plane0, src_coords);
+            return texel.rgba * params.precision_factor[0];
+        }
+
+    case PIXEL_FORMAT_ARGB:
+        {
+            vec4 texel = imageLoad(plane0, src_coords);
+            return texel.gbar * params.precision_factor[0];
+        }
+
+    case PIXEL_FORMAT_ABGR:
+        {
+            vec4 texel = imageLoad(plane0, src_coords);
+            return texel.abgr * params.precision_factor[0];
+        }
+
+    case PIXEL_FORMAT_YCBCR:
+        {
+            // Planar YCbCr (3 planes)
+            // Calculate chroma coordinates with subsampling
+            ivec2 chroma_coords = ivec2(
+                int(float(src_coords.x) * float(params.plane1_width) / float(params.src_width)),
+                int(float(src_coords.y) * float(params.plane1_height) / float(params.src_height))
+            );
+
+            float y  = imageLoad(plane0, src_coords).r * params.precision_factor[0];
+            float cb = imageLoad(plane1, chroma_coords).r * params.precision_factor[1];
+            float cr = imageLoad(plane2, chroma_coords).r * params.precision_factor[2];
+
+            return ycbcra_to_rgba(y, cb, cr, 1.0);
+        }
+
+    case PIXEL_FORMAT_YCBCRA:
+        {
+            // Planar YCbCrA (4 planes)
+            ivec2 chroma_coords = ivec2(
+                int(float(src_coords.x) * float(params.plane1_width) / float(params.src_width)),
+                int(float(src_coords.y) * float(params.plane1_height) / float(params.src_height))
+            );
+
+            float y  = imageLoad(plane0, src_coords).r * params.precision_factor[0];
+            float cb = imageLoad(plane1, chroma_coords).r * params.precision_factor[1];
+            float cr = imageLoad(plane2, chroma_coords).r * params.precision_factor[2];
+            float a  = imageLoad(plane3, src_coords).r * params.precision_factor[3];
+
+            return ycbcra_to_rgba(y, cb, cr, a);
+        }
+
+    case PIXEL_FORMAT_LUMA:
+        {
+            // Luma-only (like grayscale but with different range)
+            float y = imageLoad(plane0, src_coords).r * params.precision_factor[0];
+            // Convert from limited range (16-235) to full range
+            float gray = (y - 0.065) / 0.859;
+            return vec4(gray, gray, gray, 1.0);
+        }
+
+    case PIXEL_FORMAT_BGR:
+        {
+            vec4 texel = imageLoad(plane0, src_coords);
+            return vec4(texel.bgr * params.precision_factor[0], 1.0);
+        }
+
+    case PIXEL_FORMAT_RGB:
+        {
+            vec4 texel = imageLoad(plane0, src_coords);
+            return vec4(texel.rgb * params.precision_factor[0], 1.0);
+        }
+
+    case PIXEL_FORMAT_UYVY:
+        {
+            // Packed UYVY (2 bytes per pixel, but stored as 2 planes in CasparCG)
+            // Plane 0: Y values (green channel)
+            // Plane 1: U/V interleaved (blue=Cb, red=Cr)
+            float y  = imageLoad(plane0, src_coords).g * params.precision_factor[0];
+            vec4 uv_sample = imageLoad(plane1, src_coords);
+            float cb = uv_sample.b * params.precision_factor[1];
+            float cr = uv_sample.r * params.precision_factor[1];
+
+            return ycbcra_to_rgba(y, cb, cr, 1.0);
+        }
+
+    case PIXEL_FORMAT_GBRP:
+        {
+            // Planar GBR (3 planes) - used by ProRes
+            float g = imageLoad(plane0, src_coords).r * params.precision_factor[0];
+            float b = imageLoad(plane1, src_coords).r * params.precision_factor[1];
+            float r = imageLoad(plane2, src_coords).r * params.precision_factor[2];
+
+            // Return as BGRA (CasparCG internal format)
+            return vec4(b, g, r, 1.0);
+        }
+
+    case PIXEL_FORMAT_GBRAP:
+        {
+            // Planar GBRA (4 planes) - used by ProRes with alpha
+            float g = imageLoad(plane0, src_coords).r * params.precision_factor[0];
+            float b = imageLoad(plane1, src_coords).r * params.precision_factor[1];
+            float r = imageLoad(plane2, src_coords).r * params.precision_factor[2];
+            float a = imageLoad(plane3, src_coords).r * params.precision_factor[3];
+
+            return vec4(b, g, r, a);
+        }
+
+    default:
+        return vec4(0.0, 0.0, 0.0, 0.0);
+    }
+}
 
 // ============================================================================
 // HSL Color Space Conversion Functions
@@ -238,7 +441,7 @@ vec3 ContrastSaturationBrightness(vec4 color, float brt, float sat, float con)
     const float AvgLumG = 0.5;
     const float AvgLumB = 0.5;
 
-    vec3 LumCoeff = luma_coeff.bgr;
+    vec3 LumCoeff = params.luma_coeff.bgr;
 
     // Unpremultiply if needed
     if (color.a > 0.0)
@@ -641,8 +844,14 @@ void main()
     src_x = clamp(src_x, 0, params.src_width - 1);
     src_y = clamp(src_y, 0, params.src_height - 1);
 
-    // Read source pixel
-    vec4 src_color = imageLoad(src_image, ivec2(src_x, src_y));
+    // Phase 7: Get RGBA color from any pixel format
+    vec4 src_color = get_rgba_color(ivec2(src_x, src_y));
+
+    // Phase 7: Handle straight alpha conversion to premultiplied
+    if (params.is_straight_alpha != 0)
+    {
+        src_color.rgb *= src_color.a;
+    }
 
     // Phase 6: Apply chroma key (before other color processing)
     if (params.use_chroma != 0)

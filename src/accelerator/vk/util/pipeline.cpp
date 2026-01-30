@@ -58,7 +58,7 @@ struct blend_pipeline::impl
         create_pipeline();
         create_descriptor_pool();
 
-        CASPAR_LOG(info) << L"[vk::blend_pipeline] Vulkan blend compute pipeline initialized";
+        CASPAR_LOG(info) << L"[vk::blend_pipeline] Vulkan blend compute pipeline initialized (Phase 7 - multi-plane)";
     }
 
     ~impl()
@@ -96,22 +96,24 @@ struct blend_pipeline::impl
 
     void create_descriptor_layout()
     {
-        // Two storage images: src (read-only) and dst (read-write)
-        std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+        // Phase 7: 5 storage images: 4 source planes (read-only) + 1 dst (read-write)
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
 
-        // Binding 0: source image (read-only)
-        bindings[0].binding            = 0;
-        bindings[0].descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        bindings[0].descriptorCount    = 1;
-        bindings[0].stageFlags         = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[0].pImmutableSamplers = nullptr;
+        // Binding 0-3: source planes (read-only)
+        for (int i = 0; i < 4; ++i) {
+            bindings[i].binding            = i;
+            bindings[i].descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            bindings[i].descriptorCount    = 1;
+            bindings[i].stageFlags         = VK_SHADER_STAGE_COMPUTE_BIT;
+            bindings[i].pImmutableSamplers = nullptr;
+        }
 
-        // Binding 1: destination image (read-write)
-        bindings[1].binding            = 1;
-        bindings[1].descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        bindings[1].descriptorCount    = 1;
-        bindings[1].stageFlags         = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings[1].pImmutableSamplers = nullptr;
+        // Binding 4: destination image (read-write)
+        bindings[4].binding            = 4;
+        bindings[4].descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[4].descriptorCount    = 1;
+        bindings[4].stageFlags         = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[4].pImmutableSamplers = nullptr;
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -158,7 +160,7 @@ struct blend_pipeline::impl
     {
         VkDescriptorPoolSize poolSize{};
         poolSize.type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        poolSize.descriptorCount = 2;  // src + dst images
+        poolSize.descriptorCount = 5;  // Phase 7: 4 source planes + 1 dst image
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -207,6 +209,25 @@ struct blend_pipeline::impl
 
     void execute(texture& src, texture& dst, const blend_push_constants& params)
     {
+        // Phase 7: Use multi-plane execute with single source texture bound to all planes
+        execute_internal(&src, nullptr, nullptr, nullptr, dst, params);
+    }
+
+    void execute(const std::vector<std::shared_ptr<texture>>& planes, texture& dst, const blend_push_constants& params)
+    {
+        // Phase 7: Multi-plane texture support
+        texture* plane_ptrs[4] = {nullptr, nullptr, nullptr, nullptr};
+        for (size_t i = 0; i < planes.size() && i < 4; ++i) {
+            if (planes[i]) {
+                plane_ptrs[i] = planes[i].get();
+            }
+        }
+        execute_internal(plane_ptrs[0], plane_ptrs[1], plane_ptrs[2], plane_ptrs[3], dst, params);
+    }
+
+    void execute_internal(texture* plane0, texture* plane1, texture* plane2, texture* plane3,
+                          texture& dst, const blend_push_constants& params)
+    {
         // Allocate descriptor set
         VkDescriptorSetAllocateInfo allocInfo{};
         allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -218,34 +239,43 @@ struct blend_pipeline::impl
         VK(vkAllocateDescriptorSets(device_, &allocInfo, &descriptorSet));
 
         // Transition textures to GENERAL layout for compute access
-        src.transition_to_general();
+        if (plane0) plane0->transition_to_general();
+        if (plane1) plane1->transition_to_general();
+        if (plane2) plane2->transition_to_general();
+        if (plane3) plane3->transition_to_general();
         dst.transition_to_general();
 
-        // Update descriptor set with image views
-        VkDescriptorImageInfo srcImageInfo{};
-        srcImageInfo.imageView   = static_cast<VkImageView>(src.image_view());
-        srcImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        // Phase 7: Set up image info for all 5 bindings (4 planes + 1 dst)
+        std::array<VkDescriptorImageInfo, 5> imageInfos{};
 
-        VkDescriptorImageInfo dstImageInfo{};
-        dstImageInfo.imageView   = static_cast<VkImageView>(dst.image_view());
-        dstImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        // Use plane0 as fallback for unused planes (shader will ignore based on pixel_format)
+        VkImageView fallback_view = plane0 ? static_cast<VkImageView>(plane0->image_view()) : VK_NULL_HANDLE;
 
-        std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+        imageInfos[0].imageView   = plane0 ? static_cast<VkImageView>(plane0->image_view()) : fallback_view;
+        imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-        descriptorWrites[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[0].dstSet          = descriptorSet;
-        descriptorWrites[0].dstBinding      = 0;
-        descriptorWrites[0].dstArrayElement = 0;
-        descriptorWrites[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        descriptorWrites[0].descriptorCount = 1;
-        descriptorWrites[0].pImageInfo      = &srcImageInfo;
+        imageInfos[1].imageView   = plane1 ? static_cast<VkImageView>(plane1->image_view()) : fallback_view;
+        imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-        descriptorWrites[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[1].dstSet          = descriptorSet;
-        descriptorWrites[1].dstBinding      = 1;
-        descriptorWrites[1].dstArrayElement = 0;
-        descriptorWrites[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        descriptorWrites[1].pImageInfo      = &dstImageInfo;
+        imageInfos[2].imageView   = plane2 ? static_cast<VkImageView>(plane2->image_view()) : fallback_view;
+        imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        imageInfos[3].imageView   = plane3 ? static_cast<VkImageView>(plane3->image_view()) : fallback_view;
+        imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        imageInfos[4].imageView   = static_cast<VkImageView>(dst.image_view());
+        imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        std::array<VkWriteDescriptorSet, 5> descriptorWrites{};
+        for (int i = 0; i < 5; ++i) {
+            descriptorWrites[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            descriptorWrites[i].dstSet          = descriptorSet;
+            descriptorWrites[i].dstBinding      = i;
+            descriptorWrites[i].dstArrayElement = 0;
+            descriptorWrites[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            descriptorWrites[i].descriptorCount = 1;
+            descriptorWrites[i].pImageInfo      = &imageInfos[i];
+        }
 
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 
@@ -285,6 +315,11 @@ blend_pipeline::~blend_pipeline() = default;
 void blend_pipeline::execute(texture& src, texture& dst, const blend_push_constants& params)
 {
     impl_->execute(src, dst, params);
+}
+
+void blend_pipeline::execute(const std::vector<std::shared_ptr<texture>>& planes, texture& dst, const blend_push_constants& params)
+{
+    impl_->execute(planes, dst, params);
 }
 
 }}} // namespace caspar::accelerator::vk

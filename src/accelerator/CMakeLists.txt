@@ -3,8 +3,9 @@ project (accelerator)
 
 # Platform-specific source selection
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    # macOS: Use Vulkan backend (Phase 2 - Full Vulkan context)
+    # macOS: Use Vulkan backend (Phase 3 - Basic Rendering)
     set(SOURCES
+        vk/image/image_kernel.cpp
         vk/image/image_mixer.cpp
         vk/util/buffer.cpp
         vk/util/device.cpp
@@ -12,6 +13,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         accelerator_vk.cpp
     )
     set(HEADERS
+        vk/image/image_kernel.h
         vk/image/image_mixer.h
         vk/util/buffer.h
         vk/util/device.h

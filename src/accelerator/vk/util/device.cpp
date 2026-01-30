@@ -458,9 +458,9 @@ struct device::impl : public std::enable_shared_from_this<impl>
         using result_type = decltype(func());
         using task_type   = std::packaged_task<result_type()>;
 
-        auto task   = task_type(std::forward<Func>(func));
-        auto future = task.get_future();
-        boost::asio::dispatch(io_context_, std::move(task));
+        auto task   = std::make_shared<task_type>(std::forward<Func>(func));
+        auto future = task->get_future();
+        boost::asio::dispatch(io_context_, [task] { (*task)(); });
         return future;
     }
 

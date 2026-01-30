@@ -22,95 +22,368 @@
 #include "../StdAfx.h"
 
 #include "image_mixer.h"
+#include "image_kernel.h"
 
 #include "../util/device.h"
+#include "../util/texture.h"
 
 #include <common/array.h>
+#include <common/future.h>
 #include <common/log.h>
 
 #include <core/frame/frame.h>
 #include <core/frame/frame_transform.h>
+#include <core/frame/geometry.h>
 #include <core/frame/pixel_format.h>
 #include <core/video_format.h>
 
+#include <boost/align/aligned_allocator.hpp>
+
+#include <any>
 #include <cstring>
 #include <stack>
+#include <vector>
 
 namespace caspar { namespace accelerator { namespace vk {
 
-struct image_mixer::impl
+using future_texture = std::shared_future<std::shared_ptr<texture>>;
+
+struct item
+{
+    core::pixel_format_desc     pix_desc = core::pixel_format_desc(core::pixel_format::invalid);
+    std::vector<future_texture> textures;
+    core::image_transform       transform;
+    core::frame_geometry        geometry = core::frame_geometry::get_default();
+};
+
+struct layer
+{
+    std::vector<layer> sublayers;
+    std::vector<item>  items;
+    core::blend_mode   blend_mode;
+
+    explicit layer(core::blend_mode blend_mode)
+        : blend_mode(blend_mode)
+    {
+    }
+};
+
+class image_renderer
 {
     spl::shared_ptr<device> device_;
-    int                     channel_id_;
-    size_t                  max_frame_size_;
+    image_kernel            kernel_;
+    const size_t            max_frame_size_;
     common::bit_depth       depth_;
-    double                  aspect_ratio_ = 1.0;
 
-    std::stack<core::frame_transform> transform_stack_;
+  public:
+    explicit image_renderer(const spl::shared_ptr<device>& device, const size_t max_frame_size, common::bit_depth depth)
+        : device_(device)
+        , kernel_(device_)
+        , max_frame_size_(max_frame_size)
+        , depth_(depth)
+    {
+    }
 
+    std::future<array<const std::uint8_t>> operator()(std::vector<layer>             layers,
+                                                      const core::video_format_desc& format_desc)
+    {
+        if (layers.empty()) {
+            // Bypass GPU with empty frame (black)
+            static const std::vector<uint8_t, boost::alignment::aligned_allocator<uint8_t, 32>> buffer(
+                max_frame_size_, 0);
+            return make_ready_future(array<const std::uint8_t>(buffer.data(), format_desc.size, true));
+        }
+
+        return flatten(device_->dispatch_async(
+            [this, format_desc, layers = std::move(layers)]() mutable -> std::shared_future<array<const std::uint8_t>> {
+                auto target_texture = device_->create_texture(format_desc.width, format_desc.height, 4, depth_);
+
+                draw(target_texture, std::move(layers), format_desc);
+
+                return device_->copy_async(target_texture);
+            }));
+    }
+
+    common::bit_depth depth() const { return depth_; }
+
+  private:
+    void draw(std::shared_ptr<texture>&      target_texture,
+              std::vector<layer>             layers,
+              const core::video_format_desc& format_desc)
+    {
+        std::shared_ptr<texture> layer_key_texture;
+
+        for (auto& layer : layers) {
+            draw(target_texture, layer.sublayers, format_desc);
+            draw(target_texture, std::move(layer), layer_key_texture, format_desc);
+        }
+    }
+
+    void draw(std::shared_ptr<texture>&      target_texture,
+              layer                          layer,
+              std::shared_ptr<texture>&      layer_key_texture,
+              const core::video_format_desc& format_desc)
+    {
+        if (layer.items.empty())
+            return;
+
+        std::shared_ptr<texture> local_key_texture;
+        std::shared_ptr<texture> local_mix_texture;
+
+        if (layer.blend_mode != core::blend_mode::normal) {
+            // Non-normal blend modes need precomposition
+            auto layer_texture = device_->create_texture(target_texture->width(), target_texture->height(), 4, depth_);
+
+            for (auto& item : layer.items)
+                draw(layer_texture, std::move(item), layer_key_texture, local_key_texture, local_mix_texture,
+                     format_desc);
+
+            draw(layer_texture, std::move(local_mix_texture), format_desc, core::blend_mode::normal);
+            draw(target_texture, std::move(layer_texture), format_desc, layer.blend_mode);
+        } else {
+            // Fast path for normal blend mode
+            for (auto& item : layer.items)
+                draw(target_texture, std::move(item), layer_key_texture, local_key_texture, local_mix_texture,
+                     format_desc);
+
+            draw(target_texture, std::move(local_mix_texture), format_desc, core::blend_mode::normal);
+        }
+
+        layer_key_texture = std::move(local_key_texture);
+    }
+
+    void draw(std::shared_ptr<texture>&      target_texture,
+              item                           item,
+              std::shared_ptr<texture>&      layer_key_texture,
+              std::shared_ptr<texture>&      local_key_texture,
+              std::shared_ptr<texture>&      local_mix_texture,
+              const core::video_format_desc& format_desc)
+    {
+        draw_params params;
+        params.target_width  = format_desc.square_width;
+        params.target_height = format_desc.square_height;
+        params.pix_desc      = std::move(item.pix_desc);
+        params.transform     = std::move(item.transform);
+        params.geometry      = std::move(item.geometry);
+        params.aspect_ratio =
+            static_cast<double>(format_desc.square_width) / static_cast<double>(format_desc.square_height);
+
+        for (auto& future_texture : item.textures) {
+            params.textures.push_back(future_texture.get());
+        }
+
+        if (params.transform.is_key) {
+            // Key: use as mask for next non-key item
+            local_key_texture = local_key_texture
+                                    ? local_key_texture
+                                    : device_->create_texture(target_texture->width(), target_texture->height(), 1, depth_);
+
+            params.background = local_key_texture;
+            params.local_key  = nullptr;
+            params.layer_key  = nullptr;
+
+            kernel_.draw(params);
+        } else if (params.transform.is_mix) {
+            // Mix: precompose items before drawing to channel
+            local_mix_texture = local_mix_texture
+                                    ? local_mix_texture
+                                    : device_->create_texture(target_texture->width(), target_texture->height(), 4, depth_);
+
+            params.background = local_mix_texture;
+            params.local_key  = std::move(local_key_texture);
+            params.layer_key  = layer_key_texture;
+            params.keyer      = keyer::additive;
+
+            kernel_.draw(params);
+        } else {
+            // Normal: draw directly to target
+            draw(target_texture, std::move(local_mix_texture), format_desc, core::blend_mode::normal);
+
+            params.background = target_texture;
+            params.local_key  = std::move(local_key_texture);
+            params.layer_key  = layer_key_texture;
+
+            kernel_.draw(params);
+        }
+    }
+
+    void draw(std::shared_ptr<texture>&  target_texture,
+              std::shared_ptr<texture>&& source_texture,
+              core::video_format_desc    format_desc,
+              core::blend_mode           blend_mode = core::blend_mode::normal)
+    {
+        if (!source_texture)
+            return;
+
+        draw_params params;
+        params.target_width    = format_desc.square_width;
+        params.target_height   = format_desc.square_height;
+        params.pix_desc.format = core::pixel_format::bgra;
+        params.pix_desc.planes = {core::pixel_format_desc::plane(
+            source_texture->width(), source_texture->height(), 4, source_texture->depth())};
+        params.textures   = {source_texture};
+        params.blend_mode = blend_mode;
+        params.background = target_texture;
+        params.geometry   = core::frame_geometry::get_default();
+
+        kernel_.draw(params);
+    }
+};
+
+struct image_mixer::impl
+    : public core::frame_factory
+    , public std::enable_shared_from_this<impl>
+{
+    spl::shared_ptr<device>               device_;
+    image_renderer                        renderer_;
+    std::vector<core::image_transform>    transform_stack_;
+    std::vector<layer>                    layers_;
+    std::vector<layer*>                   layer_stack_;
+    int                                   channel_id_;
+    double                                aspect_ratio_ = 1.0;
+
+  public:
     impl(const spl::shared_ptr<device>& device,
          int                            channel_id,
          const size_t                   max_frame_size,
          common::bit_depth              depth)
         : device_(device)
+        , renderer_(device_, max_frame_size, depth)
+        , transform_stack_(1)
         , channel_id_(channel_id)
-        , max_frame_size_(max_frame_size)
-        , depth_(depth)
     {
-        transform_stack_.push(core::frame_transform());
-        CASPAR_LOG(info) << L"[vk::image_mixer] Stub initialized for channel " << channel_id_
-                         << L" (rendering disabled)";
-    }
-
-    std::future<array<const std::uint8_t>> render(const core::video_format_desc& format_desc)
-    {
-        // Return a black frame
-        auto frame_size = format_desc.size;
-        auto result     = array<std::uint8_t>(frame_size);
-
-        // Fill with black (BGRA format: B=0, G=0, R=0, A=255)
-        for (size_t i = 0; i < frame_size; i += 4) {
-            result.data()[i + 0] = 0;   // B
-            result.data()[i + 1] = 0;   // G
-            result.data()[i + 2] = 0;   // R
-            result.data()[i + 3] = 255; // A
-        }
-
-        return std::async(std::launch::deferred, [r = std::move(result)]() mutable {
-            return array<const std::uint8_t>(std::move(r));
-        });
-    }
-
-    core::mutable_frame create_frame(const void* tag, const core::pixel_format_desc& desc, common::bit_depth depth)
-    {
-        std::vector<array<std::uint8_t>> image_data;
-        for (auto& plane : desc.planes) {
-            // Create CPU-side array
-            image_data.push_back(array<std::uint8_t>(static_cast<size_t>(plane.size)));
-        }
-
-        return core::mutable_frame(tag, std::move(image_data), array<int32_t>{}, desc);
+        CASPAR_LOG(info) << L"[vk::image_mixer] Vulkan Image Mixer initialized for channel " << channel_id_;
     }
 
     void update_aspect_ratio(double aspect_ratio) { aspect_ratio_ = aspect_ratio; }
 
     void push(const core::frame_transform& transform)
     {
-        // In the stub, just push the transform directly (no composition needed)
-        transform_stack_.push(transform);
+        auto previous_layer_depth = transform_stack_.back().layer_depth;
+
+        // Combine transforms
+        auto combined = transform_stack_.back();
+        combined.opacity *= transform.image_transform.opacity;
+        combined.brightness *= transform.image_transform.brightness;
+        combined.contrast *= transform.image_transform.contrast;
+        combined.saturation *= transform.image_transform.saturation;
+
+        // Combine fill transforms
+        combined.fill_translation[0] =
+            combined.fill_translation[0] + transform.image_transform.fill_translation[0] * combined.fill_scale[0];
+        combined.fill_translation[1] =
+            combined.fill_translation[1] + transform.image_transform.fill_translation[1] * combined.fill_scale[1];
+        combined.fill_scale[0] *= transform.image_transform.fill_scale[0];
+        combined.fill_scale[1] *= transform.image_transform.fill_scale[1];
+
+        // Copy other properties
+        combined.blend_mode  = transform.image_transform.blend_mode;
+        combined.layer_depth = transform.image_transform.layer_depth;
+        combined.is_key      = transform.image_transform.is_key;
+        combined.is_mix      = transform.image_transform.is_mix;
+        combined.invert      = transform.image_transform.invert;
+        combined.levels      = transform.image_transform.levels;
+        combined.chroma      = transform.image_transform.chroma;
+
+        transform_stack_.push_back(combined);
+
+        auto new_layer_depth = transform_stack_.back().layer_depth;
+
+        if (previous_layer_depth < new_layer_depth) {
+            layer new_layer(transform_stack_.back().blend_mode);
+
+            if (layer_stack_.empty()) {
+                layers_.push_back(std::move(new_layer));
+                layer_stack_.push_back(&layers_.back());
+            } else {
+                layer_stack_.back()->sublayers.push_back(std::move(new_layer));
+                layer_stack_.push_back(&layer_stack_.back()->sublayers.back());
+            }
+        }
     }
 
     void visit(const core::const_frame& frame)
     {
-        // No-op in stub - frames are accepted but not rendered
+        if (frame.pixel_format_desc().format == core::pixel_format::invalid)
+            return;
+
+        if (frame.pixel_format_desc().planes.empty())
+            return;
+
+        item item;
+        item.pix_desc  = frame.pixel_format_desc();
+        item.transform = transform_stack_.back();
+        item.geometry  = frame.geometry();
+
+        // Check if frame already has GPU textures cached
+        auto textures_ptr = std::any_cast<std::shared_ptr<std::vector<future_texture>>>(frame.opaque());
+
+        if (textures_ptr) {
+            item.textures = *textures_ptr;
+        } else {
+            // Upload frame data to GPU
+            for (int n = 0; n < static_cast<int>(item.pix_desc.planes.size()); ++n) {
+                auto future = device_->copy_async(frame.image_data(n),
+                                                  item.pix_desc.planes[n].width,
+                                                  item.pix_desc.planes[n].height,
+                                                  item.pix_desc.planes[n].stride,
+                                                  item.pix_desc.planes[n].depth);
+                item.textures.emplace_back(future.share());
+            }
+        }
+
+        layer_stack_.back()->items.push_back(item);
     }
 
     void pop()
     {
-        if (transform_stack_.size() > 1) {
-            transform_stack_.pop();
-        }
+        transform_stack_.pop_back();
+        layer_stack_.resize(transform_stack_.back().layer_depth);
     }
+
+    std::future<array<const std::uint8_t>> render(const core::video_format_desc& format_desc)
+    {
+        return renderer_(std::move(layers_), format_desc);
+    }
+
+    core::mutable_frame create_frame(const void* tag, const core::pixel_format_desc& desc) override
+    {
+        return create_frame(tag, desc, common::bit_depth::bit8);
+    }
+
+    core::mutable_frame
+    create_frame(const void* tag, const core::pixel_format_desc& desc, common::bit_depth depth) override
+    {
+        std::vector<array<std::uint8_t>> image_data;
+        for (auto& plane : desc.planes) {
+            auto bytes_per_pixel = depth == common::bit_depth::bit8 ? 1 : 2;
+            image_data.push_back(device_->create_array(plane.size * bytes_per_pixel));
+        }
+
+        std::weak_ptr<image_mixer::impl> weak_self = shared_from_this();
+        return core::mutable_frame(tag,
+                                   std::move(image_data),
+                                   array<int32_t>{},
+                                   desc,
+                                   [weak_self, desc](std::vector<array<const std::uint8_t>> image_data) -> std::any {
+                                       auto self = weak_self.lock();
+                                       if (!self) {
+                                           return std::any{};
+                                       }
+                                       std::vector<future_texture> textures;
+                                       for (int n = 0; n < static_cast<int>(desc.planes.size()); ++n) {
+                                           auto future = self->device_->copy_async(image_data[n],
+                                                                                   desc.planes[n].width,
+                                                                                   desc.planes[n].height,
+                                                                                   desc.planes[n].stride,
+                                                                                   desc.planes[n].depth);
+                                           textures.emplace_back(future.share());
+                                       }
+                                       return std::make_shared<decltype(textures)>(std::move(textures));
+                                   });
+    }
+
+    common::bit_depth depth() const { return renderer_.depth(); }
 };
 
 image_mixer::image_mixer(const spl::shared_ptr<device>& device,
@@ -130,7 +403,7 @@ std::future<array<const std::uint8_t>> image_mixer::render(const core::video_for
 
 core::mutable_frame image_mixer::create_frame(const void* tag, const core::pixel_format_desc& desc)
 {
-    return impl_->create_frame(tag, desc, impl_->depth_);
+    return impl_->create_frame(tag, desc);
 }
 
 core::mutable_frame
@@ -147,6 +420,6 @@ void image_mixer::visit(const core::const_frame& frame) { impl_->visit(frame); }
 
 void image_mixer::pop() { impl_->pop(); }
 
-common::bit_depth image_mixer::depth() const { return impl_->depth_; }
+common::bit_depth image_mixer::depth() const { return impl_->depth(); }
 
 }}} // namespace caspar::accelerator::vk

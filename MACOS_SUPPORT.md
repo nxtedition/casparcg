@@ -193,24 +193,43 @@ All 29 blend modes functional with GPU acceleration.
 
 ---
 
-## Phase 5: Geometric Transforms
+## Phase 5: Geometric Transforms ✅
 
 **Goal:** Implement all MIXER transform commands.
 
+**Status:** COMPLETED
+
 ### Tasks
 
-- [ ] Create `src/accelerator/vk/util/transforms.cpp/h`
-- [ ] Implement geometric transforms:
-  - [ ] FILL (position + scale)
-  - [ ] CLIP (clipping rectangle)
-  - [ ] CROP (source cropping)
-  - [ ] ANCHOR (rotation anchor point)
-  - [ ] ROTATION (2D rotation)
-  - [ ] PERSPECTIVE (3D perspective transform)
-- [ ] Implement transform matrix calculation
-- [ ] Update vertex shader for perspective transforms
-- [ ] Handle edge anti-aliasing
-- [ ] Support tweened animations (30+ easing functions already in core)
+- [x] Create `src/accelerator/vk/util/matrix.cpp/h`
+- [x] Implement geometric transforms:
+  - [x] FILL (position + scale)
+  - [x] CLIP (clipping rectangle)
+  - [x] CROP (source cropping)
+  - [x] ANCHOR (rotation anchor point)
+  - [x] ROTATION (2D rotation)
+  - [x] PERSPECTIVE (3D perspective transform)
+- [x] Implement transform matrix calculation
+- [x] Update compute shader for transforms and perspective
+- [ ] Handle edge anti-aliasing (deferred to later phase)
+- [x] Support tweened animations (30+ easing functions already in core)
+
+### Files Created/Modified
+
+- `src/accelerator/vk/util/matrix.h/.cpp` - 3x3 matrix utilities for transforms
+- `src/accelerator/vk/util/pipeline.h` - Extended blend_push_constants with transform matrix
+- `src/accelerator/vk/image/image_kernel.cpp` - Compute full transformation matrix
+- `src/accelerator/vk/image/shaders/blend.comp` - Matrix transforms and perspective in shader
+- `src/accelerator/CMakeLists.txt` - Added matrix source files
+- `tests/selftest/test_runner.py` - Enhanced Phase 5 transform tests
+
+### Technical Notes
+
+- Uses 3x3 transformation matrix computed on CPU, passed to shader via push constants
+- Matrix composition follows OGL order: anchor × aspect × scale × rotation × aspect_inv × translation
+- Perspective distortion uses iterative inverse mapping (Newton-Raphson style)
+- Clipping applied in destination space, cropping in source space
+- Non-BGRA formats still fall back to CPU compositing (Phase 7)
 
 ### Deliverable
 

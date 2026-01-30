@@ -3,7 +3,7 @@ project (accelerator)
 
 # Platform-specific source selection
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    # macOS: Use Vulkan backend (Phase 4 - Blend Modes)
+    # macOS: Use Vulkan backend (Phase 5 - Geometric Transforms)
     set(SOURCES
         vk/image/image_kernel.cpp
         vk/image/image_mixer.cpp
@@ -11,6 +11,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         vk/util/device.cpp
         vk/util/texture.cpp
         vk/util/pipeline.cpp
+        vk/util/matrix.cpp
         accelerator_vk.cpp
     )
     set(HEADERS
@@ -20,6 +21,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         vk/util/device.h
         vk/util/texture.h
         vk/util/pipeline.h
+        vk/util/matrix.h
         vk/util/vk_check.h
         vk/StdAfx.h
         vk_blend_shader.h

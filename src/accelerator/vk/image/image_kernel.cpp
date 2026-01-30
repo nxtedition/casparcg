@@ -25,6 +25,7 @@
 
 #include "../util/buffer.h"
 #include "../util/device.h"
+#include "../util/matrix.h"
 #include "../util/pipeline.h"
 #include "../util/texture.h"
 #include "../util/vk_check.h"
@@ -93,7 +94,7 @@ struct image_kernel::impl
         blend_pipeline_ = std::make_unique<blend_pipeline>(
             handles.device, handles.physical_device, handles.command_pool, handles.queue);
 
-        CASPAR_LOG(info) << L"[vk::image_kernel] Vulkan rendering kernel initialized (GPU blend modes - Phase 4)";
+        CASPAR_LOG(info) << L"[vk::image_kernel] Vulkan rendering kernel initialized (GPU transforms - Phase 5)";
     }
 
     ~impl() {}
@@ -113,42 +114,73 @@ struct image_kernel::impl
             return;
         }
 
-        // Apply transforms to coordinates
         auto& transform = params.transform;
 
-        // Apply fill scale and translation
-        for (auto& c : coords) {
-            c.vertex_x = c.vertex_x * transform.fill_scale[0] + transform.fill_translation[0];
-            c.vertex_y = c.vertex_y * transform.fill_scale[1] + transform.fill_translation[1];
-        }
-
-        // Skip if completely outside screen
-        if (is_outside_screen(coords)) {
-            return;
-        }
-
-        // Phase 4: GPU-based compositing with blend modes
+        // Phase 5: GPU-based compositing with full geometric transforms
         auto src_tex = params.textures[0];
         auto dst_tex = params.background;
+
+        // Calculate aspect ratio from destination texture
+        double aspect_ratio = static_cast<double>(dst_tex->width()) / static_cast<double>(dst_tex->height());
+
+        // Compute the transformation matrix
+        mat3 transform_matrix = get_vertex_matrix(transform, aspect_ratio);
 
         // Only support BGRA format with GPU pipeline for now
         // Other formats still use CPU path (will be addressed in Phase 7)
         if (params.pix_desc.format == core::pixel_format::bgra && src_tex->stride() == 4) {
             // Set up push constants for the compute shader
             blend_push_constants push_constants{};
-            push_constants.blend_mode    = static_cast<int32_t>(params.blend_mode);
-            push_constants.keyer         = static_cast<int32_t>(params.keyer);
-            push_constants.opacity       = static_cast<float>(transform.opacity);
-            push_constants.fill_scale_x  = static_cast<float>(transform.fill_scale[0]);
-            push_constants.fill_scale_y  = static_cast<float>(transform.fill_scale[1]);
-            push_constants.fill_trans_x  = static_cast<float>(transform.fill_translation[0]);
-            push_constants.fill_trans_y  = static_cast<float>(transform.fill_translation[1]);
-            push_constants.src_width     = src_tex->width();
-            push_constants.src_height    = src_tex->height();
-            push_constants.dst_width     = dst_tex->width();
-            push_constants.dst_height    = dst_tex->height();
 
-            // Execute GPU blend
+            // Blend parameters
+            push_constants.blend_mode = static_cast<int32_t>(params.blend_mode);
+            push_constants.keyer      = static_cast<int32_t>(params.keyer);
+            push_constants.opacity    = static_cast<float>(transform.opacity);
+            push_constants._pad0      = 0;
+
+            // Copy transform matrix
+            for (int i = 0; i < 9; ++i) {
+                push_constants.transform_matrix[i] = transform_matrix.m[i];
+            }
+            push_constants._pad1[0] = 0;
+            push_constants._pad1[1] = 0;
+            push_constants._pad1[2] = 0;
+
+            // Perspective corners
+            push_constants.perspective_ul[0] = static_cast<float>(transform.perspective.ul[0]);
+            push_constants.perspective_ul[1] = static_cast<float>(transform.perspective.ul[1]);
+            push_constants.perspective_ur[0] = static_cast<float>(transform.perspective.ur[0]);
+            push_constants.perspective_ur[1] = static_cast<float>(transform.perspective.ur[1]);
+            push_constants.perspective_ll[0] = static_cast<float>(transform.perspective.ll[0]);
+            push_constants.perspective_ll[1] = static_cast<float>(transform.perspective.ll[1]);
+            push_constants.perspective_lr[0] = static_cast<float>(transform.perspective.lr[0]);
+            push_constants.perspective_lr[1] = static_cast<float>(transform.perspective.lr[1]);
+
+            // Clipping rectangle
+            push_constants.clip_left   = static_cast<float>(transform.clip_translation[0]);
+            push_constants.clip_top    = static_cast<float>(transform.clip_translation[1]);
+            push_constants.clip_right  = static_cast<float>(transform.clip_translation[0] + transform.clip_scale[0]);
+            push_constants.clip_bottom = static_cast<float>(transform.clip_translation[1] + transform.clip_scale[1]);
+
+            // Cropping rectangle
+            push_constants.crop_left   = static_cast<float>(transform.crop.ul[0]);
+            push_constants.crop_top    = static_cast<float>(transform.crop.ul[1]);
+            push_constants.crop_right  = static_cast<float>(transform.crop.lr[0]);
+            push_constants.crop_bottom = static_cast<float>(transform.crop.lr[1]);
+
+            // Image dimensions
+            push_constants.src_width  = src_tex->width();
+            push_constants.src_height = src_tex->height();
+            push_constants.dst_width  = dst_tex->width();
+            push_constants.dst_height = dst_tex->height();
+
+            // Feature flags
+            push_constants.use_perspective = is_default_perspective(transform.perspective) ? 0 : 1;
+            push_constants.use_clipping    = transform.enable_geometry_modifiers ? 1 : 0;
+            push_constants.use_cropping    = transform.enable_geometry_modifiers ? 1 : 0;
+            push_constants._pad2           = 0;
+
+            // Execute GPU blend with transforms
             blend_pipeline_->execute(*src_tex, *dst_tex, push_constants);
         } else {
             // Fallback to CPU compositing for non-BGRA formats

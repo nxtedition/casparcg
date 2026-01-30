@@ -431,9 +431,22 @@ class TestRunner:
         return len(failed_modes) == 0
 
     def test_transforms(self) -> bool:
-        """Test geometric transforms."""
-        ch = self.config.playback_channel
+        """Test geometric transforms (Phase 5).
 
+        Tests all MIXER transform commands:
+        - FILL (position + scale)
+        - CLIP (clipping rectangle)
+        - CROP (source cropping)
+        - ANCHOR (rotation anchor point)
+        - ROTATION (2D rotation)
+        - PERSPECTIVE (3D perspective transform)
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        print("  Testing FILL transform...")
+        # Background
+        r0 = self.client.play_color(ch, 0, "WHITE")
         # Play a color
         r1 = self.client.play_color(ch, 1, "BLUE")
         if not self.helper.assert_success(r1, "Play BLUE"):
@@ -441,22 +454,94 @@ class TestRunner:
 
         # Test FILL (position + scale)
         r2 = self.client.mixer_fill(ch, 1, 0.1, 0.1, 0.5, 0.5)
-        if not self.helper.assert_success(r2, "Apply FILL transform"):
-            return False
-
+        if not self.helper.assert_success(r2, "Apply FILL transform (scale to 50%, offset 10%)"):
+            all_passed = False
         self.helper.wait(0.5)
 
-        # Test ROTATION (if supported)
-        r3 = self.client.mixer(ch, 1, "ROTATION", 45)
-        self.helper.assert_success(r3, "Apply 45 degree rotation")
-
+        # Test FILL animation (using mixer command directly for duration/tween)
+        r2a = self.client.mixer(ch, 1, "FILL", "0.25 0.25 0.5 0.5 10 easeinoutsine")
+        if not self.helper.assert_success(r2a, "Animate FILL with easing"):
+            all_passed = False
         self.helper.wait(0.5)
 
-        # Reset
-        self.client.mixer_fill(ch, 1, 0, 0, 1, 1)
+        print("  Testing ANCHOR transform...")
+        # Test ANCHOR (rotation anchor point)
+        r3 = self.client.mixer(ch, 1, "ANCHOR", "0.5 0.5")
+        if not self.helper.assert_success(r3, "Set ANCHOR to center"):
+            all_passed = False
+
+        print("  Testing ROTATION transform...")
+        # Test ROTATION
+        r4 = self.client.mixer(ch, 1, "ROTATION", 45)
+        if not self.helper.assert_success(r4, "Apply 45 degree rotation"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Animate rotation
+        r4a = self.client.mixer(ch, 1, "ROTATION", "90 20 linear")
+        if not self.helper.assert_success(r4a, "Animate rotation to 90 degrees"):
+            all_passed = False
+        self.helper.wait(1.0)
+
+        # Reset rotation
         self.client.mixer(ch, 1, "ROTATION", 0)
+        self.helper.wait(0.3)
 
-        return True
+        print("  Testing CLIP transform...")
+        # Reset to full screen
+        self.client.mixer_fill(ch, 1, 0, 0, 1, 1)
+        # Test CLIP (clipping rectangle)
+        r5 = self.client.mixer(ch, 1, "CLIP", "0.25 0.25 0.5 0.5")
+        if not self.helper.assert_success(r5, "Apply CLIP (show only center 50%)"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Reset clip
+        self.client.mixer(ch, 1, "CLIP", "0 0 1 1")
+        self.helper.wait(0.3)
+
+        print("  Testing CROP transform...")
+        # Test CROP (source cropping)
+        r6 = self.client.mixer(ch, 1, "CROP", "0.1 0.1 0.9 0.9")
+        if not self.helper.assert_success(r6, "Apply CROP (remove 10% edges)"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Reset crop
+        self.client.mixer(ch, 1, "CROP", "0 0 1 1")
+        self.helper.wait(0.3)
+
+        print("  Testing PERSPECTIVE transform...")
+        # Test PERSPECTIVE (3D perspective distortion)
+        # Perspective uses 8 parameters: ul_x, ul_y, ur_x, ur_y, lr_x, lr_y, ll_x, ll_y
+        r7 = self.client.mixer(ch, 1, "PERSPECTIVE", "0.1 0.0 0.9 0.1 1.0 0.9 0.0 1.0")
+        if not self.helper.assert_success(r7, "Apply PERSPECTIVE (trapezoid effect)"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Reset perspective
+        self.client.mixer(ch, 1, "PERSPECTIVE", "0 0 1 0 1 1 0 1")
+        self.helper.wait(0.3)
+
+        print("  Testing combined transforms...")
+        # Test combined transforms
+        self.client.mixer_fill(ch, 1, 0.25, 0.25, 0.5, 0.5)
+        self.client.mixer(ch, 1, "ANCHOR", "0.5 0.5")
+        self.client.mixer(ch, 1, "ROTATION", 30)
+        self.helper.wait(0.5)
+
+        # Reset all transforms
+        self.client.mixer_fill(ch, 1, 0, 0, 1, 1)
+        self.client.mixer(ch, 1, "ANCHOR", "0 0")
+        self.client.mixer(ch, 1, "ROTATION", 0)
+        self.client.clear(ch)
+
+        if all_passed:
+            print("  All transform tests passed!")
+        else:
+            print("  Some transform tests failed")
+
+        return all_passed
 
     def test_color_adjustments(self) -> bool:
         """Test color adjustment effects."""

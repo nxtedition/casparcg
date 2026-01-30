@@ -20,6 +20,9 @@
  *
  * Vulkan compute shader for image compositing with blend modes.
  * Ported from the OpenGL fragment shader (shader.frag).
+ *
+ * Phase 4: All 29 blend modes
+ * Phase 5: Full geometric transforms (FILL, ROTATION, PERSPECTIVE, CLIP, CROP)
  */
 
 #version 450
@@ -31,18 +34,47 @@ layout(binding = 0, rgba8) uniform readonly image2D src_image;
 layout(binding = 1, rgba8) uniform image2D dst_image;
 
 // Push constants for parameters
+// Must match blend_push_constants in pipeline.h
 layout(push_constant) uniform PushConstants {
+    // Blend parameters
     int   blend_mode;      // 0-28 blend mode index
     int   keyer;           // 0=linear, 1=additive
     float opacity;         // 0.0-1.0
-    float fill_scale_x;
-    float fill_scale_y;
-    float fill_trans_x;
-    float fill_trans_y;
+    int   _pad0;
+
+    // Transform matrix (3x3, column-major)
+    mat3  transform_matrix;
+    vec3  _pad1;
+
+    // Perspective corners (ul, ur, ll, lr - each is vec2)
+    vec2  perspective_ul;
+    vec2  perspective_ur;
+    vec2  perspective_ll;
+    vec2  perspective_lr;
+
+    // Clipping rectangle (normalized 0-1)
+    float clip_left;
+    float clip_top;
+    float clip_right;
+    float clip_bottom;
+
+    // Cropping rectangle (normalized 0-1)
+    float crop_left;
+    float crop_top;
+    float crop_right;
+    float crop_bottom;
+
+    // Image dimensions
     int   src_width;
     int   src_height;
     int   dst_width;
     int   dst_height;
+
+    // Feature flags
+    int   use_perspective;
+    int   use_clipping;
+    int   use_cropping;
+    int   _pad2;
 } params;
 
 // ============================================================================
@@ -277,6 +309,95 @@ vec4 blend_with_alpha(vec4 fore, vec4 back)
 }
 
 // ============================================================================
+// Transform Functions
+// ============================================================================
+
+// Invert a 3x3 matrix
+mat3 inverse_mat3(mat3 m)
+{
+    float det = m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2])
+              - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+              + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+
+    if (abs(det) < 0.0001)
+        return mat3(1.0); // Return identity if singular
+
+    float inv_det = 1.0 / det;
+
+    mat3 result;
+    result[0][0] = (m[1][1] * m[2][2] - m[2][1] * m[1][2]) * inv_det;
+    result[0][1] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * inv_det;
+    result[0][2] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv_det;
+    result[1][0] = (m[1][2] * m[2][0] - m[1][0] * m[2][2]) * inv_det;
+    result[1][1] = (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inv_det;
+    result[1][2] = (m[1][0] * m[0][2] - m[0][0] * m[1][2]) * inv_det;
+    result[2][0] = (m[1][0] * m[2][1] - m[2][0] * m[1][1]) * inv_det;
+    result[2][1] = (m[2][0] * m[0][1] - m[0][0] * m[2][1]) * inv_det;
+    result[2][2] = (m[0][0] * m[1][1] - m[1][0] * m[0][1]) * inv_det;
+
+    return result;
+}
+
+// Transform a 2D point by a 3x3 matrix (assumes homogeneous coordinate w=1)
+vec2 transform_point(mat3 m, vec2 p)
+{
+    vec3 result = m * vec3(p, 1.0);
+    return result.xy;
+}
+
+// Apply inverse perspective distortion to find source coordinates
+// Given destination coords, find the corresponding source coords
+vec2 apply_inverse_perspective(vec2 dst_pos)
+{
+    if (params.use_perspective == 0)
+        return dst_pos;
+
+    // Perspective uses bilinear interpolation of corner offsets
+    // We need to invert this mapping: given dst_pos, find src_pos such that
+    // applying perspective to src_pos gives dst_pos.
+    //
+    // For simplicity, we use an iterative approach:
+    // Start with src_pos = dst_pos, then refine
+
+    vec2 src_pos = dst_pos;
+
+    // Newton-Raphson style iteration (3 iterations is usually enough)
+    for (int iter = 0; iter < 3; iter++)
+    {
+        float x = src_pos.x;
+        float y = src_pos.y;
+
+        // Apply forward perspective to current estimate
+        vec2 offset = vec2(0.0);
+
+        // ul contribution: (1-y) * ul + (1 - ul * (1-y)) * x - x
+        offset.x += (1.0 - y) * params.perspective_ul.x + (1.0 - params.perspective_ul.x + params.perspective_ul.x * y) * x - x;
+        offset.y += (1.0 - x) * params.perspective_ul.y + (1.0 - params.perspective_ul.y + params.perspective_ul.y * x) * y - y;
+
+        // ur contribution: x * (ur.x * (1-y) + y) - x
+        offset.x += x * (params.perspective_ur.x * (1.0 - y) + y) - x;
+        // ll contribution: y * (ll.y * (1-x) + x) - y
+        offset.y += y * (params.perspective_ll.y * (1.0 - x) + x) - y;
+
+        // Cross terms
+        offset.x += y * params.perspective_ll.x + x * (1.0 - params.perspective_ll.x * y) - x;
+        offset.y += x * params.perspective_ur.y + y * (1.0 - params.perspective_ur.y * x) - y;
+
+        // lr contribution
+        offset.x += x * (y * params.perspective_lr.x + (1.0 - y)) - x;
+        offset.y += y * (x * params.perspective_lr.y + (1.0 - x)) - y;
+
+        vec2 forward_pos = src_pos + offset;
+
+        // Compute error and update estimate
+        vec2 error = dst_pos - forward_pos;
+        src_pos += error;
+    }
+
+    return src_pos;
+}
+
+// ============================================================================
 // Main Entry Point
 // ============================================================================
 
@@ -288,28 +409,54 @@ void main()
     if (gid.x >= params.dst_width || gid.y >= params.dst_height)
         return;
 
-    // Calculate source coordinates based on transform
-    // dest_pos = src_pos * scale + translation
-    // src_pos = (dest_pos - translation) / scale
+    // Normalize destination coordinates to 0-1 range
     float dst_x_norm = float(gid.x) / float(params.dst_width);
     float dst_y_norm = float(gid.y) / float(params.dst_height);
+    vec2 dst_pos = vec2(dst_x_norm, dst_y_norm);
 
-    float src_x_norm = (dst_x_norm - params.fill_trans_x) / params.fill_scale_x;
-    float src_y_norm = (dst_y_norm - params.fill_trans_y) / params.fill_scale_y;
+    // Apply clipping check (in destination space)
+    if (params.use_clipping != 0)
+    {
+        if (dst_x_norm < params.clip_left || dst_x_norm > params.clip_right ||
+            dst_y_norm < params.clip_top || dst_y_norm > params.clip_bottom)
+        {
+            // Outside clip region, don't render
+            return;
+        }
+    }
 
-    // Read destination pixel
+    // Apply inverse transform to get source coordinates
+    // The transform matrix maps source -> destination, so we need the inverse
+    mat3 inv_transform = inverse_mat3(params.transform_matrix);
+    vec2 src_pos = transform_point(inv_transform, dst_pos);
+
+    // Apply inverse perspective distortion
+    src_pos = apply_inverse_perspective(src_pos);
+
+    // Read destination pixel (we might need it)
     vec4 dst_color = imageLoad(dst_image, gid);
 
-    // Check if source coordinate is in valid range
-    if (src_x_norm < 0.0 || src_x_norm > 1.0 || src_y_norm < 0.0 || src_y_norm > 1.0)
+    // Check if source coordinate is in valid range (0-1)
+    if (src_pos.x < 0.0 || src_pos.x > 1.0 || src_pos.y < 0.0 || src_pos.y > 1.0)
     {
         // Outside source bounds, keep destination as-is
         return;
     }
 
+    // Apply cropping check (in source space)
+    if (params.use_cropping != 0)
+    {
+        if (src_pos.x < params.crop_left || src_pos.x > params.crop_right ||
+            src_pos.y < params.crop_top || src_pos.y > params.crop_bottom)
+        {
+            // Outside crop region, don't render from this source area
+            return;
+        }
+    }
+
     // Calculate source pixel coordinates
-    int src_x = int(src_x_norm * float(params.src_width));
-    int src_y = int(src_y_norm * float(params.src_height));
+    int src_x = int(src_pos.x * float(params.src_width));
+    int src_y = int(src_pos.y * float(params.src_height));
 
     // Clamp to valid range
     src_x = clamp(src_x, 0, params.src_width - 1);

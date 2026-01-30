@@ -33,29 +33,67 @@ class texture;
 /**
  * Push constants structure for blend compute shader.
  * Must match the layout in blend.comp
+ *
+ * Phase 5: Extended with full transform matrix and geometry parameters.
  */
 struct blend_push_constants
 {
+    // Blend parameters
     int32_t blend_mode;     // 0-28 blend mode index
     int32_t keyer;          // 0=linear, 1=additive
     float   opacity;        // 0.0-1.0
-    float   fill_scale_x;
-    float   fill_scale_y;
-    float   fill_trans_x;
-    float   fill_trans_y;
+    int32_t _pad0;          // Padding for alignment
+
+    // Transform matrix (3x3, column-major, stored as 3 vec3s for GLSL compatibility)
+    // Row 0: m[0], m[1], m[2]
+    // Row 1: m[3], m[4], m[5]
+    // Row 2: m[6], m[7], m[8]
+    float transform_matrix[9];
+    float _pad1[3];         // Padding to align next field
+
+    // Perspective corners (for bilinear interpolation)
+    // Each corner is (x, y): ul, ur, ll, lr
+    float perspective_ul[2];
+    float perspective_ur[2];
+    float perspective_ll[2];
+    float perspective_lr[2];
+
+    // Clipping rectangle (normalized 0-1)
+    float clip_left;
+    float clip_top;
+    float clip_right;
+    float clip_bottom;
+
+    // Cropping rectangle (normalized 0-1)
+    float crop_left;
+    float crop_top;
+    float crop_right;
+    float crop_bottom;
+
+    // Image dimensions
     int32_t src_width;
     int32_t src_height;
     int32_t dst_width;
     int32_t dst_height;
+
+    // Feature flags
+    int32_t use_perspective;    // 1 if perspective is non-default
+    int32_t use_clipping;       // 1 if clipping should be applied
+    int32_t use_cropping;       // 1 if cropping should be applied
+    int32_t _pad2;              // Padding for alignment
 };
 
 /**
  * Vulkan compute pipeline for blend operations.
  * Phase 4: GPU-accelerated blend modes.
+ * Phase 5: Geometric transforms (FILL, ROTATION, PERSPECTIVE, CLIP, CROP).
  *
  * Provides:
  * - Compute shader execution for image blending
  * - Support for all 29 Photoshop-compatible blend modes
+ * - Full geometric transforms with matrix math
+ * - Perspective distortion via bilinear corner interpolation
+ * - Clipping and cropping support
  * - Push constant based parameter passing
  */
 class blend_pipeline final

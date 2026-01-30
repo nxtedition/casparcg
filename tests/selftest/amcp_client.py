@@ -183,9 +183,16 @@ class AMCPClient:
             cmd += f" {args}"
         return self.send(cmd)
 
-    def remove_consumer(self, channel: int, consumer: str) -> Tuple[int, str]:
-        """Remove a consumer from channel."""
-        return self.send(f"REMOVE {channel} {consumer}")
+    def remove_consumer(self, channel: int, consumer: str, args: str = "") -> Tuple[int, str]:
+        """Remove a consumer from channel.
+
+        Note: REMOVE requires the same parameters as ADD to identify the consumer.
+        You can also remove by index: remove_consumer(channel, "100001") for consumer at index 100001.
+        """
+        cmd = f"REMOVE {channel} {consumer}"
+        if args:
+            cmd += f" {args}"
+        return self.send(cmd)
 
     def mixer(self, channel: int, layer: int, command: str, *args) -> Tuple[int, str]:
         """Send MIXER command."""

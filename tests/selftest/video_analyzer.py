@@ -66,6 +66,57 @@ class VideoAnalyzer:
         self.ffprobe_path = ffprobe_path
         self.ffmpeg_path = ffmpeg_path
 
+    def _parse_ffprobe_stderr(self, stderr: str) -> Optional[VideoInfo]:
+        """Parse ffprobe's human-readable stderr output.
+
+        This is a fallback when JSON output fails due to codec errors.
+        Parses lines like:
+          Duration: 00:00:02.52, start: 0.000000, bitrate: 33 kb/s
+          Stream #0:0: Video: h264, yuv420p, 1280x720, 50 fps
+        """
+        import re
+
+        width = height = 0
+        fps = 25.0
+        duration = 0.0
+        codec = 'unknown'
+        pixel_format = 'unknown'
+
+        # Parse duration line
+        duration_match = re.search(r'Duration: (\d+):(\d+):(\d+\.\d+)', stderr)
+        if duration_match:
+            h, m, s = duration_match.groups()
+            duration = int(h) * 3600 + int(m) * 60 + float(s)
+
+        # Parse video stream line
+        # Example: Stream #0:0: Video: h264 (High 4:4:4 Predictive), yuv444p, 1280x720, 50 fps
+        video_match = re.search(r'Stream.*Video: (\w+).*?, (\w+).*?, (\d+)x(\d+)', stderr)
+        if video_match:
+            codec = video_match.group(1)
+            pixel_format = video_match.group(2)
+            width = int(video_match.group(3))
+            height = int(video_match.group(4))
+
+        # Parse fps
+        fps_match = re.search(r'(\d+(?:\.\d+)?)\s*fps', stderr)
+        if fps_match:
+            fps = float(fps_match.group(1))
+
+        if width == 0 or height == 0:
+            return None
+
+        frame_count = int(duration * fps) if duration > 0 else 0
+
+        return VideoInfo(
+            width=width,
+            height=height,
+            duration=duration,
+            frame_count=frame_count,
+            fps=fps,
+            codec=codec,
+            pixel_format=pixel_format
+        )
+
     def get_video_info(self, filepath: str) -> Optional[VideoInfo]:
         """Get video file information using ffprobe."""
         if not os.path.exists(filepath):
@@ -73,6 +124,7 @@ class VideoAnalyzer:
             return None
 
         try:
+            # Primary approach: Use JSON output with quiet mode
             cmd = [
                 self.ffprobe_path,
                 "-v", "quiet",
@@ -82,7 +134,31 @@ class VideoAnalyzer:
                 filepath
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            data = json.loads(result.stdout)
+            output = result.stdout.strip()
+
+            # If JSON output failed or is incomplete, try text-based fallback
+            if not output or output == '{' or not output.endswith('}'):
+                # Fallback: parse ffprobe's human-readable stderr output
+                # which is more robust against codec errors
+                cmd = [
+                    self.ffprobe_path,
+                    "-hide_banner",
+                    filepath
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+
+                # Parse stderr for video stream info
+                # Example: "Stream #0:0: Video: h264, yuv420p, 1280x720, 50 fps"
+                stderr_output = result.stderr
+                video_info = self._parse_ffprobe_stderr(stderr_output)
+
+                if video_info:
+                    return video_info
+
+                print(f"Could not get video info from {filepath}")
+                return None
+
+            data = json.loads(output)
 
             # Find video stream
             video_stream = None

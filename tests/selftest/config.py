@@ -39,7 +39,8 @@ class TestConfig:
     frame_count_tolerance: int = 5
 
     # FFmpeg consumer settings
-    ffmpeg_args: str = "-c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p"
+    # Note: -an disables audio to avoid AAC codec issues during analysis
+    ffmpeg_args: str = "-an -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p"
 
     # Timeouts
     startup_wait: float = 1.0  # Wait after starting playback
@@ -51,9 +52,15 @@ DEFAULT_CONFIG = TestConfig()
 
 
 def get_output_path(config: TestConfig, filename: str) -> str:
-    """Get full path for test output file."""
-    os.makedirs(config.output_dir, exist_ok=True)
-    return os.path.join(config.output_dir, filename)
+    """Get full path for test output file.
+
+    Returns an absolute path for the ffmpeg consumer.
+    CasparCG's ffmpeg consumer accepts absolute paths directly.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_dir = os.path.join(script_dir, config.output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, filename)
 
 
 def get_test_config_from_env() -> TestConfig:

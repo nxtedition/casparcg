@@ -1,0 +1,442 @@
+/*
+ * Copyright (c) 2011 Sveriges Television AB <info@casparcg.com>
+ *
+ * This file is part of CasparCG (www.casparcg.com).
+ *
+ * CasparCG is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * CasparCG is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with CasparCG. If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Author: CasparCG Team
+ */
+
+#include "../StdAfx.h"
+
+#include "texture.h"
+#include "buffer.h"
+#include "vk_check.h"
+
+#include <common/bit_depth.h>
+
+#include <vulkan/vulkan.h>
+
+namespace caspar { namespace accelerator { namespace vk {
+
+// Format tables matching OGL pattern
+// stride: 1=R, 2=RG, 3=RGB/BGR, 4=RGBA/BGRA
+static VkFormat FORMAT_8BIT[]  = {VK_FORMAT_UNDEFINED, VK_FORMAT_R8_UNORM, VK_FORMAT_R8G8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_B8G8R8A8_UNORM};
+static VkFormat FORMAT_16BIT[] = {VK_FORMAT_UNDEFINED, VK_FORMAT_R16_UNORM, VK_FORMAT_R16G16_UNORM, VK_FORMAT_R16G16B16_UNORM, VK_FORMAT_R16G16B16A16_UNORM};
+
+struct texture::impl
+{
+    VkDevice          device_         = VK_NULL_HANDLE;
+    VkPhysicalDevice  physical_device_ = VK_NULL_HANDLE;
+    VkCommandPool     command_pool_   = VK_NULL_HANDLE;
+    VkQueue           queue_          = VK_NULL_HANDLE;
+    VkImage           image_          = VK_NULL_HANDLE;
+    VkDeviceMemory    memory_         = VK_NULL_HANDLE;
+    VkImageView       image_view_     = VK_NULL_HANDLE;
+    int               width_          = 0;
+    int               height_         = 0;
+    int               stride_         = 0;
+    int               size_           = 0;
+    common::bit_depth depth_;
+    VkFormat          format_;
+    VkImageLayout     current_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    impl(const impl&)            = delete;
+    impl& operator=(const impl&) = delete;
+
+  public:
+    impl(void*             device,
+         void*             physical_device,
+         void*             command_pool,
+         void*             queue,
+         int               width,
+         int               height,
+         int               stride,
+         common::bit_depth depth)
+        : device_(static_cast<VkDevice>(device))
+        , physical_device_(static_cast<VkPhysicalDevice>(physical_device))
+        , command_pool_(static_cast<VkCommandPool>(command_pool))
+        , queue_(static_cast<VkQueue>(queue))
+        , width_(width)
+        , height_(height)
+        , stride_(stride)
+        , depth_(depth)
+        , size_(width * height * stride * (depth == common::bit_depth::bit8 ? 1 : 2))
+    {
+        format_ = (depth_ == common::bit_depth::bit8) ? FORMAT_8BIT[stride_] : FORMAT_16BIT[stride_];
+
+        if (format_ == VK_FORMAT_UNDEFINED) {
+            CASPAR_THROW_EXCEPTION(caspar::vk::vk_exception()
+                                   << msg_info("Unsupported texture format (stride=" + std::to_string(stride_) + ")"));
+        }
+
+        // Create image
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType     = VK_IMAGE_TYPE_2D;
+        imageInfo.extent.width  = static_cast<uint32_t>(width_);
+        imageInfo.extent.height = static_cast<uint32_t>(height_);
+        imageInfo.extent.depth  = 1;
+        imageInfo.mipLevels     = 1;
+        imageInfo.arrayLayers   = 1;
+        imageInfo.format        = format_;
+        imageInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage         = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.samples     = VK_SAMPLE_COUNT_1_BIT;
+
+        VK(vkCreateImage(device_, &imageInfo, nullptr, &image_));
+
+        // Get memory requirements
+        VkMemoryRequirements memRequirements;
+        vkGetImageMemoryRequirements(device_, image_, &memRequirements);
+
+        // Find suitable memory type (device local)
+        VkPhysicalDeviceMemoryProperties memProperties;
+        vkGetPhysicalDeviceMemoryProperties(physical_device_, &memProperties);
+
+        uint32_t memoryTypeIndex = UINT32_MAX;
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; ++i) {
+            if ((memRequirements.memoryTypeBits & (1 << i)) &&
+                (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                memoryTypeIndex = i;
+                break;
+            }
+        }
+
+        if (memoryTypeIndex == UINT32_MAX) {
+            vkDestroyImage(device_, image_, nullptr);
+            CASPAR_THROW_EXCEPTION(caspar::vk::vk_exception()
+                                   << msg_info("Failed to find suitable memory type for texture."));
+        }
+
+        // Allocate memory
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize  = memRequirements.size;
+        allocInfo.memoryTypeIndex = memoryTypeIndex;
+
+        VK(vkAllocateMemory(device_, &allocInfo, nullptr, &memory_));
+
+        // Bind memory to image
+        VK(vkBindImageMemory(device_, image_, memory_, 0));
+
+        // Create image view
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image                           = image_;
+        viewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format                          = format_;
+        viewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel   = 0;
+        viewInfo.subresourceRange.levelCount     = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount     = 1;
+
+        VK(vkCreateImageView(device_, &viewInfo, nullptr, &image_view_));
+    }
+
+    ~impl()
+    {
+        if (device_ != VK_NULL_HANDLE) {
+            if (image_view_ != VK_NULL_HANDLE) {
+                vkDestroyImageView(device_, image_view_, nullptr);
+            }
+            if (memory_ != VK_NULL_HANDLE) {
+                vkFreeMemory(device_, memory_, nullptr);
+            }
+            if (image_ != VK_NULL_HANDLE) {
+                vkDestroyImage(device_, image_, nullptr);
+            }
+        }
+    }
+
+    impl(impl&& other)
+        : device_(other.device_)
+        , physical_device_(other.physical_device_)
+        , command_pool_(other.command_pool_)
+        , queue_(other.queue_)
+        , image_(other.image_)
+        , memory_(other.memory_)
+        , image_view_(other.image_view_)
+        , width_(other.width_)
+        , height_(other.height_)
+        , stride_(other.stride_)
+        , size_(other.size_)
+        , depth_(other.depth_)
+        , format_(other.format_)
+        , current_layout_(other.current_layout_)
+    {
+        other.device_     = VK_NULL_HANDLE;
+        other.image_      = VK_NULL_HANDLE;
+        other.memory_     = VK_NULL_HANDLE;
+        other.image_view_ = VK_NULL_HANDLE;
+    }
+
+    impl& operator=(impl&& other)
+    {
+        if (this != &other) {
+            // Clean up existing resources
+            if (device_ != VK_NULL_HANDLE) {
+                if (image_view_ != VK_NULL_HANDLE) {
+                    vkDestroyImageView(device_, image_view_, nullptr);
+                }
+                if (memory_ != VK_NULL_HANDLE) {
+                    vkFreeMemory(device_, memory_, nullptr);
+                }
+                if (image_ != VK_NULL_HANDLE) {
+                    vkDestroyImage(device_, image_, nullptr);
+                }
+            }
+
+            // Move resources
+            device_          = other.device_;
+            physical_device_ = other.physical_device_;
+            command_pool_    = other.command_pool_;
+            queue_           = other.queue_;
+            image_           = other.image_;
+            memory_          = other.memory_;
+            image_view_      = other.image_view_;
+            width_           = other.width_;
+            height_          = other.height_;
+            stride_          = other.stride_;
+            size_            = other.size_;
+            depth_           = other.depth_;
+            format_          = other.format_;
+            current_layout_  = other.current_layout_;
+
+            other.device_     = VK_NULL_HANDLE;
+            other.image_      = VK_NULL_HANDLE;
+            other.memory_     = VK_NULL_HANDLE;
+            other.image_view_ = VK_NULL_HANDLE;
+        }
+        return *this;
+    }
+
+    VkCommandBuffer begin_single_time_commands()
+    {
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool        = command_pool_;
+        allocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = 1;
+
+        VkCommandBuffer cmdBuffer;
+        VK(vkAllocateCommandBuffers(device_, &allocInfo, &cmdBuffer));
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        VK(vkBeginCommandBuffer(cmdBuffer, &beginInfo));
+
+        return cmdBuffer;
+    }
+
+    void end_single_time_commands(VkCommandBuffer cmdBuffer)
+    {
+        VK(vkEndCommandBuffer(cmdBuffer));
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers    = &cmdBuffer;
+
+        VK(vkQueueSubmit(queue_, 1, &submitInfo, VK_NULL_HANDLE));
+        VK(vkQueueWaitIdle(queue_));
+
+        vkFreeCommandBuffers(device_, command_pool_, 1, &cmdBuffer);
+    }
+
+    void transition_image_layout(VkCommandBuffer cmdBuffer, VkImageLayout oldLayout, VkImageLayout newLayout)
+    {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout                       = oldLayout;
+        barrier.newLayout                       = newLayout;
+        barrier.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image                           = image_;
+        barrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel   = 0;
+        barrier.subresourceRange.levelCount     = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount     = 1;
+
+        VkPipelineStageFlags sourceStage;
+        VkPipelineStageFlags destinationStage;
+
+        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
+                   newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                   newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL &&
+                   newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        } else {
+            // General fallback
+            barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        }
+
+        vkCmdPipelineBarrier(cmdBuffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        current_layout_ = newLayout;
+    }
+
+    void copy_from(buffer& src)
+    {
+        auto cmdBuffer = begin_single_time_commands();
+
+        // Transition to transfer destination
+        transition_image_layout(cmdBuffer, current_layout_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+        // Copy buffer to image
+        VkBufferImageCopy region{};
+        region.bufferOffset                    = 0;
+        region.bufferRowLength                 = 0;
+        region.bufferImageHeight               = 0;
+        region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel       = 0;
+        region.imageSubresource.baseArrayLayer = 0;
+        region.imageSubresource.layerCount     = 1;
+        region.imageOffset                     = {0, 0, 0};
+        region.imageExtent                     = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), 1};
+
+        vkCmdCopyBufferToImage(
+            cmdBuffer, static_cast<VkBuffer>(src.handle()), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        // Transition to shader read
+        transition_image_layout(cmdBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        end_single_time_commands(cmdBuffer);
+    }
+
+    void copy_to(buffer& dst)
+    {
+        auto cmdBuffer = begin_single_time_commands();
+
+        // Transition to transfer source
+        transition_image_layout(cmdBuffer, current_layout_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+        // Copy image to buffer
+        VkBufferImageCopy region{};
+        region.bufferOffset                    = 0;
+        region.bufferRowLength                 = 0;
+        region.bufferImageHeight               = 0;
+        region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel       = 0;
+        region.imageSubresource.baseArrayLayer = 0;
+        region.imageSubresource.layerCount     = 1;
+        region.imageOffset                     = {0, 0, 0};
+        region.imageExtent                     = {static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), 1};
+
+        vkCmdCopyImageToBuffer(
+            cmdBuffer, image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, static_cast<VkBuffer>(dst.handle()), 1, &region);
+
+        // Transition back to shader read
+        transition_image_layout(cmdBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        end_single_time_commands(cmdBuffer);
+    }
+
+    void clear()
+    {
+        auto cmdBuffer = begin_single_time_commands();
+
+        // Transition to transfer destination
+        transition_image_layout(cmdBuffer, current_layout_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+        // Clear the image
+        VkClearColorValue clearColor = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        VkImageSubresourceRange range{};
+        range.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+        range.baseMipLevel   = 0;
+        range.levelCount     = 1;
+        range.baseArrayLayer = 0;
+        range.layerCount     = 1;
+
+        vkCmdClearColorImage(cmdBuffer, image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &range);
+
+        // Transition to shader read
+        transition_image_layout(cmdBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        end_single_time_commands(cmdBuffer);
+    }
+};
+
+texture::texture(void*             device,
+                 void*             physical_device,
+                 void*             command_pool,
+                 void*             queue,
+                 int               width,
+                 int               height,
+                 int               stride,
+                 common::bit_depth depth)
+    : impl_(new impl(device, physical_device, command_pool, queue, width, height, stride, depth))
+{
+}
+
+texture::texture(texture&& other)
+    : impl_(std::move(other.impl_))
+{
+}
+
+texture::~texture() {}
+
+texture& texture::operator=(texture&& other)
+{
+    impl_ = std::move(other.impl_);
+    return *this;
+}
+
+void texture::copy_from(buffer& source) { impl_->copy_from(source); }
+void texture::copy_to(buffer& dest) { impl_->copy_to(dest); }
+void texture::clear() { impl_->clear(); }
+
+void*             texture::image() const { return impl_->image_; }
+void*             texture::image_view() const { return impl_->image_view_; }
+int               texture::width() const { return impl_->width_; }
+int               texture::height() const { return impl_->height_; }
+int               texture::stride() const { return impl_->stride_; }
+common::bit_depth texture::depth() const { return impl_->depth_; }
+int               texture::size() const { return impl_->size_; }
+
+}}} // namespace caspar::accelerator::vk

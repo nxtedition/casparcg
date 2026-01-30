@@ -30,12 +30,19 @@
 
 namespace caspar { namespace accelerator { namespace vk {
 
+class buffer;
+class texture;
+
 /**
- * Vulkan device - stub implementation for Phase 1
+ * Vulkan device - Phase 2 implementation
  *
- * This is a minimal stub that allows CasparCG to compile and run on macOS
- * without actual GPU rendering. Real Vulkan rendering will be implemented
- * in Phase 2.
+ * Provides:
+ * - Vulkan instance creation with MoltenVK on macOS
+ * - Physical device selection and logical device creation
+ * - Command pool and command buffer management
+ * - Async dispatch queue using Boost.ASIO (matching OGL pattern)
+ * - Resource pooling for buffers and textures
+ * - Validation layers for debug builds
  */
 class device final
     : public std::enable_shared_from_this<device>
@@ -48,37 +55,67 @@ class device final
     device(const device&) = delete;
     device& operator=(const device&) = delete;
 
+    // Texture creation
+    std::shared_ptr<texture> create_texture(int width, int height, int stride, common::bit_depth depth);
+
     // Buffer/array creation
     array<uint8_t> create_array(int size);
 
-    // Async dispatch (executes synchronously in stub)
-    template <typename Func>
-    auto dispatch_async(Func&& func)
-    {
-        using result_type = decltype(func());
-        using task_type   = std::packaged_task<result_type()>;
+    // Copy operations
+    std::future<std::shared_ptr<texture>>
+    copy_async(const array<const uint8_t>& source, int width, int height, int stride, common::bit_depth depth);
+    std::future<array<const uint8_t>> copy_async(const std::shared_ptr<texture>& source);
 
-        auto task   = std::make_shared<task_type>(std::forward<Func>(func));
-        auto future = task->get_future();
-        (*task)(); // Execute synchronously in stub
-        return future;
-    }
+    // Async dispatch - executes work on the dedicated Vulkan thread
+    template <typename Func>
+    auto dispatch_async(Func&& func) -> std::future<decltype(func())>;
 
     template <typename Func>
-    auto dispatch_sync(Func&& func)
-    {
-        return dispatch_async(std::forward<Func>(func)).get();
-    }
+    auto dispatch_sync(Func&& func) -> decltype(func());
 
+    // Version information
     std::wstring version() const;
 
     // accelerator_device interface
     boost::property_tree::wptree info() const override;
     std::future<void>            gc() override;
 
+    // Vulkan handle accessors (for internal use by buffer/texture)
+    struct vulkan_handles
+    {
+        void* instance;        // VkInstance
+        void* physical_device; // VkPhysicalDevice
+        void* device;          // VkDevice
+        void* queue;           // VkQueue
+        void* command_pool;    // VkCommandPool
+        uint32_t queue_family_index;
+    };
+    vulkan_handles get_handles() const;
+
   private:
+    void dispatch(std::function<void()> func);
+
     struct impl;
     std::shared_ptr<impl> impl_;
 };
+
+// Template implementations
+template <typename Func>
+auto device::dispatch_async(Func&& func) -> std::future<decltype(func())>
+{
+    using result_type = decltype(func());
+    using task_type   = std::packaged_task<result_type()>;
+
+    auto task   = std::make_shared<task_type>(std::forward<Func>(func));
+    auto future = task->get_future();
+    dispatch([=] { (*task)(); });
+    return future;
+}
+
+template <typename Func>
+auto device::dispatch_sync(Func&& func) -> decltype(func())
+{
+    return dispatch_async(std::forward<Func>(func)).get();
+}
 
 }}} // namespace caspar::accelerator::vk

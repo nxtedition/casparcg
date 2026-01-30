@@ -66,28 +66,40 @@ CasparCG compiles on macOS (with rendering disabled/stubbed).
 
 ---
 
-## Phase 2: Vulkan Device & Context
+## Phase 2: Vulkan Device & Context ✅
 
 **Goal:** Initialize Vulkan and create a rendering context via MoltenVK.
 
+**Status:** COMPLETED
+
 ### Tasks
 
-- [ ] Create `src/accelerator/vk/util/device.cpp/h`
+- [x] Create `src/accelerator/vk/util/device.cpp/h`
   - Vulkan instance creation
   - Physical device selection
   - Logical device and queue creation
   - Command pool and command buffer management
-- [ ] Create `src/accelerator/vk/util/context.cpp/h`
-  - MoltenVK-specific initialization
-  - Surface creation for window output (optional at this stage)
-- [ ] Implement async dispatch queue (matching OGL pattern with Boost.ASIO)
-- [ ] Add Vulkan validation layers for debug builds
-- [ ] Create `src/accelerator/vk/util/buffer.cpp/h`
+- [x] Create `src/accelerator/vk/util/vk_check.h`
+  - Vulkan error checking macros (matching OGL pattern)
+- [x] Implement async dispatch queue (matching OGL pattern with Boost.ASIO)
+- [x] Add Vulkan validation layers for debug builds
+- [x] Create `src/accelerator/vk/util/buffer.cpp/h`
   - GPU buffer allocation and management
-  - Staging buffer for CPU-GPU transfers
-- [ ] Create `src/accelerator/vk/util/texture.cpp/h`
+  - Host-visible, coherent memory for fast CPU-GPU transfers
+  - Persistent mapped pointer for zero-copy access
+- [x] Create `src/accelerator/vk/util/texture.cpp/h`
   - Texture/image creation and management
   - Image layout transitions
+  - Support for R, RG, BGR, BGRA formats (8-bit and 16-bit)
+
+### Files Created/Modified
+
+- `src/accelerator/vk/util/vk_check.h` - Vulkan error checking macros
+- `src/accelerator/vk/util/device.h/.cpp` - Full Vulkan device with async dispatch
+- `src/accelerator/vk/util/buffer.h/.cpp` - GPU buffer management
+- `src/accelerator/vk/util/texture.h/.cpp` - Texture/image management
+- `src/accelerator/vk/StdAfx.h` - Updated with Vulkan headers
+- `src/accelerator/CMakeLists.txt` - Added new source files
 
 ### Deliverable
 

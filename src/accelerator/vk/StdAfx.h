@@ -23,15 +23,27 @@
 
 // Vulkan backend precompiled header
 
+// Standard library
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <future>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
+// Boost
 #include <boost/property_tree/ptree.hpp>
+#include <boost/asio.hpp>
 
+// Vulkan SDK
+#include <vulkan/vulkan.h>
+
+// Common
 #include <common/log.h>
+#include <common/except.h>

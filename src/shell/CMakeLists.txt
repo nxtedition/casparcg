@@ -23,6 +23,10 @@ if (MSVC)
 			shell.rc
 			windows_specific.cpp
 	)
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+	list(APPEND SOURCES
+			macos_specific.cpp
+	)
 else ()
 	list(APPEND SOURCES
 			linux_specific.cpp
@@ -53,11 +57,11 @@ target_link_libraries(casparcg
 
 		TBB::tbb
 		TBB::tbbmalloc
-		GLEW::glew
 )
 
 if (MSVC)
 	target_link_libraries(casparcg
+		GLEW::glew
 		Winmm.lib
 		Ws2_32.lib
 		OpenGL32.lib
@@ -75,8 +79,20 @@ if (MSVC)
 		swscale.lib
 		swresample.lib
 	)
-else ()
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+	# macOS: Vulkan backend, no OpenGL/X11
 	target_link_libraries(casparcg
+		${Boost_LIBRARIES}
+		${FFMPEG_LIBRARIES}
+		Vulkan::Vulkan
+		Apple::Frameworks
+		z
+		pthread
+	)
+else ()
+	# Linux: OpenGL backend
+	target_link_libraries(casparcg
+		GLEW::glew
 		${Boost_LIBRARIES}
 		OpenGL::GL
 		OpenGL::OpenGL

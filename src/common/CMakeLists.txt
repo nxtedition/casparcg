@@ -4,8 +4,6 @@ project (common)
 set(SOURCES
 		diagnostics/graph.cpp
 
-		gl/gl_check.cpp
-
 		base64.cpp
 		env.cpp
 		filesystem.cpp
@@ -13,8 +11,12 @@ set(SOURCES
 		tweener.cpp
 		utf.cpp
 )
+
+# Platform-specific sources
 if (MSVC)
 	list(APPEND SOURCES
+			gl/gl_check.cpp
+
 			compiler/vs/disable_silly_warnings.h
 
 			os/windows/filesystem.cpp
@@ -22,13 +24,26 @@ if (MSVC)
 			os/windows/thread.cpp
 			os/windows/windows.h
 	)
-else ()
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+	# macOS: Use Vulkan stub instead of OpenGL
 	list(APPEND SOURCES
+			gl/gl_check_stub.cpp
+
+			os/macos/filesystem.cpp
+			os/macos/prec_timer.cpp
+			os/macos/thread.cpp
+	)
+else ()
+	# Linux: Use OpenGL
+	list(APPEND SOURCES
+			gl/gl_check.cpp
+
 			os/linux/filesystem.cpp
 			os/linux/prec_timer.cpp
 			os/linux/thread.cpp
 	)
 endif ()
+
 set(HEADERS
 		diagnostics/graph.h
 
@@ -63,11 +78,20 @@ set(HEADERS
 casparcg_add_library(common SOURCES ${SOURCES} ${HEADERS})
 target_include_directories(common PRIVATE ..)
 target_precompile_headers(common PRIVATE stdafx.h)
-target_link_libraries(common PRIVATE GLEW::glew)
+
+# Platform-specific linking
+if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+	# macOS: No OpenGL/GLEW dependency
+else ()
+	# Windows/Linux: Link GLEW for OpenGL error checking
+	target_link_libraries(common PRIVATE GLEW::glew)
+endif ()
 
 source_group(sources ./*)
 source_group(sources\\gl gl/*)
 source_group(sources\\diagnostics diagnostics/*)
 source_group(sources\\compiler\\vs compiler/vs/*)
 source_group(sources\\os\\windows os/windows/*)
+source_group(sources\\os\\linux os/linux/*)
+source_group(sources\\os\\macos os/macos/*)
 source_group(sources\\os os/*)

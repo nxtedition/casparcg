@@ -12,10 +12,8 @@ if (NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 	add_subdirectory(artnet)
 endif()
 
-# Screen consumer requires OpenGL, not yet available on macOS (Phase 9)
-if (NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-	add_subdirectory(screen)
-endif()
+# Phase 9: Screen consumer now works on macOS with Vulkan backend
+add_subdirectory(screen)
 
 if (ENABLE_HTML)
 	add_subdirectory(html)

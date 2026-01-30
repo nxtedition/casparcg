@@ -3,7 +3,7 @@ project (accelerator)
 
 # Platform-specific source selection
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    # macOS: Use Vulkan backend (Phase 5 - Geometric Transforms)
+    # macOS: Use Vulkan backend (Phase 9 - Screen Consumer)
     set(SOURCES
         vk/image/image_kernel.cpp
         vk/image/image_mixer.cpp
@@ -12,6 +12,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         vk/util/texture.cpp
         vk/util/pipeline.cpp
         vk/util/matrix.cpp
+        vk/util/swapchain.cpp
+        vk/util/render_pipeline.cpp
         accelerator_vk.cpp
     )
     set(HEADERS
@@ -22,9 +24,13 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         vk/util/texture.h
         vk/util/pipeline.h
         vk/util/matrix.h
+        vk/util/swapchain.h
+        vk/util/render_pipeline.h
         vk/util/vk_check.h
         vk/StdAfx.h
         vk_blend_shader.h
+        vk_screen_vert_shader.h
+        vk_screen_frag_shader.h
         accelerator.h
         StdAfx.h
     )
@@ -46,8 +52,30 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         COMMENT "Compiling blend.comp to SPIR-V"
     )
 
+    # Compile screen shaders to SPIR-V (Phase 9)
+    set(SCREEN_VERT_SRC ${CMAKE_CURRENT_SOURCE_DIR}/vk/image/shaders/screen.vert)
+    set(SCREEN_VERT_SPV ${CMAKE_CURRENT_BINARY_DIR}/screen.vert.spv)
+    set(SCREEN_FRAG_SRC ${CMAKE_CURRENT_SOURCE_DIR}/vk/image/shaders/screen.frag)
+    set(SCREEN_FRAG_SPV ${CMAKE_CURRENT_BINARY_DIR}/screen.frag.spv)
+
+    add_custom_command(
+        OUTPUT ${SCREEN_VERT_SPV}
+        COMMAND ${GLSLANG_VALIDATOR} -V ${SCREEN_VERT_SRC} -o ${SCREEN_VERT_SPV}
+        DEPENDS ${SCREEN_VERT_SRC}
+        COMMENT "Compiling screen.vert to SPIR-V"
+    )
+
+    add_custom_command(
+        OUTPUT ${SCREEN_FRAG_SPV}
+        COMMAND ${GLSLANG_VALIDATOR} -V ${SCREEN_FRAG_SRC} -o ${SCREEN_FRAG_SPV}
+        DEPENDS ${SCREEN_FRAG_SRC}
+        COMMENT "Compiling screen.frag to SPIR-V"
+    )
+
     # Convert SPIR-V to C header using bin2c
     bin2c_spv("${BLEND_SHADER_SPV}" "vk_blend_shader.h" "caspar::accelerator::vk" "blend_shader_spv")
+    bin2c_spv("${SCREEN_VERT_SPV}" "vk_screen_vert_shader.h" "caspar::accelerator::vk" "screen_vert_shader_spv")
+    bin2c_spv("${SCREEN_FRAG_SPV}" "vk_screen_frag_shader.h" "caspar::accelerator::vk" "screen_frag_shader_spv")
 else()
     # Windows/Linux: Use OpenGL backend
     set(SOURCES
@@ -103,11 +131,12 @@ target_include_directories(accelerator PRIVATE .. ${CMAKE_CURRENT_BINARY_DIR})
 
 # Platform-specific configuration
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    # macOS: Vulkan backend
+    # macOS: Vulkan backend (Phase 9 - Screen Consumer)
     target_precompile_headers(accelerator PRIVATE vk/StdAfx.h)
     target_link_libraries(accelerator PRIVATE common core)
     target_link_libraries(accelerator PRIVATE Vulkan::Vulkan)
     target_link_libraries(accelerator PRIVATE Apple::Frameworks)
+    target_link_libraries(accelerator PRIVATE glfw)
 else()
     # Windows/Linux: OpenGL backend
     target_precompile_headers(accelerator PRIVATE StdAfx.h)

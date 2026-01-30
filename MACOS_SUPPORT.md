@@ -369,20 +369,45 @@ Can play back video files, images, and perform transitions.
 
 ---
 
-## Phase 9: Screen Consumer
+## Phase 9: Screen Consumer ✅
 
 **Goal:** Display output in a window on macOS.
 
+**Status:** COMPLETED
+
 ### Tasks
 
-- [ ] Create macOS window management (Cocoa or GLFW)
-- [ ] Create Vulkan swapchain for window surface
-- [ ] Implement `screen_consumer` for Vulkan:
-  - [ ] Swapchain image presentation
-  - [ ] VSync handling
-  - [ ] Multiple monitor support
-- [ ] Handle window resize and fullscreen
-- [ ] Implement proper frame timing/synchronization
+- [x] Create macOS window management (Cocoa or GLFW)
+- [x] Create Vulkan swapchain for window surface
+- [x] Implement `screen_consumer` for Vulkan:
+  - [x] Swapchain image presentation
+  - [x] VSync handling
+  - [x] Multiple monitor support
+- [x] Handle window resize and fullscreen
+- [x] Implement proper frame timing/synchronization
+
+### Files Created/Modified
+
+- `src/accelerator/vk/util/swapchain.h/.cpp` - Vulkan swapchain management with GLFW window surface
+- `src/accelerator/vk/util/render_pipeline.h/.cpp` - Graphics pipeline for screen rendering
+- `src/accelerator/vk/image/shaders/screen.vert` - Vertex shader for screen rendering
+- `src/accelerator/vk/image/shaders/screen.frag` - Fragment shader with color space conversion
+- `src/modules/screen/consumer/screen_consumer_vk.h/.cpp` - Vulkan screen consumer implementation
+- `src/modules/screen/screen.cpp` - Updated to use Vulkan consumer on macOS
+- `src/modules/screen/CMakeLists.txt` - Platform-specific consumer selection
+- `src/modules/CMakeLists.txt` - Enabled screen module on macOS
+- `src/accelerator/CMakeLists.txt` - Added swapchain and render_pipeline sources
+- `src/accelerator/vk/util/device.cpp` - Added swapchain extension support
+
+### Technical Notes
+
+- Uses GLFW for window management (replacing SFML from OpenGL implementation)
+- Vulkan swapchain created directly from GLFW window surface
+- Graphics pipeline renders source texture to swapchain via fullscreen quad
+- Supports windowed, fullscreen, borderless, and always-on-top modes
+- VSync controlled via swapchain present mode (FIFO vs MAILBOX/IMMEDIATE)
+- Key-only and DataVideo color space modes ported from OpenGL implementation
+- Double-buffered synchronization with semaphores and fences
 
 ### Deliverable
 

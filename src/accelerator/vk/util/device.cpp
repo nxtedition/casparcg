@@ -192,10 +192,12 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
         // Extensions
         std::vector<const char*> extensions;
+        extensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
 #ifdef __APPLE__
         // MoltenVK portability extension required on macOS
         extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
         extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        extensions.push_back("VK_EXT_metal_surface");
 #endif
 #ifndef NDEBUG
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -385,6 +387,7 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
         // Device extensions
         std::vector<const char*> deviceExtensions;
+        deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 #ifdef __APPLE__
         deviceExtensions.push_back("VK_KHR_portability_subset");
 #endif

@@ -44,8 +44,28 @@
 
 #include "DeckLinkAPI.h"
 
+// Platform-specific library names and paths
+#if defined(__APPLE__)
+// macOS: DeckLink SDK installs as a Framework
+// The library is inside /Library/Frameworks/DeckLinkAPI.framework/
+#define kDeckLinkAPI_Name "/Library/Frameworks/DeckLinkAPI.framework/DeckLinkAPI"
+#define KDeckLinkPreviewAPI_Name "/Library/Frameworks/DeckLinkPreviewAPI.framework/DeckLinkPreviewAPI"
+// Alternative paths to try
+static const char* kDeckLinkAPI_AltPaths[] = {
+    "/Library/Frameworks/DeckLinkAPI.framework/Versions/A/DeckLinkAPI",
+    "DeckLinkAPI.framework/DeckLinkAPI",  // Relative path (if in app bundle)
+    NULL
+};
+static const char* kDeckLinkPreviewAPI_AltPaths[] = {
+    "/Library/Frameworks/DeckLinkPreviewAPI.framework/Versions/A/DeckLinkPreviewAPI",
+    "DeckLinkPreviewAPI.framework/DeckLinkPreviewAPI",
+    NULL
+};
+#else
+// Linux: Standard shared library
 #define kDeckLinkAPI_Name "libDeckLinkAPI.so"
 #define KDeckLinkPreviewAPI_Name "libDeckLinkPreviewAPI.so"
+#endif
 
 typedef IDeckLinkIterator* (*CreateIteratorFunc)(void);
 typedef IDeckLinkAPIInformation* (*CreateAPIInformationFunc)(void);
@@ -71,10 +91,27 @@ static CreateVideoFrameAncillaryPacketsInstanceFunc	gCreateVideoFrameAncillaryPa
 static void	InitDeckLinkAPI (void)
 {
 	void *libraryHandle;
-	
+
 	libraryHandle = dlopen(kDeckLinkAPI_Name, RTLD_NOW|RTLD_GLOBAL);
+
+#if defined(__APPLE__)
+	// On macOS, try alternative paths if primary path fails
 	if (!libraryHandle)
 	{
+		for (int i = 0; kDeckLinkAPI_AltPaths[i] != NULL; i++)
+		{
+			libraryHandle = dlopen(kDeckLinkAPI_AltPaths[i], RTLD_NOW|RTLD_GLOBAL);
+			if (libraryHandle)
+				break;
+		}
+	}
+#endif
+
+	if (!libraryHandle)
+	{
+#if defined(__APPLE__)
+		fprintf(stderr, "DeckLink API not found. Install Blackmagic Desktop Video from https://www.blackmagicdesign.com/support\n");
+#endif
 		fprintf(stderr, "%s\n", dlerror());
 		return;
 	}
@@ -101,8 +138,22 @@ static void	InitDeckLinkAPI (void)
 static void	InitDeckLinkPreviewAPI (void)
 {
 	void *libraryHandle;
-	
+
 	libraryHandle = dlopen(KDeckLinkPreviewAPI_Name, RTLD_NOW|RTLD_GLOBAL);
+
+#if defined(__APPLE__)
+	// On macOS, try alternative paths if primary path fails
+	if (!libraryHandle)
+	{
+		for (int i = 0; kDeckLinkPreviewAPI_AltPaths[i] != NULL; i++)
+		{
+			libraryHandle = dlopen(kDeckLinkPreviewAPI_AltPaths[i], RTLD_NOW|RTLD_GLOBAL);
+			if (libraryHandle)
+				break;
+		}
+	}
+#endif
+
 	if (!libraryHandle)
 	{
 		fprintf(stderr, "%s\n", dlerror());

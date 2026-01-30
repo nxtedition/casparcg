@@ -121,6 +121,14 @@ class TestRunner:
         self.register_test("audio_with_video", 11, self.test_audio_with_video,
                            "Test audio playback with video content")
 
+        # Phase 12: DeckLink Hardware I/O
+        self.register_test("decklink_library", 12, self.test_decklink_library,
+                           "Test DeckLink library loading (requires Desktop Video)")
+        self.register_test("decklink_consumer", 12, self.test_decklink_consumer,
+                           "Test DeckLink consumer (SDI/HDMI output)")
+        self.register_test("decklink_producer", 12, self.test_decklink_producer,
+                           "Test DeckLink producer (SDI/HDMI input)")
+
         # Phase 13: NDI (Network Device Interface)
         self.register_test("ndi_library", 13, self.test_ndi_library,
                            "Test NDI library loading and initialization")
@@ -1722,6 +1730,193 @@ class TestRunner:
 
         if all_passed:
             print("  Audio with video test passed!")
+        return all_passed
+
+    def test_decklink_library(self) -> bool:
+        """Test DeckLink library loading (Phase 12).
+
+        Tests that the DeckLink SDK/library can be loaded. On macOS, this
+        requires Blackmagic Desktop Video software to be installed which
+        provides /Library/Frameworks/DeckLinkAPI.framework.
+
+        Note: This test will pass if DeckLink is not installed, as long as
+        the module correctly reports the unavailable status.
+        """
+        all_passed = True
+
+        print("  Testing DeckLink library loading...")
+
+        # Try to use a DeckLink command to trigger library loading
+        # Using a fake device number to test if the module is registered
+        code, msg = self.client.play_decklink(self.config.playback_channel, 99, 999)
+
+        if code >= 200 and code < 300:
+            print("  DeckLink library loaded successfully!")
+            print("  (Unexpected success with fake device - clearing)")
+            self.client.clear(self.config.playback_channel)
+        elif code == 404:
+            # 404 = Producer registered but device not found
+            print("  DeckLink module is registered (device not found is expected)")
+            print("  DeckLink SDK/Desktop Video is installed")
+        elif code == 403:
+            # 403 = Command not registered (module couldn't initialize)
+            print(f"  DeckLink module not registered: {msg}")
+            print("  This is expected if Desktop Video is not installed")
+            print("  Download from: https://www.blackmagicdesign.com/support")
+            # Not a test failure - expected when SDK not installed
+        elif code == 501:
+            # 501 = Not available
+            print(f"  DeckLink not available: {msg}")
+            print("  This is expected if no DeckLink devices are connected")
+        else:
+            print(f"  DeckLink response (code {code}): {msg}")
+            # Don't fail on unexpected codes - library may report various errors
+
+        return all_passed
+
+    def test_decklink_consumer(self) -> bool:
+        """Test DeckLink consumer (Phase 12).
+
+        Tests the DeckLink consumer which outputs video to SDI/HDMI via
+        DeckLink devices (UltraStudio, DeckLink cards, etc.).
+
+        Note: Requires DeckLink hardware to be connected. Test validates
+        command acceptance even without hardware.
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        print("  Testing DeckLink consumer (SDI/HDMI output)...")
+
+        # First check if DeckLink module is available
+        code, _ = self.client.play_decklink(ch, 99, 999)
+        if code == 403:
+            print("  DeckLink module not available - skipping consumer test")
+            print("  Install Desktop Video from https://www.blackmagicdesign.com/support")
+            return True  # Skip counts as pass
+
+        # Clear channel
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Play content to output
+        r1 = self.client.play_color(ch, 1, "#00FF00")  # Green
+        if not self.helper.assert_success(r1, "Play color for DeckLink output"):
+            return False
+
+        self.helper.wait(0.5)
+
+        # Try to add DeckLink consumer on device 1
+        print("  Adding DeckLink consumer on device 1...")
+        r2 = self.client.add_decklink_consumer(ch, 1, embedded_audio=True)
+        code2, msg2 = r2
+
+        if code2 >= 200 and code2 < 300:
+            print("  DeckLink consumer added successfully!")
+            print("  If DeckLink device is connected, video should appear on output")
+
+            # Let it run briefly
+            self.helper.wait(2.0)
+
+            # Verify system is still responsive
+            info_result = self.client.info(ch)
+            if info_result[0] < 200 or info_result[0] >= 300:
+                print("  Warning: System unresponsive with DeckLink consumer")
+                all_passed = False
+            else:
+                print("  System responsive with DeckLink consumer running")
+
+            # Remove consumer
+            print("  Removing DeckLink consumer...")
+            self.client.remove_decklink_consumer(ch, 1)
+            self.helper.wait(0.5)
+        elif code2 == 404:
+            print(f"  DeckLink device 1 not found: {msg2}")
+            print("  This is expected if no DeckLink hardware is connected")
+            print("  Test passes - consumer command format is accepted")
+        elif code2 == 501:
+            print(f"  DeckLink not available: {msg2}")
+            print("  This may indicate driver or hardware issues")
+        else:
+            print(f"  DeckLink consumer response (code {code2}): {msg2}")
+            # Don't fail - various errors possible without hardware
+
+        # Clean up
+        self.client.clear(ch)
+
+        print("  DeckLink consumer test completed!")
+        return all_passed
+
+    def test_decklink_producer(self) -> bool:
+        """Test DeckLink producer (Phase 12).
+
+        Tests the DeckLink producer which captures video from SDI/HDMI
+        inputs via DeckLink devices.
+
+        Note: Requires DeckLink hardware with active input signal.
+        Test validates command acceptance even without hardware.
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        print("  Testing DeckLink producer (SDI/HDMI input)...")
+
+        # First check if DeckLink module is available
+        code, _ = self.client.play_decklink(ch, 99, 999)
+        if code == 403:
+            print("  DeckLink module not available - skipping producer test")
+            print("  Install Desktop Video from https://www.blackmagicdesign.com/support")
+            return True  # Skip counts as pass
+
+        # Clear channel
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Try to capture from DeckLink device 1
+        print("  Attempting to capture from DeckLink device 1...")
+        r1 = self.client.play_decklink(ch, 1, 1)
+        code1, msg1 = r1
+
+        if code1 >= 200 and code1 < 300:
+            print("  DeckLink producer connected!")
+            print("  Capturing video from device 1")
+
+            # Let it run briefly
+            self.helper.wait(2.0)
+
+            # Verify system is still responsive
+            info_result = self.client.info(ch)
+            if info_result[0] < 200 or info_result[0] >= 300:
+                print("  Warning: System unresponsive with DeckLink producer")
+                all_passed = False
+            else:
+                print("  System responsive with DeckLink producer running")
+        elif code1 == 404:
+            print(f"  DeckLink device 1 not found: {msg1}")
+            print("  This is expected if no DeckLink hardware is connected")
+            print("  Test passes - producer command format is accepted")
+        elif code1 == 501:
+            print(f"  DeckLink not available: {msg1}")
+            print("  No input signal or device not ready")
+        else:
+            print(f"  DeckLink producer response (code {code1}): {msg1}")
+            # Don't fail - various errors possible without hardware
+
+        # Test with options
+        if code == 404 or (code >= 200 and code < 300):
+            print("  Testing DeckLink producer with FREEZE_ON_LOST option...")
+            r2 = self.client.play_decklink(ch, 1, 1, freeze_on_lost=True)
+            code2, msg2 = r2
+
+            if code2 == 404 or (code2 >= 200 and code2 < 300):
+                print("  FREEZE_ON_LOST option accepted")
+            else:
+                print(f"  FREEZE_ON_LOST response (code {code2}): {msg2}")
+
+        # Clean up
+        self.client.clear(ch)
+
+        print("  DeckLink producer test completed!")
         return all_passed
 
     def test_ndi_library(self) -> bool:

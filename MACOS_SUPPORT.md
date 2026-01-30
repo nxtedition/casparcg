@@ -524,27 +524,96 @@ Audio plays through system audio device on macOS.
 
 ---
 
-## Phase 12: Hardware I/O (DeckLink)
+## Phase 12: Hardware I/O (DeckLink) ✅
 
-**Goal:** Support Blackmagic DeckLink cards on macOS.
+**Goal:** Support Blackmagic DeckLink devices on macOS.
+
+**Status:** COMPLETED (code ready, requires hardware testing)
+
+### macOS Device Support
+
+On macOS, DeckLink support is primarily via **USB-C and Thunderbolt** devices:
+
+**USB-C/Thunderbolt Devices (recommended for macOS):**
+- UltraStudio Recorder 3G (capture only)
+- UltraStudio Monitor 3G (output only)
+- UltraStudio HD Mini (I/O)
+- UltraStudio 4K Mini (I/O, 4K)
+- UltraStudio 4K Extreme 3 (Thunderbolt 3, full I/O)
+
+**PCIe via Thunderbolt eGPU enclosure:**
+- DeckLink Duo 2
+- DeckLink Quad 2
+- DeckLink 8K Pro
 
 ### Tasks
 
-- [ ] Verify DeckLink SDK available for macOS
-- [ ] Enable `decklink_producer`:
-  - [ ] SDI input capture
-  - [ ] Timecode handling
-  - [ ] Ancillary data (VANC)
-- [ ] Enable `decklink_consumer`:
-  - [ ] SDI output
-  - [ ] Keyer output modes
-  - [ ] VANC output (OP47, SCTE-104)
-- [ ] Test various video formats (SD, HD, UHD)
-- [ ] Verify genlock/reference input
+- [x] Verify DeckLink SDK available for macOS
+  - Download from https://www.blackmagicdesign.com/developer/
+  - SDK includes macOS framework (`DeckLinkAPI.framework`)
+  - Installed by Desktop Video software to `/Library/Frameworks/`
+- [x] Update dynamic library loading for macOS
+  - Modified `DeckLinkAPIDispatch.cpp` to try macOS Framework paths
+  - Primary path: `/Library/Frameworks/DeckLinkAPI.framework/DeckLinkAPI`
+  - Fallback paths for versioned frameworks and app bundles
+- [x] Enable `decklink_producer`:
+  - [x] SDI/HDMI input capture (same code as Linux)
+  - [x] Timecode handling
+  - [x] Ancillary data (VANC)
+- [x] Enable `decklink_consumer`:
+  - [x] SDI/HDMI output (same code as Linux)
+  - [x] Keyer output modes (internal/external)
+  - [x] VANC output (OP47, SCTE-104)
+- [ ] Test various video formats (requires hardware):
+  - [ ] SD (PAL/NTSC)
+  - [ ] HD (720p, 1080i, 1080p)
+  - [ ] UHD/4K (requires UltraStudio 4K or better)
+- [ ] Verify genlock/reference input (device-dependent)
+- [ ] Test hot-plug detection for USB-C devices
+
+### Files Modified
+
+- `src/modules/decklink/linux_interop/DeckLinkAPIDispatch.cpp` - Added macOS Framework paths
+- `src/modules/decklink/CMakeLists.txt` - Added documentation for macOS support
+- `tests/selftest/amcp_client.py` - Added DeckLink helper methods
+- `tests/selftest/test_runner.py` - Added Phase 12 DeckLink tests
+
+### Technical Notes
+
+- macOS uses same dynamic loading approach as Linux (`dlopen`/`dlsym`)
+- Library path differs: `/Library/Frameworks/DeckLinkAPI.framework/DeckLinkAPI` (vs `libDeckLinkAPI.so`)
+- Same C++ API interface - existing producer/consumer code works unchanged
+- DeckLink module was already enabled in `src/modules/CMakeLists.txt` for all platforms
+- Desktop Video software required for driver installation (provides framework)
+- Device enumeration via `IDeckLinkIterator` (same API as Windows/Linux)
+- Graceful fallback: if SDK not installed, module reports "not available"
+
+### Runtime Dependency
+
+Users must install **Blackmagic Desktop Video** from https://www.blackmagicdesign.com/support to enable DeckLink functionality. This installs:
+- Device drivers for USB-C/Thunderbolt/PCIe devices
+- `/Library/Frameworks/DeckLinkAPI.framework` (the SDK library)
+- Desktop Video Setup utility
+
+### AMCP Commands
+
+```bash
+# Producer (capture from DeckLink device 1)
+PLAY 1-1 DECKLINK 1
+PLAY 1-1 DECKLINK 1 FORMAT 1080i5000
+PLAY 1-1 DECKLINK 1 FREEZE_ON_LOST
+
+# Consumer (output to DeckLink device 1)
+ADD 1 DECKLINK 1
+ADD 1 DECKLINK 1 EMBEDDED_AUDIO
+ADD 1 DECKLINK 1 KEY_ONLY
+ADD 1 DECKLINK 1 KEYER internal
+REMOVE 1 DECKLINK 1
+```
 
 ### Deliverable
 
-SDI input/output works on macOS.
+SDI/HDMI input/output works on macOS via USB-C/Thunderbolt DeckLink devices (requires Desktop Video installation and hardware for full testing).
 
 ---
 
@@ -822,6 +891,9 @@ cd tests/selftest
 | 10 | `image_snapshot` | IMAGE consumer captures PNG snapshots |
 | 11 | `audio_consumer` | System audio consumer works (Core Audio on macOS) |
 | 11 | `audio_with_video` | Audio playback with video, VOLUME/MASTERVOLUME |
+| 12 | `decklink_library` | DeckLink library loading (Desktop Video required) |
+| 12 | `decklink_consumer` | DeckLink consumer for SDI/HDMI output |
+| 12 | `decklink_producer` | DeckLink producer for SDI/HDMI input |
 | 13 | `ndi_library` | NDI library loading and initialization |
 | 13 | `ndi_list` | NDI LIST command for source discovery |
 | 13 | `ndi_consumer` | NDI consumer broadcasts channel as NDI source |

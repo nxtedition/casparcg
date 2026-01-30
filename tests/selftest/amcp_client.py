@@ -353,6 +353,59 @@ class AMCPClient:
         """Invoke JavaScript method on CG template."""
         return self.send(f'CG {channel}-{layer} INVOKE {cg_layer} {method}')
 
+    # DeckLink-related commands
+
+    def play_decklink(self, channel: int, layer: int, device: int,
+                      format: str = "", filter_str: str = "",
+                      freeze_on_lost: bool = False, hdr: bool = False) -> Tuple[int, str]:
+        """Play DeckLink input source on channel/layer.
+
+        Args:
+            channel: Channel number
+            layer: Layer number
+            device: DeckLink device number (1-based)
+            format: Optional video format (e.g., "1080i5000")
+            filter_str: Optional video filter string
+            freeze_on_lost: Freeze on signal loss
+            hdr: Enable 10-bit HDR mode
+        """
+        cmd = f"PLAY {channel}-{layer} DECKLINK {device}"
+        if format:
+            cmd += f" FORMAT {format}"
+        if filter_str:
+            cmd += f" FILTER {filter_str}"
+        if freeze_on_lost:
+            cmd += " FREEZE_ON_LOST"
+        if hdr:
+            cmd += " 10BIT"
+        return self.send(cmd)
+
+    def add_decklink_consumer(self, channel: int, device: int,
+                              embedded_audio: bool = True,
+                              key_only: bool = False,
+                              keyer: str = "") -> Tuple[int, str]:
+        """Add DeckLink output consumer to channel.
+
+        Args:
+            channel: Channel number
+            device: DeckLink device number (1-based)
+            embedded_audio: Enable embedded audio output
+            key_only: Output key (alpha) signal only
+            keyer: Keyer mode ("internal", "external", or "")
+        """
+        args = ""
+        if embedded_audio:
+            args += " EMBEDDED_AUDIO"
+        if key_only:
+            args += " KEY_ONLY"
+        if keyer:
+            args += f" KEYER {keyer}"
+        return self.add_consumer(channel, f"DECKLINK {device}", args.strip())
+
+    def remove_decklink_consumer(self, channel: int, device: int) -> Tuple[int, str]:
+        """Remove DeckLink consumer from channel."""
+        return self.remove_consumer(channel, f"DECKLINK {device}")
+
 
 class AMCPTestHelper:
     """Helper class for running AMCP-based tests."""

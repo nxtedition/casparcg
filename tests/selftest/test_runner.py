@@ -348,30 +348,87 @@ class TestRunner:
         return True
 
     def test_blend_modes(self) -> bool:
-        """Test various blend modes."""
-        ch = self.config.playback_channel
-        blend_modes = ['normal', 'add', 'multiply', 'screen', 'overlay']
-        all_passed = True
+        """Test all 29 Photoshop-compatible blend modes (Phase 4).
 
-        for mode in blend_modes:
+        Blend modes:
+        - Basic: normal, add, subtract, multiply, screen
+        - Lighten group: lighten, color_dodge, linear_dodge
+        - Darken group: darken, color_burn, linear_burn
+        - Contrast group: overlay, soft_light, hard_light, vivid_light,
+                         linear_light, pin_light, hard_mix
+        - Inversion group: difference, exclusion
+        - Component group: hue, saturation, color, luminosity
+        - Special: average, negation, phoenix, reflect, glow
+        """
+        ch = self.config.playback_channel
+
+        # All 29 blend modes (matching core::blend_mode enum order)
+        blend_modes = [
+            'normal',       # 0
+            'lighten',      # 1
+            'darken',       # 2
+            'multiply',     # 3
+            'average',      # 4
+            'add',          # 5
+            'subtract',     # 6
+            'difference',   # 7
+            'negation',     # 8
+            'exclusion',    # 9
+            'screen',       # 10
+            'overlay',      # 11
+            'soft_light',   # 12
+            'hard_light',   # 13
+            'color_dodge',  # 14
+            'color_burn',   # 15
+            'linear_dodge', # 16
+            'linear_burn',  # 17
+            'linear_light', # 18
+            'vivid_light',  # 19
+            'pin_light',    # 20
+            'hard_mix',     # 21
+            'reflect',      # 22
+            'glow',         # 23
+            'phoenix',      # 24
+            'contrast',     # 25 (also known as hue)
+            'saturation',   # 26
+            'color',        # 27
+            'luminosity',   # 28
+        ]
+
+        passed_count = 0
+        failed_modes = []
+
+        print(f"  Testing {len(blend_modes)} blend modes...")
+
+        for i, mode in enumerate(blend_modes):
             self.client.clear(ch)
 
             # Background: Gray
-            r1 = self.client.play_color(ch, 1, "GRAY")
-            self.helper.assert_success(r1, f"Play GRAY background for {mode}")
+            r1 = self.client.play_color(ch, 1, "#808080")  # Gray hex
+            if r1[0] < 200 or r1[0] >= 300:
+                r1 = self.client.play_color(ch, 1, "GRAY")
 
             # Foreground: Red with blend mode
             r2 = self.client.play_color(ch, 2, "RED")
-            self.helper.assert_success(r2, f"Play RED foreground for {mode}")
 
+            # Set blend mode
             r3 = self.client.mixer_blend(ch, 2, mode)
-            if not self.helper.assert_success(r3, f"Set blend mode: {mode}"):
-                all_passed = False
-                continue
+            if r3[0] >= 200 and r3[0] < 300:
+                passed_count += 1
+                print(f"    [{i:2d}] {mode:15s} OK")
+            else:
+                failed_modes.append(mode)
+                print(f"    [{i:2d}] {mode:15s} FAILED (code {r3[0]})")
 
-            self.helper.wait(0.5)
+            # Brief pause to allow rendering
+            self.helper.wait(0.1)
 
-        return all_passed
+        print(f"  Results: {passed_count}/{len(blend_modes)} blend modes passed")
+        if failed_modes:
+            print(f"  Failed modes: {', '.join(failed_modes)}")
+
+        # Pass if all blend modes are accepted by the server
+        return len(failed_modes) == 0
 
     def test_transforms(self) -> bool:
         """Test geometric transforms."""

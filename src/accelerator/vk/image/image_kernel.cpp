@@ -25,6 +25,7 @@
 
 #include "../util/buffer.h"
 #include "../util/device.h"
+#include "../util/pipeline.h"
 #include "../util/texture.h"
 #include "../util/vk_check.h"
 
@@ -76,6 +77,9 @@ struct image_kernel::impl
     VkCommandPool    command_pool_    = VK_NULL_HANDLE;
     VkQueue          queue_           = VK_NULL_HANDLE;
 
+    // Phase 4: GPU blend pipeline
+    std::unique_ptr<blend_pipeline> blend_pipeline_;
+
     explicit impl(const spl::shared_ptr<device>& dev)
         : device_(dev)
     {
@@ -85,7 +89,11 @@ struct image_kernel::impl
         command_pool_    = static_cast<VkCommandPool>(handles.command_pool);
         queue_           = static_cast<VkQueue>(handles.queue);
 
-        CASPAR_LOG(info) << L"[vk::image_kernel] Vulkan rendering kernel initialized (CPU compositing path)";
+        // Initialize GPU blend pipeline
+        blend_pipeline_ = std::make_unique<blend_pipeline>(
+            handles.device, handles.physical_device, handles.command_pool, handles.queue);
+
+        CASPAR_LOG(info) << L"[vk::image_kernel] Vulkan rendering kernel initialized (GPU blend modes - Phase 4)";
     }
 
     ~impl() {}
@@ -119,15 +127,42 @@ struct image_kernel::impl
             return;
         }
 
-        // Phase 3: Simple CPU-based compositing
-        // This copies source texture data to target with alpha blending
-        // Full GPU rendering with shaders will be implemented in Phase 4
-
+        // Phase 4: GPU-based compositing with blend modes
         auto src_tex = params.textures[0];
         auto dst_tex = params.background;
 
-        // For Phase 3, we do a simple full-frame copy with alpha blending
-        // Create staging buffers
+        // Only support BGRA format with GPU pipeline for now
+        // Other formats still use CPU path (will be addressed in Phase 7)
+        if (params.pix_desc.format == core::pixel_format::bgra && src_tex->stride() == 4) {
+            // Set up push constants for the compute shader
+            blend_push_constants push_constants{};
+            push_constants.blend_mode    = static_cast<int32_t>(params.blend_mode);
+            push_constants.keyer         = static_cast<int32_t>(params.keyer);
+            push_constants.opacity       = static_cast<float>(transform.opacity);
+            push_constants.fill_scale_x  = static_cast<float>(transform.fill_scale[0]);
+            push_constants.fill_scale_y  = static_cast<float>(transform.fill_scale[1]);
+            push_constants.fill_trans_x  = static_cast<float>(transform.fill_translation[0]);
+            push_constants.fill_trans_y  = static_cast<float>(transform.fill_translation[1]);
+            push_constants.src_width     = src_tex->width();
+            push_constants.src_height    = src_tex->height();
+            push_constants.dst_width     = dst_tex->width();
+            push_constants.dst_height    = dst_tex->height();
+
+            // Execute GPU blend
+            blend_pipeline_->execute(*src_tex, *dst_tex, push_constants);
+        } else {
+            // Fallback to CPU compositing for non-BGRA formats
+            draw_cpu_fallback(params);
+        }
+    }
+
+    // CPU fallback for non-BGRA formats (will be replaced in Phase 7)
+    void draw_cpu_fallback(draw_params& params)
+    {
+        auto src_tex = params.textures[0];
+        auto dst_tex = params.background;
+        auto& transform = params.transform;
+
         auto src_size = src_tex->size();
         auto dst_size = dst_tex->size();
 
@@ -135,30 +170,24 @@ struct image_kernel::impl
         auto src_buffer = std::make_shared<buffer>(vk_device_, physical_device_, src_size, false);
         auto dst_buffer = std::make_shared<buffer>(vk_device_, physical_device_, dst_size, true);
 
-        // Read source texture
+        // Read textures
         src_tex->copy_to(*src_buffer);
-
-        // Read destination texture
         dst_tex->copy_to(*dst_buffer);
 
-        // Get pointers to data
         auto src_data = reinterpret_cast<const uint8_t*>(src_buffer->data());
         auto dst_data = reinterpret_cast<uint8_t*>(dst_buffer->data());
 
-        // Determine the region to composite
         int src_width  = src_tex->width();
         int src_height = src_tex->height();
         int src_stride = src_tex->stride();
         int dst_width  = dst_tex->width();
         int dst_height = dst_tex->height();
 
-        // Calculate destination region from transforms
         int dst_x = static_cast<int>(transform.fill_translation[0] * dst_width);
         int dst_y = static_cast<int>(transform.fill_translation[1] * dst_height);
         int dst_w = static_cast<int>(transform.fill_scale[0] * dst_width);
         int dst_h = static_cast<int>(transform.fill_scale[1] * dst_height);
 
-        // Clamp to valid ranges
         dst_x = std::max(0, std::min(dst_x, dst_width - 1));
         dst_y = std::max(0, std::min(dst_y, dst_height - 1));
         dst_w = std::max(1, std::min(dst_w, dst_width - dst_x));
@@ -166,47 +195,7 @@ struct image_kernel::impl
 
         float opacity = static_cast<float>(transform.opacity);
 
-        // Composite source onto destination
-        // Handle different pixel formats
-        if (params.pix_desc.format == core::pixel_format::bgra && src_stride == 4) {
-            // BGRA format - standard case
-            for (int y = 0; y < dst_h && y < src_height; ++y) {
-                for (int x = 0; x < dst_w && x < src_width; ++x) {
-                    int src_idx = (y * src_width + x) * 4;
-                    int dst_idx = ((dst_y + y) * dst_width + (dst_x + x)) * 4;
-
-                    if (dst_idx + 3 >= dst_size || src_idx + 3 >= src_size)
-                        continue;
-
-                    float sb = src_data[src_idx + 0] / 255.0f;
-                    float sg = src_data[src_idx + 1] / 255.0f;
-                    float sr = src_data[src_idx + 2] / 255.0f;
-                    float sa = src_data[src_idx + 3] / 255.0f * opacity;
-
-                    float db = dst_data[dst_idx + 0] / 255.0f;
-                    float dg = dst_data[dst_idx + 1] / 255.0f;
-                    float dr = dst_data[dst_idx + 2] / 255.0f;
-                    float da = dst_data[dst_idx + 3] / 255.0f;
-
-                    // Standard alpha compositing (over operation)
-                    float out_a = sa + da * (1.0f - sa);
-                    float out_r, out_g, out_b;
-
-                    if (out_a > 0.0f) {
-                        out_r = (sr * sa + dr * da * (1.0f - sa)) / out_a;
-                        out_g = (sg * sa + dg * da * (1.0f - sa)) / out_a;
-                        out_b = (sb * sa + db * da * (1.0f - sa)) / out_a;
-                    } else {
-                        out_r = out_g = out_b = 0.0f;
-                    }
-
-                    dst_data[dst_idx + 0] = static_cast<uint8_t>(std::min(255.0f, out_b * 255.0f));
-                    dst_data[dst_idx + 1] = static_cast<uint8_t>(std::min(255.0f, out_g * 255.0f));
-                    dst_data[dst_idx + 2] = static_cast<uint8_t>(std::min(255.0f, out_r * 255.0f));
-                    dst_data[dst_idx + 3] = static_cast<uint8_t>(std::min(255.0f, out_a * 255.0f));
-                }
-            }
-        } else if (params.pix_desc.format == core::pixel_format::gray && src_stride == 1) {
+        if (params.pix_desc.format == core::pixel_format::gray && src_stride == 1) {
             // Grayscale to BGRA - for key textures
             for (int y = 0; y < dst_h && y < src_height; ++y) {
                 for (int x = 0; x < dst_w && x < src_width; ++x) {
@@ -218,7 +207,6 @@ struct image_kernel::impl
 
                     float gray = src_data[src_idx] / 255.0f * opacity;
 
-                    // For grayscale, just write to all channels
                     dst_data[dst_idx + 0] = static_cast<uint8_t>(gray * 255.0f);
                     dst_data[dst_idx + 1] = static_cast<uint8_t>(gray * 255.0f);
                     dst_data[dst_idx + 2] = static_cast<uint8_t>(gray * 255.0f);
@@ -228,7 +216,6 @@ struct image_kernel::impl
         }
         // TODO: Handle other pixel formats (YCbCr, etc.) in Phase 7
 
-        // Write back to destination texture
         dst_tex->copy_from(*dst_buffer);
     }
 };

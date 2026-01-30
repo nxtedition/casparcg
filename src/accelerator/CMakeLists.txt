@@ -3,13 +3,14 @@ project (accelerator)
 
 # Platform-specific source selection
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    # macOS: Use Vulkan backend (Phase 3 - Basic Rendering)
+    # macOS: Use Vulkan backend (Phase 4 - Blend Modes)
     set(SOURCES
         vk/image/image_kernel.cpp
         vk/image/image_mixer.cpp
         vk/util/buffer.cpp
         vk/util/device.cpp
         vk/util/texture.cpp
+        vk/util/pipeline.cpp
         accelerator_vk.cpp
     )
     set(HEADERS
@@ -18,11 +19,33 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         vk/util/buffer.h
         vk/util/device.h
         vk/util/texture.h
+        vk/util/pipeline.h
         vk/util/vk_check.h
         vk/StdAfx.h
+        vk_blend_shader.h
         accelerator.h
         StdAfx.h
     )
+
+    # Find glslangValidator for SPIR-V compilation
+    find_program(GLSLANG_VALIDATOR glslangValidator HINTS $ENV{VULKAN_SDK}/bin)
+    if(NOT GLSLANG_VALIDATOR)
+        message(FATAL_ERROR "glslangValidator not found! Please install the Vulkan SDK.")
+    endif()
+
+    # Compile compute shader to SPIR-V
+    set(BLEND_SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/vk/image/shaders/blend.comp)
+    set(BLEND_SHADER_SPV ${CMAKE_CURRENT_BINARY_DIR}/blend.comp.spv)
+
+    add_custom_command(
+        OUTPUT ${BLEND_SHADER_SPV}
+        COMMAND ${GLSLANG_VALIDATOR} -V ${BLEND_SHADER_SRC} -o ${BLEND_SHADER_SPV}
+        DEPENDS ${BLEND_SHADER_SRC}
+        COMMENT "Compiling blend.comp to SPIR-V"
+    )
+
+    # Convert SPIR-V to C header using bin2c
+    bin2c_spv("${BLEND_SHADER_SPV}" "vk_blend_shader.h" "caspar::accelerator::vk" "blend_shader_spv")
 else()
     # Windows/Linux: Use OpenGL backend
     set(SOURCES

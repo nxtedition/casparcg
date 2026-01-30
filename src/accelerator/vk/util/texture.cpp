@@ -95,7 +95,8 @@ struct texture::impl
         imageInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         imageInfo.usage         = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+                          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                          VK_IMAGE_USAGE_STORAGE_BIT; // Phase 4: Enable compute shader access
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageInfo.samples     = VK_SAMPLE_COUNT_1_BIT;
 
@@ -308,6 +309,17 @@ struct texture::impl
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
             sourceStage           = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage      = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        // Phase 4: Compute shader layout transitions
+        } else if (newLayout == VK_IMAGE_LAYOUT_GENERAL) {
+            barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         } else {
             // General fallback
             barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
@@ -400,6 +412,30 @@ struct texture::impl
 
         end_single_time_commands(cmdBuffer);
     }
+
+    // Phase 4: Transition to GENERAL layout for compute shader access
+    void transition_to_general()
+    {
+        if (current_layout_ == VK_IMAGE_LAYOUT_GENERAL)
+            return;
+
+        auto cmdBuffer = begin_single_time_commands();
+        transition_image_layout(cmdBuffer, current_layout_, VK_IMAGE_LAYOUT_GENERAL);
+        end_single_time_commands(cmdBuffer);
+    }
+
+    // Phase 4: Transition back to shader read optimal
+    void transition_to_shader_read()
+    {
+        if (current_layout_ == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            return;
+
+        auto cmdBuffer = begin_single_time_commands();
+        transition_image_layout(cmdBuffer, current_layout_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        end_single_time_commands(cmdBuffer);
+    }
+
+    VkFormat get_format() const { return format_; }
 };
 
 texture::texture(void*             device,
@@ -438,5 +474,8 @@ int               texture::height() const { return impl_->height_; }
 int               texture::stride() const { return impl_->stride_; }
 common::bit_depth texture::depth() const { return impl_->depth_; }
 int               texture::size() const { return impl_->size_; }
+int               texture::format() const { return static_cast<int>(impl_->get_format()); }
+void              texture::transition_to_general() { impl_->transition_to_general(); }
+void              texture::transition_to_shader_read() { impl_->transition_to_shader_read(); }
 
 }}} // namespace caspar::accelerator::vk

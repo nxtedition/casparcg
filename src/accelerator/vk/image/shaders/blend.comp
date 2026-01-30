@@ -1,0 +1,332 @@
+/*
+ * Copyright (c) 2011 Sveriges Television AB <info@casparcg.com>
+ *
+ * This file is part of CasparCG (www.casparcg.com).
+ *
+ * CasparCG is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * CasparCG is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with CasparCG. If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Author: CasparCG Team
+ *
+ * Vulkan compute shader for image compositing with blend modes.
+ * Ported from the OpenGL fragment shader (shader.frag).
+ */
+
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Input/output images
+layout(binding = 0, rgba8) uniform readonly image2D src_image;
+layout(binding = 1, rgba8) uniform image2D dst_image;
+
+// Push constants for parameters
+layout(push_constant) uniform PushConstants {
+    int   blend_mode;      // 0-28 blend mode index
+    int   keyer;           // 0=linear, 1=additive
+    float opacity;         // 0.0-1.0
+    float fill_scale_x;
+    float fill_scale_y;
+    float fill_trans_x;
+    float fill_trans_y;
+    int   src_width;
+    int   src_height;
+    int   dst_width;
+    int   dst_height;
+} params;
+
+// ============================================================================
+// HSL Color Space Conversion Functions
+// ============================================================================
+
+vec3 RGBToHSL(vec3 color)
+{
+    vec3 hsl;
+
+    float fmin = min(min(color.r, color.g), color.b);
+    float fmax = max(max(color.r, color.g), color.b);
+    float delta = fmax - fmin;
+
+    hsl.z = (fmax + fmin) / 2.0;
+
+    if (delta == 0.0)
+    {
+        hsl.x = 0.0;
+        hsl.y = 0.0;
+    }
+    else
+    {
+        if (hsl.z < 0.5)
+            hsl.y = delta / (fmax + fmin);
+        else
+            hsl.y = delta / (2.0 - fmax - fmin);
+
+        float deltaR = (((fmax - color.r) / 6.0) + (delta / 2.0)) / delta;
+        float deltaG = (((fmax - color.g) / 6.0) + (delta / 2.0)) / delta;
+        float deltaB = (((fmax - color.b) / 6.0) + (delta / 2.0)) / delta;
+
+        if (color.r == fmax)
+            hsl.x = deltaB - deltaG;
+        else if (color.g == fmax)
+            hsl.x = (1.0 / 3.0) + deltaR - deltaB;
+        else if (color.b == fmax)
+            hsl.x = (2.0 / 3.0) + deltaG - deltaR;
+
+        if (hsl.x < 0.0)
+            hsl.x += 1.0;
+        else if (hsl.x > 1.0)
+            hsl.x -= 1.0;
+    }
+
+    return hsl;
+}
+
+float HueToRGB(float f1, float f2, float hue)
+{
+    if (hue < 0.0)
+        hue += 1.0;
+    else if (hue > 1.0)
+        hue -= 1.0;
+    float res;
+    if ((6.0 * hue) < 1.0)
+        res = f1 + (f2 - f1) * 6.0 * hue;
+    else if ((2.0 * hue) < 1.0)
+        res = f2;
+    else if ((3.0 * hue) < 2.0)
+        res = f1 + (f2 - f1) * ((2.0 / 3.0) - hue) * 6.0;
+    else
+        res = f1;
+    return res;
+}
+
+vec3 HSLToRGB(vec3 hsl)
+{
+    vec3 rgb;
+
+    if (hsl.y == 0.0)
+        rgb = vec3(hsl.z);
+    else
+    {
+        float f2;
+
+        if (hsl.z < 0.5)
+            f2 = hsl.z * (1.0 + hsl.y);
+        else
+            f2 = (hsl.z + hsl.y) - (hsl.y * hsl.z);
+
+        float f1 = 2.0 * hsl.z - f2;
+
+        rgb.r = HueToRGB(f1, f2, hsl.x + (1.0/3.0));
+        rgb.g = HueToRGB(f1, f2, hsl.x);
+        rgb.b = HueToRGB(f1, f2, hsl.x - (1.0/3.0));
+    }
+
+    return rgb;
+}
+
+// ============================================================================
+// Blend Mode Functions (per-channel float operations)
+// ============================================================================
+
+float BlendAddf(float base, float blend)        { return min(base + blend, 1.0); }
+float BlendSubstractf(float base, float blend)  { return max(base + blend - 1.0, 0.0); }
+float BlendLightenf(float base, float blend)    { return max(blend, base); }
+float BlendDarkenf(float base, float blend)     { return min(blend, base); }
+float BlendScreenf(float base, float blend)     { return 1.0 - ((1.0 - base) * (1.0 - blend)); }
+float BlendOverlayf(float base, float blend)    { return base < 0.5 ? (2.0 * base * blend) : (1.0 - 2.0 * (1.0 - base) * (1.0 - blend)); }
+float BlendSoftLightf(float base, float blend)  { return (blend < 0.5) ? (2.0 * base * blend + base * base * (1.0 - 2.0 * blend)) : (sqrt(base) * (2.0 * blend - 1.0) + 2.0 * base * (1.0 - blend)); }
+float BlendColorDodgef(float base, float blend) { return (blend == 1.0) ? blend : min(base / (1.0 - blend), 1.0); }
+float BlendColorBurnf(float base, float blend)  { return (blend == 0.0) ? blend : max((1.0 - ((1.0 - base) / blend)), 0.0); }
+float BlendLinearDodgef(float base, float blend) { return BlendAddf(base, blend); }
+float BlendLinearBurnf(float base, float blend)  { return BlendSubstractf(base, blend); }
+float BlendLinearLightf(float base, float blend) { return blend < 0.5 ? BlendLinearBurnf(base, (2.0 * blend)) : BlendLinearDodgef(base, (2.0 * (blend - 0.5))); }
+float BlendVividLightf(float base, float blend)  { return (blend < 0.5) ? BlendColorBurnf(base, (2.0 * blend)) : BlendColorDodgef(base, (2.0 * (blend - 0.5))); }
+float BlendPinLightf(float base, float blend)    { return (blend < 0.5) ? BlendDarkenf(base, (2.0 * blend)) : BlendLightenf(base, (2.0 * (blend - 0.5))); }
+float BlendHardMixf(float base, float blend)     { return (BlendVividLightf(base, blend) < 0.5) ? 0.0 : 1.0; }
+float BlendReflectf(float base, float blend)     { return (blend == 1.0) ? blend : min(base * base / (1.0 - blend), 1.0); }
+
+// ============================================================================
+// Blend Mode Functions (vec3 operations)
+// ============================================================================
+
+vec3 BlendNormal(vec3 base, vec3 blend)      { return blend; }
+vec3 BlendLighten(vec3 base, vec3 blend)     { return vec3(BlendLightenf(base.r, blend.r), BlendLightenf(base.g, blend.g), BlendLightenf(base.b, blend.b)); }
+vec3 BlendDarken(vec3 base, vec3 blend)      { return vec3(BlendDarkenf(base.r, blend.r), BlendDarkenf(base.g, blend.g), BlendDarkenf(base.b, blend.b)); }
+vec3 BlendMultiply(vec3 base, vec3 blend)    { return base * blend; }
+vec3 BlendAverage(vec3 base, vec3 blend)     { return (base + blend) / 2.0; }
+vec3 BlendAdd(vec3 base, vec3 blend)         { return min(base + blend, vec3(1.0)); }
+vec3 BlendSubstract(vec3 base, vec3 blend)   { return max(base + blend - vec3(1.0), vec3(0.0)); }
+vec3 BlendDifference(vec3 base, vec3 blend)  { return abs(base - blend); }
+vec3 BlendNegation(vec3 base, vec3 blend)    { return vec3(1.0) - abs(vec3(1.0) - base - blend); }
+vec3 BlendExclusion(vec3 base, vec3 blend)   { return base + blend - 2.0 * base * blend; }
+vec3 BlendScreen(vec3 base, vec3 blend)      { return vec3(BlendScreenf(base.r, blend.r), BlendScreenf(base.g, blend.g), BlendScreenf(base.b, blend.b)); }
+vec3 BlendOverlay(vec3 base, vec3 blend)     { return vec3(BlendOverlayf(base.r, blend.r), BlendOverlayf(base.g, blend.g), BlendOverlayf(base.b, blend.b)); }
+vec3 BlendSoftLight(vec3 base, vec3 blend)   { return vec3(BlendSoftLightf(base.r, blend.r), BlendSoftLightf(base.g, blend.g), BlendSoftLightf(base.b, blend.b)); }
+vec3 BlendHardLight(vec3 base, vec3 blend)   { return BlendOverlay(blend, base); }
+vec3 BlendColorDodge(vec3 base, vec3 blend)  { return vec3(BlendColorDodgef(base.r, blend.r), BlendColorDodgef(base.g, blend.g), BlendColorDodgef(base.b, blend.b)); }
+vec3 BlendColorBurn(vec3 base, vec3 blend)   { return vec3(BlendColorBurnf(base.r, blend.r), BlendColorBurnf(base.g, blend.g), BlendColorBurnf(base.b, blend.b)); }
+vec3 BlendLinearDodge(vec3 base, vec3 blend) { return BlendAdd(base, blend); }
+vec3 BlendLinearBurn(vec3 base, vec3 blend)  { return BlendSubstract(base, blend); }
+vec3 BlendLinearLight(vec3 base, vec3 blend) { return vec3(BlendLinearLightf(base.r, blend.r), BlendLinearLightf(base.g, blend.g), BlendLinearLightf(base.b, blend.b)); }
+vec3 BlendVividLight(vec3 base, vec3 blend)  { return vec3(BlendVividLightf(base.r, blend.r), BlendVividLightf(base.g, blend.g), BlendVividLightf(base.b, blend.b)); }
+vec3 BlendPinLight(vec3 base, vec3 blend)    { return vec3(BlendPinLightf(base.r, blend.r), BlendPinLightf(base.g, blend.g), BlendPinLightf(base.b, blend.b)); }
+vec3 BlendHardMix(vec3 base, vec3 blend)     { return vec3(BlendHardMixf(base.r, blend.r), BlendHardMixf(base.g, blend.g), BlendHardMixf(base.b, blend.b)); }
+vec3 BlendReflect(vec3 base, vec3 blend)     { return vec3(BlendReflectf(base.r, blend.r), BlendReflectf(base.g, blend.g), BlendReflectf(base.b, blend.b)); }
+vec3 BlendGlow(vec3 base, vec3 blend)        { return BlendReflect(blend, base); }
+vec3 BlendPhoenix(vec3 base, vec3 blend)     { return min(base, blend) - max(base, blend) + vec3(1.0); }
+
+// HSL-based blend modes
+vec3 BlendHue(vec3 base, vec3 blend)
+{
+    vec3 baseHSL = RGBToHSL(base);
+    return HSLToRGB(vec3(RGBToHSL(blend).r, baseHSL.g, baseHSL.b));
+}
+
+vec3 BlendSaturation(vec3 base, vec3 blend)
+{
+    vec3 baseHSL = RGBToHSL(base);
+    return HSLToRGB(vec3(baseHSL.r, RGBToHSL(blend).g, baseHSL.b));
+}
+
+vec3 BlendColor(vec3 base, vec3 blend)
+{
+    vec3 blendHSL = RGBToHSL(blend);
+    return HSLToRGB(vec3(blendHSL.r, blendHSL.g, RGBToHSL(base).b));
+}
+
+vec3 BlendLuminosity(vec3 base, vec3 blend)
+{
+    vec3 baseHSL = RGBToHSL(base);
+    return HSLToRGB(vec3(baseHSL.r, baseHSL.g, RGBToHSL(blend).b));
+}
+
+// ============================================================================
+// Main Blend Mode Selection
+// ============================================================================
+
+vec3 get_blend_color(vec3 back, vec3 fore)
+{
+    switch(params.blend_mode)
+    {
+    case  0: return BlendNormal(back, fore);
+    case  1: return BlendLighten(back, fore);
+    case  2: return BlendDarken(back, fore);
+    case  3: return BlendMultiply(back, fore);
+    case  4: return BlendAverage(back, fore);
+    case  5: return BlendAdd(back, fore);
+    case  6: return BlendSubstract(back, fore);
+    case  7: return BlendDifference(back, fore);
+    case  8: return BlendNegation(back, fore);
+    case  9: return BlendExclusion(back, fore);
+    case 10: return BlendScreen(back, fore);
+    case 11: return BlendOverlay(back, fore);
+    case 12: return BlendSoftLight(back, fore);
+    case 13: return BlendHardLight(back, fore);
+    case 14: return BlendColorDodge(back, fore);
+    case 15: return BlendColorBurn(back, fore);
+    case 16: return BlendLinearDodge(back, fore);
+    case 17: return BlendLinearBurn(back, fore);
+    case 18: return BlendLinearLight(back, fore);
+    case 19: return BlendVividLight(back, fore);
+    case 20: return BlendPinLight(back, fore);
+    case 21: return BlendHardMix(back, fore);
+    case 22: return BlendReflect(back, fore);
+    case 23: return BlendGlow(back, fore);
+    case 24: return BlendPhoenix(back, fore);
+    case 25: return BlendHue(back, fore);
+    case 26: return BlendSaturation(back, fore);
+    case 27: return BlendColor(back, fore);
+    case 28: return BlendLuminosity(back, fore);
+    }
+    return BlendNormal(back, fore);
+}
+
+// ============================================================================
+// Alpha Compositing with Blend Mode
+// ============================================================================
+
+vec4 blend_with_alpha(vec4 fore, vec4 back)
+{
+    // Apply blend mode to non-premultiplied colors
+    if (params.blend_mode != 0)
+    {
+        // Unpremultiply
+        vec3 back_rgb = back.a > 0.0001 ? back.rgb / back.a : vec3(0.0);
+        vec3 fore_rgb = fore.a > 0.0001 ? fore.rgb / fore.a : vec3(0.0);
+
+        // Apply blend mode
+        fore.rgb = get_blend_color(back_rgb, fore_rgb) * fore.a;
+    }
+
+    // Apply keyer mode
+    switch (params.keyer)
+    {
+        case 1:  return fore + back; // additive
+        default: return fore + (1.0 - fore.a) * back; // linear (over)
+    }
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+void main()
+{
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+
+    // Check if within destination bounds
+    if (gid.x >= params.dst_width || gid.y >= params.dst_height)
+        return;
+
+    // Calculate source coordinates based on transform
+    // dest_pos = src_pos * scale + translation
+    // src_pos = (dest_pos - translation) / scale
+    float dst_x_norm = float(gid.x) / float(params.dst_width);
+    float dst_y_norm = float(gid.y) / float(params.dst_height);
+
+    float src_x_norm = (dst_x_norm - params.fill_trans_x) / params.fill_scale_x;
+    float src_y_norm = (dst_y_norm - params.fill_trans_y) / params.fill_scale_y;
+
+    // Read destination pixel
+    vec4 dst_color = imageLoad(dst_image, gid);
+
+    // Check if source coordinate is in valid range
+    if (src_x_norm < 0.0 || src_x_norm > 1.0 || src_y_norm < 0.0 || src_y_norm > 1.0)
+    {
+        // Outside source bounds, keep destination as-is
+        return;
+    }
+
+    // Calculate source pixel coordinates
+    int src_x = int(src_x_norm * float(params.src_width));
+    int src_y = int(src_y_norm * float(params.src_height));
+
+    // Clamp to valid range
+    src_x = clamp(src_x, 0, params.src_width - 1);
+    src_y = clamp(src_y, 0, params.src_height - 1);
+
+    // Read source pixel
+    vec4 src_color = imageLoad(src_image, ivec2(src_x, src_y));
+
+    // Apply opacity
+    src_color.a *= params.opacity;
+    src_color.rgb *= params.opacity; // Premultiplied alpha
+
+    // Skip fully transparent pixels
+    if (src_color.a < 0.0001)
+        return;
+
+    // Blend and write result
+    vec4 result = blend_with_alpha(src_color, dst_color);
+    imageStore(dst_image, gid, result);
+}

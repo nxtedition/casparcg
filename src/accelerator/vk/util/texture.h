@@ -73,6 +73,13 @@ class texture final
     int               stride() const;
     common::bit_depth depth() const;
     int               size() const;
+    int               format() const;  // VkFormat as int
+
+    // Phase 4: Compute shader support
+    // Transition to GENERAL layout for compute read/write
+    void transition_to_general();
+    // Transition to SHADER_READ_ONLY_OPTIMAL after compute
+    void transition_to_shader_read();
 
   private:
     struct impl;

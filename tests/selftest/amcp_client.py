@@ -291,6 +291,68 @@ class AMCPClient:
         """Remove NDI consumer from channel."""
         return self.remove_consumer(channel, "NDI")
 
+    # HTML/CG related commands
+
+    def play_html(self, channel: int, layer: int, url_or_template: str) -> Tuple[int, str]:
+        """Play HTML template on channel/layer.
+
+        Args:
+            channel: Channel number
+            layer: Layer number
+            url_or_template: URL or template name (e.g., "http://example.com" or "template")
+        """
+        return self.send(f"PLAY {channel}-{layer} [HTML] {url_or_template}")
+
+    def call(self, channel: int, layer: int, javascript: str) -> Tuple[int, str]:
+        """Execute JavaScript on HTML producer.
+
+        Args:
+            channel: Channel number
+            layer: Layer number
+            javascript: JavaScript code to execute
+        """
+        return self.send(f'CALL {channel}-{layer} "{javascript}"')
+
+    def cg_add(self, channel: int, layer: int, cg_layer: int, template: str,
+               play_on_load: int = 1, data: str = "") -> Tuple[int, str]:
+        """Add CG template.
+
+        Args:
+            channel: Channel number
+            layer: Layer number
+            cg_layer: CG layer (0-based)
+            template: Template name
+            play_on_load: 1 to auto-play, 0 to pause
+            data: Optional XML/JSON data
+        """
+        if data:
+            return self.send(f'CG {channel}-{layer} ADD {cg_layer} {template} {play_on_load} "{data}"')
+        return self.send(f'CG {channel}-{layer} ADD {cg_layer} {template} {play_on_load}')
+
+    def cg_play(self, channel: int, layer: int, cg_layer: int) -> Tuple[int, str]:
+        """Play CG template."""
+        return self.send(f'CG {channel}-{layer} PLAY {cg_layer}')
+
+    def cg_stop(self, channel: int, layer: int, cg_layer: int) -> Tuple[int, str]:
+        """Stop CG template."""
+        return self.send(f'CG {channel}-{layer} STOP {cg_layer}')
+
+    def cg_next(self, channel: int, layer: int, cg_layer: int) -> Tuple[int, str]:
+        """Advance CG template to next state."""
+        return self.send(f'CG {channel}-{layer} NEXT {cg_layer}')
+
+    def cg_remove(self, channel: int, layer: int, cg_layer: int) -> Tuple[int, str]:
+        """Remove CG template."""
+        return self.send(f'CG {channel}-{layer} REMOVE {cg_layer}')
+
+    def cg_update(self, channel: int, layer: int, cg_layer: int, data: str) -> Tuple[int, str]:
+        """Update CG template with data."""
+        return self.send(f'CG {channel}-{layer} UPDATE {cg_layer} "{data}"')
+
+    def cg_invoke(self, channel: int, layer: int, cg_layer: int, method: str) -> Tuple[int, str]:
+        """Invoke JavaScript method on CG template."""
+        return self.send(f'CG {channel}-{layer} INVOKE {cg_layer} {method}')
+
 
 class AMCPTestHelper:
     """Helper class for running AMCP-based tests."""

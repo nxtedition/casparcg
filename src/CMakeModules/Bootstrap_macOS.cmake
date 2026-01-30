@@ -12,7 +12,9 @@ if(POLICY CMP0167)
 endif()
 
 # macOS-specific cache options
-set(ENABLE_HTML OFF CACHE BOOL "Enable CEF and HTML producer (not yet supported on macOS)")
+# CEF/HTML disabled on macOS - requires helper applications that aren't included in minimal distribution
+# Full CEF support requires building helper apps and proper app bundle structure
+set(ENABLE_HTML OFF CACHE BOOL "Enable CEF and HTML producer")
 set(USE_STATIC_BOOST OFF CACHE BOOL "Use shared library version of Boost")
 set(CASPARCG_BINARY_NAME "casparcg" CACHE STRING "Custom name of the binary to build")
 set(ENABLE_AVX2 ON CACHE BOOL "Enable the AVX2 instruction set (requires a CPU that supports it)")
@@ -131,11 +133,71 @@ target_link_libraries(Apple::Frameworks INTERFACE
 )
 
 # ============================================================================
-# CEF (Chromium Embedded Framework) - Not yet supported on macOS
+# CEF (Chromium Embedded Framework)
 # ============================================================================
 if (ENABLE_HTML)
-    message(WARNING "HTML module (CEF) is not yet supported on macOS. Disabling.")
-    set(ENABLE_HTML OFF CACHE BOOL "Enable CEF and HTML producer" FORCE)
+    casparcg_add_external_project(cef)
+
+    # Select the correct CEF binary based on architecture
+    # Using same version as Windows (131.4.1) for consistency
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "(arm64|aarch64)")
+        set(CEF_PLATFORM "macosarm64")
+        set(CEF_URL "https://cef-builds.spotifycdn.com/cef_binary_131.4.1%2Bg437feba%2Bchromium-131.0.6778.265_macosarm64_minimal.tar.bz2")
+    else()
+        set(CEF_PLATFORM "macosx64")
+        set(CEF_URL "https://cef-builds.spotifycdn.com/cef_binary_131.4.1%2Bg437feba%2Bchromium-131.0.6778.265_macosx64_minimal.tar.bz2")
+    endif()
+
+    message(STATUS "CEF Platform: ${CEF_PLATFORM}")
+    message(STATUS "CEF URL: ${CEF_URL}")
+
+    ExternalProject_Add(cef
+        URL ${CEF_URL}
+        DOWNLOAD_DIR ${CASPARCG_DOWNLOAD_CACHE}
+        CMAKE_ARGS
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+            -DUSE_SANDBOX=OFF
+            -DCEF_RUNTIME_LIBRARY_FLAG=
+            -DPROJECT_ARCH=${CMAKE_SYSTEM_PROCESSOR}
+        INSTALL_COMMAND ""
+        BUILD_BYPRODUCTS
+            "<SOURCE_DIR>/Release/Chromium Embedded Framework.framework/Chromium Embedded Framework"
+            "<BINARY_DIR>/libcef_dll_wrapper/libcef_dll_wrapper.a"
+    )
+    ExternalProject_Get_Property(cef SOURCE_DIR)
+    ExternalProject_Get_Property(cef BINARY_DIR)
+
+    add_library(CEF::CEF INTERFACE IMPORTED)
+    add_dependencies(CEF::CEF cef)
+    target_include_directories(CEF::CEF INTERFACE
+        "${SOURCE_DIR}"
+    )
+
+    # macOS CEF uses a framework structure
+    set(CEF_FRAMEWORK_PATH "${SOURCE_DIR}/Release/Chromium Embedded Framework.framework")
+    set(CEF_RESOURCE_PATH "${SOURCE_DIR}/Resources")
+
+    target_link_libraries(CEF::CEF INTERFACE
+        "${CEF_FRAMEWORK_PATH}/Chromium Embedded Framework"
+        "${BINARY_DIR}/libcef_dll_wrapper/libcef_dll_wrapper.a"
+    )
+
+    # Add framework search path
+    target_link_options(CEF::CEF INTERFACE
+        "-F${SOURCE_DIR}/Release"
+    )
+
+    # Install CEF framework and resources
+    # Note: The framework needs to be in the app bundle's Frameworks directory
+    install(DIRECTORY "${CEF_FRAMEWORK_PATH}" DESTINATION lib
+        USE_SOURCE_PERMISSIONS)
+    install(DIRECTORY ${CEF_RESOURCE_PATH}/locales TYPE LIB)
+    install(FILES ${CEF_RESOURCE_PATH}/chrome_100_percent.pak TYPE LIB)
+    install(FILES ${CEF_RESOURCE_PATH}/chrome_200_percent.pak TYPE LIB)
+    install(FILES ${CEF_RESOURCE_PATH}/icudtl.dat TYPE LIB)
+    install(FILES ${CEF_RESOURCE_PATH}/resources.pak TYPE LIB)
+
+    message(STATUS "CEF enabled for macOS (${CEF_PLATFORM})")
 endif()
 
 # ============================================================================

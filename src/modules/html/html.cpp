@@ -39,6 +39,11 @@
 #include <memory>
 #include <utility>
 
+#ifdef __APPLE__
+#include <pthread.h>
+#include <sched.h>
+#endif
+
 #pragma warning(push)
 #pragma warning(disable : 4458)
 #include <include/cef_app.h>
@@ -170,7 +175,10 @@ class renderer_application
             command_line->AppendSwitch("enable-webgl");
 
             auto default_backend = L"gl";
-#if __unix__
+#if __APPLE__
+            // macOS: prefer Metal backend via ANGLE for best performance
+            default_backend = L"metal";
+#elif __unix__
             // If there is no X server, Chromium requires us to force it to the angle backend
             if (getenv("DISPLAY") == nullptr) default_backend = L"vulkan";
 #endif
@@ -182,7 +190,8 @@ class renderer_application
             }
         }
 
-#if __unix__
+#if defined(__unix__) && !defined(__APPLE__)
+        // Linux: If there is no X server, use headless ozone platform
         if (getenv("DISPLAY") == nullptr) {
             command_line->AppendSwitchWithValue("ozone-platform", "headless");
         }
@@ -228,6 +237,12 @@ void init(const core::module_dependencies& dependencies)
     bool result    = g_cef_executor->invoke([&] {
 #ifdef WIN32
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#elif defined(__APPLE__)
+        // macOS: Set thread to high priority using pthread
+        pthread_t thread = pthread_self();
+        struct sched_param param;
+        param.sched_priority = sched_get_priority_max(SCHED_FIFO);
+        pthread_setschedparam(thread, SCHED_FIFO, &param);
 #endif
         const bool enable_gpu = env::properties().get(L"configuration.html.enable-gpu", false);
 

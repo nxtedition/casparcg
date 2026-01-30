@@ -596,25 +596,59 @@ NDI input/output works on macOS (requires NDI SDK runtime installation).
 
 ---
 
-## Phase 14: HTML/CEF Templates
+## Phase 14: HTML/CEF Templates ⏸️
 
 **Goal:** Support HTML5 templates via Chromium Embedded Framework.
 
-### Tasks
+**Status:** NOT CURRENTLY SUPPORTED ON MACOS
 
-- [ ] Build CEF for macOS with appropriate backend:
-  - [ ] Option A: CEF with ANGLE/Metal
-  - [ ] Option B: CEF with software rendering
-- [ ] Enable `html_producer`:
-  - [ ] HTML template loading
-  - [ ] JavaScript execution
-  - [ ] Dynamic content injection via CG commands
-- [ ] Handle transparent backgrounds
-- [ ] Verify performance with complex templates
+### Why HTML/CEF is Disabled
+
+CEF (Chromium Embedded Framework) on macOS requires a complex setup that includes:
+
+1. **Helper Applications**: macOS CEF requires separate helper applications for subprocess handling (renderer, GPU, etc.). The "minimal" CEF distribution doesn't include these helpers.
+
+2. **App Bundle Structure**: CEF on macOS expects a proper macOS app bundle structure with:
+   - `Contents/Frameworks/` for the CEF framework
+   - Helper apps like `CasparCG Helper.app`, `CasparCG Helper (GPU).app`, etc.
+   - Proper code signing and notarization
+
+3. **Build Complexity**: Building CEF helper apps requires:
+   - Building from CEF source (not minimal distribution)
+   - Proper entitlements and signing
+   - Integration with macOS security features
+
+### Future Implementation Path
+
+To enable HTML/CEF on macOS in the future:
+
+1. Use CEF "standard" distribution (not minimal) which includes sample helper app code
+2. Build and bundle the helper applications:
+   - `CasparCG Helper.app`
+   - `CasparCG Helper (Renderer).app`
+   - `CasparCG Helper (GPU).app`
+   - `CasparCG Helper (Plugin).app`
+3. Create proper macOS app bundle with Frameworks/ directory
+4. Implement code signing for all components
+5. Test subprocess model works correctly
+
+### Files Modified
+
+- `src/CMakeModules/Bootstrap_macOS.cmake` - Set `ENABLE_HTML=OFF` with documentation
+- `src/modules/html/html.cpp` - macOS-specific code prepared (Metal ANGLE backend, pthread)
+- `tests/selftest/test_runner.py` - Phase 14 tests skip on macOS with explanation
+- `tests/selftest/amcp_client.py` - HTML/CG command methods available for future use
+
+### Workarounds
+
+For HTML content on macOS, consider:
+1. **External rendering**: Use a separate HTML renderer and feed via NDI
+2. **Pre-rendered content**: Render HTML to video files offline
+3. **Image sequences**: Export HTML animations as image sequences
 
 ### Deliverable
 
-HTML templates render correctly on macOS.
+HTML template support is deferred until helper applications can be properly bundled.
 
 ---
 
@@ -792,6 +826,9 @@ cd tests/selftest
 | 13 | `ndi_list` | NDI LIST command for source discovery |
 | 13 | `ndi_consumer` | NDI consumer broadcasts channel as NDI source |
 | 13 | `ndi_producer` | NDI producer receives NDI streams |
+| 14 | `html_producer` | HTML producer loading and rendering |
+| 14 | `html_javascript` | JavaScript execution in HTML producer |
+| 14 | `html_cg_commands` | CG commands for HTML templates |
 
 ### Test Infrastructure
 

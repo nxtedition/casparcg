@@ -151,6 +151,11 @@ if [[ $START_SERVER -eq 1 ]]; then
         sleep 1
     fi
 
+    # Set NDI runtime directory (macOS)
+    if [[ "$(uname)" == "Darwin" ]]; then
+        export NDI_RUNTIME_DIR_V6="/usr/local/lib"
+    fi
+
     # Start CasparCG
     echo "Starting CasparCG..."
     cd "$BUILD_DIR"

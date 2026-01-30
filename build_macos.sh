@@ -68,6 +68,11 @@ else
     make -j${JOBS} 2>&1 | grep -E "^\[|Error|error:|warning:"
 fi
 
+# Copy macOS run script to build directory
+cp "${SRC_DIR}/shell/run_macos.sh" "${BUILD_DIR}/shell/"
+chmod +x "${BUILD_DIR}/shell/run_macos.sh"
+
 echo ""
 echo "=== Build Complete ==="
 echo "Binary: ${BUILD_DIR}/shell/casparcg"
+echo "Run script: ${BUILD_DIR}/shell/run_macos.sh"

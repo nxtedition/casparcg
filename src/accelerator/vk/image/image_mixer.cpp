@@ -310,6 +310,19 @@ struct image_mixer::impl
         if (frame.pixel_format_desc().planes.empty())
             return;
 
+        // Safety check: ensure we have a layer context
+        if (layer_stack_.empty()) {
+            CASPAR_LOG(warning) << L"[vk::image_mixer] visit() called without layer context, creating default layer";
+            layers_.push_back(layer(core::blend_mode::normal));
+            layer_stack_.push_back(&layers_.back());
+        }
+
+        // Safety check: ensure transform stack is not empty
+        if (transform_stack_.empty()) {
+            CASPAR_LOG(warning) << L"[vk::image_mixer] visit() called without transform context";
+            return;
+        }
+
         item item;
         item.pix_desc  = frame.pixel_format_desc();
         item.transform = transform_stack_.back();

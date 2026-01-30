@@ -59,6 +59,10 @@
 #include <clocale>
 #include <csignal>
 
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 namespace caspar {
 
 std::atomic<bool> sig_exit;
@@ -165,7 +169,22 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
     boost::asio::signal_set signals(io, SIGINT, SIGTERM);
     signals.async_wait([&](auto, auto){ io.stop(); });
 
+#ifdef __APPLE__
+    // On macOS, run ASIO on a background thread so the main thread can process
+    // Cocoa/GCD events required by GLFW screen consumer windows.
+    std::thread asio_thread([&io] { io.run(); });
+
+    // Main thread runs CFRunLoop to process GCD events (dispatch_sync to main queue)
+    // This is required because GLFW on macOS needs the main thread for Cocoa operations.
+    while (!io.stopped()) {
+        // Process any pending GCD/Cocoa events with a short timeout
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+    }
+
+    asio_thread.join();
+#else
     io.run();
+#endif
 
     caspar_server.reset();
 

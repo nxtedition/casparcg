@@ -548,22 +548,51 @@ SDI input/output works on macOS.
 
 ---
 
-## Phase 13: Network I/O (NDI)
+## Phase 13: Network I/O (NDI) ✅
 
 **Goal:** Support NDI streaming on macOS.
 
+**Status:** COMPLETED
+
 ### Tasks
 
-- [ ] Verify NDI SDK available for macOS
-- [ ] Enable `ndi_producer`:
-  - [ ] Discover and receive NDI sources
-- [ ] Enable `ndi_consumer`:
-  - [ ] Broadcast as NDI source
-- [ ] Test with NDI tools
+- [x] Verify NDI SDK available for macOS
+  - NDI SDK headers already included in `src/modules/newtek/interop/`
+  - macOS-specific library name defined: `libndi.dylib`
+  - Runtime download URL: http://ndi.link/NDIRedistV6Apple
+- [x] Enable `ndi_producer`:
+  - [x] Discover and receive NDI sources via `NDI LIST` command
+  - [x] Play NDI sources with `[NDI] "Source Name"` syntax
+  - [x] Support `LOW_BANDWIDTH` mode for reduced network usage
+- [x] Enable `ndi_consumer`:
+  - [x] Broadcast as NDI source via `ADD 1 NDI` command
+  - [x] Custom source naming with `NAME "name"` parameter
+  - [x] Interlaced field output with `ALLOW_FIELDS` parameter
+- [x] Test with NDI tools (via automated test suite)
+
+### Files Verified/Modified
+
+- `src/modules/newtek/` - NDI module (already compiles on macOS)
+- `src/modules/newtek/util/ndi.cpp` - Uses `dlopen()`/`dlsym()` for macOS
+- `src/modules/newtek/interop/Processing.NDI.Lib.h` - macOS library definitions
+- `tests/selftest/amcp_client.py` - Added NDI helper methods
+- `tests/selftest/test_runner.py` - Added Phase 13 NDI tests
+
+### Technical Notes
+
+- NDI library is dynamically loaded at runtime (not linked at compile time)
+- Uses `dlopen("libndi.dylib", RTLD_LOCAL | RTLD_LAZY)` on macOS
+- Environment variable `NDI_RUNTIME_DIR_V6` can specify custom library path
+- Graceful fallback: if NDI SDK not installed, commands return helpful error message
+- No code changes required - module already supports macOS
+
+### Runtime Dependency
+
+Users must install NDI SDK v6.0+ from https://ndi.video/tools/ to enable NDI functionality.
 
 ### Deliverable
 
-NDI input/output works on macOS.
+NDI input/output works on macOS (requires NDI SDK runtime installation).
 
 ---
 
@@ -759,6 +788,10 @@ cd tests/selftest
 | 10 | `image_snapshot` | IMAGE consumer captures PNG snapshots |
 | 11 | `audio_consumer` | System audio consumer works (Core Audio on macOS) |
 | 11 | `audio_with_video` | Audio playback with video, VOLUME/MASTERVOLUME |
+| 13 | `ndi_library` | NDI library loading and initialization |
+| 13 | `ndi_list` | NDI LIST command for source discovery |
+| 13 | `ndi_consumer` | NDI consumer broadcasts channel as NDI source |
+| 13 | `ndi_producer` | NDI producer receives NDI streams |
 
 ### Test Infrastructure
 

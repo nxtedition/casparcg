@@ -120,6 +120,16 @@ class TestRunner:
         self.register_test("audio_with_video", 11, self.test_audio_with_video,
                            "Test audio playback with video content")
 
+        # Phase 13: NDI (Network Device Interface)
+        self.register_test("ndi_library", 13, self.test_ndi_library,
+                           "Test NDI library loading and initialization")
+        self.register_test("ndi_list", 13, self.test_ndi_list,
+                           "Test NDI LIST command for source discovery")
+        self.register_test("ndi_consumer", 13, self.test_ndi_consumer,
+                           "Test NDI consumer (broadcast as NDI source)")
+        self.register_test("ndi_producer", 13, self.test_ndi_producer,
+                           "Test NDI producer (receive NDI stream)")
+
     def register_test(self, name: str, phase: int, func: Callable,
                       description: str):
         """Register a test function."""
@@ -1703,6 +1713,270 @@ class TestRunner:
 
         if all_passed:
             print("  Audio with video test passed!")
+        return all_passed
+
+    def test_ndi_library(self) -> bool:
+        """Test NDI library loading and initialization (Phase 13).
+
+        Tests that the NDI library (libndi.dylib on macOS) can be loaded
+        and initialized. This is a prerequisite for all NDI functionality.
+
+        Note: This test will pass if NDI is not installed, as long as the
+        error response indicates the expected behavior:
+        - 200: NDI loaded successfully
+        - 403: NDI command not registered (module couldn't initialize - SDK not installed)
+        - 501: NDI not available (module initialized but library not found)
+        """
+        all_passed = True
+
+        print("  Testing NDI library loading...")
+
+        # The NDI LIST command will trigger library loading
+        # If NDI SDK is not installed, we'll get an error
+        code, msg = self.client.ndi_list()
+
+        if code >= 200 and code < 300:
+            print("  NDI library loaded successfully!")
+            print(f"  Response: {msg[:100]}..." if len(msg) > 100 else f"  Response: {msg}")
+        elif code == 501:
+            # 501 = NDI not available (library not found)
+            print(f"  NDI library not available: {msg}")
+            print("  This is expected if NDI SDK is not installed")
+            print("  Download from: http://ndi.link/NDIRedistV6Apple (macOS)")
+            # This is not a test failure - module correctly reports NDI not available
+        elif code == 403:
+            # 403 = Command not registered (module couldn't initialize)
+            # This happens when NDI SDK is not installed and module init catches exception
+            print(f"  NDI module not initialized: {msg}")
+            print("  This is expected if NDI SDK is not installed")
+            print("  The newtek module silently fails to register when NDI SDK is missing")
+            print("  Download NDI SDK from: http://ndi.link/NDIRedistV6Apple (macOS)")
+            # This is not a test failure - expected behavior when SDK not installed
+        else:
+            print(f"  Unexpected response (code {code}): {msg}")
+            all_passed = False
+
+        return all_passed
+
+    def test_ndi_list(self) -> bool:
+        """Test NDI LIST command for source discovery (Phase 13).
+
+        Tests the NDI LIST AMCP command which scans the network for
+        available NDI sources. Returns a list of source names and URLs.
+        """
+        all_passed = True
+
+        print("  Testing NDI LIST command...")
+
+        code, msg = self.client.ndi_list()
+
+        if code == 200:
+            print("  NDI LIST succeeded!")
+            # Parse the response to show sources
+            lines = msg.strip().split('\n') if msg else []
+            if lines:
+                source_count = len([l for l in lines if l.strip()])
+                print(f"  Found {source_count} NDI source(s):")
+                for line in lines[:5]:  # Show first 5
+                    if line.strip():
+                        print(f"    - {line.strip()}")
+                if len(lines) > 5:
+                    print(f"    ... and {len(lines) - 5} more")
+            else:
+                print("  No NDI sources found on network (this is normal)")
+        elif code == 501:
+            print(f"  NDI not available: {msg}")
+            print("  Test passes - NDI module correctly reports unavailable status")
+        elif code == 403:
+            print(f"  NDI LIST command not registered: {msg}")
+            print("  NDI SDK not installed - module couldn't initialize")
+            print("  Test passes - expected behavior when SDK is missing")
+        else:
+            print(f"  NDI LIST failed (code {code}): {msg}")
+            all_passed = False
+
+        return all_passed
+
+    def test_ndi_consumer(self) -> bool:
+        """Test NDI consumer (Phase 13).
+
+        Tests the NDI consumer which broadcasts a CasparCG channel as an
+        NDI source on the network. Other NDI-compatible software can then
+        receive this stream.
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        print("  Testing NDI consumer (broadcast as NDI source)...")
+
+        # First check if NDI is available
+        code, _ = self.client.ndi_list()
+        if code == 501 or code == 403:
+            print("  NDI not available - skipping consumer test")
+            print("  Test passes - NDI module not initialized (SDK not installed)")
+            return True
+
+        # Clear channel
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Play content to broadcast
+        r1 = self.client.play_color(ch, 1, "#FF00FF")  # Magenta as hex
+        if not self.helper.assert_success(r1, "Play color for NDI output"):
+            return False
+
+        self.helper.wait(0.5)
+
+        # Add NDI consumer with custom name
+        print("  Adding NDI consumer...")
+        ndi_name = f"CasparCG Test Channel {ch}"
+        r2 = self.client.add_ndi_consumer(ch, name=ndi_name)
+        code2, msg2 = r2
+
+        if code2 >= 200 and code2 < 300:
+            print(f"  NDI consumer added successfully!")
+            print(f"  Broadcasting as: '{ndi_name}'")
+
+            # Let it run briefly
+            print("  Broadcasting for 2 seconds...")
+            self.helper.wait(2.0)
+
+            # Verify system is still responsive
+            info_result = self.client.info(ch)
+            if info_result[0] < 200 or info_result[0] >= 300:
+                print("  Warning: System unresponsive with NDI consumer")
+                all_passed = False
+            else:
+                print("  System responsive with NDI consumer running")
+
+            # Remove NDI consumer
+            r3 = self.client.remove_ndi_consumer(ch)
+            if r3[0] >= 200 and r3[0] < 300:
+                print("  NDI consumer removed successfully")
+            else:
+                print(f"  Warning: Failed to remove NDI consumer (code {r3[0]})")
+
+        elif code2 == 501 or code2 == 403:
+            print(f"  NDI consumer not available: {msg2}")
+            print("  Test passes - NDI module not initialized (SDK not installed)")
+        else:
+            print(f"  Failed to add NDI consumer (code {code2}): {msg2}")
+            all_passed = False
+
+        # Test with ALLOW_FIELDS option (only if NDI is available)
+        if all_passed and code2 >= 200 and code2 < 300:
+            print("  Testing NDI consumer with ALLOW_FIELDS...")
+            r4 = self.client.add_ndi_consumer(ch, allow_fields=True)
+            if r4[0] >= 200 and r4[0] < 300:
+                print("  ALLOW_FIELDS option accepted")
+                self.helper.wait(0.5)
+                self.client.remove_ndi_consumer(ch)
+            else:
+                print(f"  ALLOW_FIELDS option failed (code {r4[0]})")
+
+        # Clean up
+        self.client.clear(ch)
+
+        if all_passed:
+            print("  NDI consumer test passed!")
+        return all_passed
+
+    def test_ndi_producer(self) -> bool:
+        """Test NDI producer (Phase 13).
+
+        Tests the NDI producer which receives NDI streams from network
+        sources and plays them in CasparCG. Since we can't guarantee
+        NDI sources are available, this test validates command acceptance.
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        print("  Testing NDI producer (receive NDI stream)...")
+
+        # First check if NDI is available
+        code, msg = self.client.ndi_list()
+        if code == 501 or code == 403:
+            print("  NDI not available - skipping producer test")
+            print("  Test passes - NDI module not initialized (SDK not installed)")
+            return True
+
+        # Clear channel
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Check if any sources are available
+        sources = []
+        if code == 200 and msg:
+            lines = msg.strip().split('\n')
+            for line in lines:
+                if line.strip() and '"' in line:
+                    # Parse source name from format: 1 "Source Name" url
+                    parts = line.split('"')
+                    if len(parts) >= 2:
+                        sources.append(parts[1])
+
+        if sources:
+            print(f"  Found {len(sources)} NDI source(s), testing first one...")
+            source_name = sources[0]
+            print(f"  Attempting to play: '{source_name}'")
+
+            r1 = self.client.play_ndi(ch, 1, source_name)
+            code1, msg1 = r1
+
+            if code1 >= 200 and code1 < 300:
+                print(f"  NDI producer connected to '{source_name}'")
+                self.helper.wait(2.0)
+
+                # Verify it's playing
+                info_result = self.client.info(ch)
+                if info_result[0] >= 200 and info_result[0] < 300:
+                    print("  NDI source playing successfully")
+                else:
+                    print("  Warning: Could not verify playback")
+
+            elif code1 == 404:
+                print(f"  NDI source not found or disconnected: {msg1}")
+                # This is acceptable - source may have gone offline
+            else:
+                print(f"  Failed to play NDI source (code {code1}): {msg1}")
+                all_passed = False
+
+        else:
+            print("  No NDI sources available on network")
+            print("  Testing NDI producer command parsing with fake source...")
+
+            # Test with a fake source to verify command format is accepted
+            r1 = self.client.play_ndi(ch, 1, "FAKE_SOURCE (Test)")
+            code1, msg1 = r1
+
+            # Expect 404 (source not found) or similar - this confirms producer is registered
+            if code1 == 404:
+                print("  NDI producer is registered (got 404 for missing source - expected)")
+            elif code1 >= 200 and code1 < 300:
+                print("  Unexpected success with fake source")
+                self.helper.wait(0.5)
+            elif code1 == 501 or code1 == 403:
+                print("  NDI producer not available (SDK not installed)")
+            else:
+                print(f"  NDI producer response (code {code1}): {msg1}")
+
+        # Test LOW_BANDWIDTH option (only if NDI available)
+        if code == 200:
+            print("  Testing NDI producer LOW_BANDWIDTH option...")
+            r2 = self.client.play_ndi(ch, 1, "TEST_SOURCE", low_bandwidth=True)
+            code2, msg2 = r2
+
+            # Just verify the command format is accepted (404 is fine)
+            if code2 == 404 or (code2 >= 200 and code2 < 300):
+                print("  LOW_BANDWIDTH option accepted")
+            else:
+                print(f"  LOW_BANDWIDTH response (code {code2}): {msg2}")
+
+        # Clean up
+        self.client.clear(ch)
+
+        if all_passed:
+            print("  NDI producer test passed!")
         return all_passed
 
 

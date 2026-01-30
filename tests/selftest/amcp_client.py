@@ -250,6 +250,47 @@ class AMCPClient:
         """Set layer invert mode (0=off, 1=on)."""
         return self.mixer(channel, layer, "INVERT", invert)
 
+    # NDI-related commands
+
+    def ndi_list(self) -> Tuple[int, str]:
+        """List available NDI sources on the network."""
+        return self.send("NDI LIST")
+
+    def play_ndi(self, channel: int, layer: int, source_name: str,
+                 low_bandwidth: bool = False) -> Tuple[int, str]:
+        """Play NDI source on channel/layer.
+
+        Args:
+            channel: Channel number
+            layer: Layer number
+            source_name: NDI source name (e.g., "COMPUTER (NDI Source)")
+            low_bandwidth: Use low bandwidth mode
+        """
+        cmd = f"PLAY {channel}-{layer} [NDI] \"{source_name}\""
+        if low_bandwidth:
+            cmd += " LOW_BANDWIDTH"
+        return self.send(cmd)
+
+    def add_ndi_consumer(self, channel: int, name: str = "",
+                         allow_fields: bool = False) -> Tuple[int, str]:
+        """Add NDI consumer to broadcast channel as NDI source.
+
+        Args:
+            channel: Channel number
+            name: Optional custom NDI source name
+            allow_fields: Allow interlaced field output
+        """
+        args = ""
+        if name:
+            args += f"NAME \"{name}\""
+        if allow_fields:
+            args += " ALLOW_FIELDS"
+        return self.add_consumer(channel, "NDI", args.strip())
+
+    def remove_ndi_consumer(self, channel: int) -> Tuple[int, str]:
+        """Remove NDI consumer from channel."""
+        return self.remove_consumer(channel, "NDI")
+
 
 class AMCPTestHelper:
     """Helper class for running AMCP-based tests."""

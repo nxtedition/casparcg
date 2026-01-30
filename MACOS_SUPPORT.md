@@ -515,22 +515,21 @@ A test suite is provided in `tests/selftest/` to verify functionality at each ph
 
 ### Running Tests
 
-```bash
-# Start CasparCG with test config
-cp tests/selftest/casparcg_test.config casparcg.config
-./casparcg
+The test runner automatically starts CasparCG, runs tests, and shuts down:
 
-# In another terminal, run tests
+```bash
 cd tests/selftest
 ./run_tests.sh              # Run all tests
-./run_tests.sh --phase 3    # Run phase 3 tests only
+./run_tests.sh --phase 1    # Run phase 1 tests only
 ./run_tests.sh --list       # List available tests
+./run_tests.sh --no-server  # Don't start CasparCG (use existing instance)
 ```
 
 ### Test Coverage by Phase
 
 | Phase | Test Name | What It Verifies |
 |-------|-----------|------------------|
+| 1 | `build_verification` | Binary runs, responds to AMCP |
 | 2 | `connection` | AMCP connection works |
 | 3 | `color_playback` | Solid colors render correctly |
 | 3 | `multi_layer` | Layer compositing works |
@@ -544,10 +543,13 @@ cd tests/selftest
 
 ### Test Infrastructure
 
+- `run_tests.sh` - Main test script (auto-starts/stops CasparCG)
 - `amcp_client.py` - AMCP protocol client for sending commands
 - `video_analyzer.py` - FFmpeg-based verification (color sampling, frame counting)
 - `test_runner.py` - Main test orchestration
 - `config.py` - Test configuration
+- `casparcg_test.config` - Test configuration for Windows/Linux
+- `casparcg_test_macos.config` - Test configuration for macOS (no screen consumer)
 
 ### Adding Tests for New Features
 

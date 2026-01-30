@@ -6,11 +6,10 @@ CasparCG is a professional broadcast graphics and video playout server written i
 
 ## Testing Principles
 
-### Self-Test Framework
+### IMPORTANT: Always Use the Test Framework
 
-Automated tests in `tests/selftest/` verify CasparCG functionality via the AMCP protocol.
+**NEVER manually start CasparCG or use `nc`/`netcat` to test.** Always use the self-test framework:
 
-**Run tests after making changes:**
 ```bash
 cd tests/selftest
 ./run_tests.sh               # Run all tests
@@ -19,11 +18,18 @@ cd tests/selftest
 ./run_tests.sh --list        # List available tests
 ```
 
+**If a test doesn't exist for functionality you need to verify, ADD IT to `test_runner.py` first.**
+
+### Self-Test Framework
+
+Automated tests in `tests/selftest/` verify CasparCG functionality via the AMCP protocol.
+
 ### Test-Driven Development
 
 1. **Before implementing:** Check if tests exist, add if missing
 2. **After implementing:** Run relevant tests to verify
 3. **When fixing bugs:** Add a test that reproduces the issue first
+4. **When testing manually:** Add the test to test_runner.py instead
 
 ### Adding New Tests
 

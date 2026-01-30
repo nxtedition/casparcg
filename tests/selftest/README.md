@@ -9,22 +9,23 @@ These tests connect to CasparCG via AMCP, execute various commands, and optional
 ## Requirements
 
 - Python 3.8+
-- CasparCG running and accessible
+- CasparCG built (the test runner will start it automatically)
 - FFmpeg/ffprobe (for video analysis tests)
 
 ## Quick Start
 
-1. Start CasparCG with the test configuration:
-   ```bash
-   cp tests/selftest/casparcg_test.config casparcg.config
-   ./casparcg
-   ```
+Simply run the test script - it automatically starts and stops CasparCG:
 
-2. Run the tests:
-   ```bash
-   cd tests/selftest
-   ./run_tests.sh
-   ```
+```bash
+cd tests/selftest
+./run_tests.sh
+```
+
+The script will:
+1. Start CasparCG with the appropriate test config (macOS or Linux/Windows)
+2. Wait for the server to be ready
+3. Run the tests
+4. Shut down CasparCG when done
 
 ## Usage
 
@@ -41,8 +42,11 @@ These tests connect to CasparCG via AMCP, execute various commands, and optional
 # Run a specific test
 ./run_tests.sh --test color_playback
 
+# Use an already-running CasparCG instance
+./run_tests.sh --no-server
+
 # Connect to different host/port
-./run_tests.sh --host 192.168.1.100 --port 5250
+./run_tests.sh --no-server --host 192.168.1.100 --port 5250
 ```
 
 ## Test Organization
@@ -51,6 +55,7 @@ Tests are organized by implementation phase from [MACOS_SUPPORT.md](../../MACOS_
 
 | Phase | Tests | Description |
 |-------|-------|-------------|
+| 1 | `build_verification` | Binary runs, responds to AMCP |
 | 2 | `connection` | Basic AMCP connection |
 | 3 | `color_playback`, `multi_layer`, `alpha_blend` | Basic rendering |
 | 4 | `blend_modes` | All blend modes |

@@ -50,6 +50,10 @@ class TestRunner:
 
     def _register_tests(self):
         """Register all available tests."""
+        # Phase 1: Build System & Foundation
+        self.register_test("build_verification", 1, self.test_build_verification,
+                           "Verify binary runs and responds to AMCP")
+
         # Phase 2: Basic Vulkan Context
         self.register_test("connection", 2, self.test_connection,
                            "Verify AMCP connection to CasparCG")
@@ -229,6 +233,34 @@ class TestRunner:
     # ==========================================================================
     # Test implementations
     # ==========================================================================
+
+    def test_build_verification(self) -> bool:
+        """Test Phase 1: Verify binary runs and responds to basic AMCP."""
+        all_passed = True
+
+        # Test VERSION command
+        code, version = self.client.version()
+        if not self.helper.assert_success((code, version), "Get server version"):
+            all_passed = False
+        else:
+            print(f"  Server version: {version}")
+
+        # Test INFO command
+        code, info = self.client.info()
+        if not self.helper.assert_success((code, info), "Get server info"):
+            all_passed = False
+
+        # Test INFO for channel 1
+        code, ch_info = self.client.info(1)
+        if not self.helper.assert_success((code, ch_info), "Get channel 1 info"):
+            all_passed = False
+
+        # Test CLEAR command (should work even with stub renderer)
+        code, msg = self.client.clear(1)
+        if not self.helper.assert_success((code, msg), "Clear channel 1"):
+            all_passed = False
+
+        return all_passed
 
     def test_connection(self) -> bool:
         """Test basic AMCP connection."""

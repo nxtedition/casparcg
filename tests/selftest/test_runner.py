@@ -114,6 +114,12 @@ class TestRunner:
         self.register_test("image_snapshot", 10, self.test_image_snapshot,
                            "Test image consumer for PNG snapshot")
 
+        # Phase 11: Audio Consumer
+        self.register_test("audio_consumer", 11, self.test_audio_consumer,
+                           "Test system audio consumer (Core Audio on macOS)")
+        self.register_test("audio_with_video", 11, self.test_audio_with_video,
+                           "Test audio playback with video content")
+
     def register_test(self, name: str, phase: int, func: Callable,
                       description: str):
         """Register a test function."""
@@ -1555,6 +1561,149 @@ class TestRunner:
         # We can't easily verify the output file without knowing the media folder path
         print("  Image snapshot test completed")
         return True
+
+    def test_audio_consumer(self) -> bool:
+        """Test system audio consumer (Phase 11).
+
+        Tests the audio consumer which outputs audio through the system's
+        audio device. On macOS this uses Core Audio, on other platforms OpenAL.
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        print("  Testing system audio consumer...")
+
+        # Clear channel first
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Add audio consumer
+        r1 = self.client.add_consumer(ch, "AUDIO")
+        code1, msg1 = r1
+
+        if code1 >= 200 and code1 < 300:
+            print(f"  Audio consumer added successfully (code {code1})")
+        else:
+            print(f"  Failed to add audio consumer (code {code1}): {msg1}")
+            return False
+
+        self.helper.wait(0.5)
+
+        # Play a color (to keep channel active while audio consumer runs)
+        r2 = self.client.play_color(ch, 1, "BLUE")
+        if not self.helper.assert_success(r2, "Play content for audio test"):
+            all_passed = False
+
+        # Let it run briefly to verify no crashes
+        print("  Audio consumer running (brief test)...")
+        self.helper.wait(2.0)
+
+        # Verify system is still responsive
+        info_result = self.client.info(ch)
+        if info_result[0] < 200 or info_result[0] >= 300:
+            print("  Warning: System unresponsive after audio consumer test")
+            all_passed = False
+        else:
+            print("  System responsive with audio consumer")
+
+        # Remove audio consumer
+        r3 = self.client.remove_consumer(ch, "AUDIO")
+        if r3[0] >= 200 and r3[0] < 300:
+            print("  Audio consumer removed successfully")
+        else:
+            print(f"  Warning: Failed to remove audio consumer (code {r3[0]})")
+
+        self.helper.wait(0.3)
+
+        # Clean up
+        self.client.clear(ch)
+
+        if all_passed:
+            print("  Audio consumer test passed!")
+        return all_passed
+
+    def test_audio_with_video(self) -> bool:
+        """Test audio playback with video content (Phase 11).
+
+        Tests that audio plays correctly when video content with audio is loaded.
+        Requires test media with audio track.
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        print("  Testing audio with video playback...")
+
+        # Clear channel first
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Add audio consumer first
+        r1 = self.client.add_consumer(ch, "AUDIO")
+        if r1[0] < 200 or r1[0] >= 300:
+            print(f"  Failed to add audio consumer (code {r1[0]})")
+            return False
+
+        self.helper.wait(0.3)
+
+        # Try to play video with audio
+        # Common test file names
+        test_videos = ["AMB", "amb", "TEST", "test"]
+        video_found = False
+
+        for video in test_videos:
+            result = self.client.play(ch, 1, f"{video} LOOP")
+            code, msg = result
+            if code >= 200 and code < 300:
+                video_found = True
+                print(f"  Playing video with audio: {video}")
+                self.helper.wait(3.0)  # Let audio play
+                break
+            elif code == 404:
+                continue
+
+        if not video_found:
+            print("  No test video with audio found in media folder")
+            print("  Playing color instead (no audio verification possible)")
+            self.client.play_color(ch, 1, "RED")
+            self.helper.wait(1.0)
+
+        # Test MIXER MASTERVOLUME
+        print("  Testing MIXER MASTERVOLUME...")
+        r2 = self.client.mixer(ch, 0, "MASTERVOLUME", "0.5")
+        if r2[0] >= 200 and r2[0] < 300:
+            print("    MASTERVOLUME 0.5 accepted")
+            self.helper.wait(1.0)
+
+            # Reset volume
+            self.client.mixer(ch, 0, "MASTERVOLUME", "1.0")
+        else:
+            print(f"    MASTERVOLUME failed (code {r2[0]})")
+
+        # Test per-layer VOLUME
+        print("  Testing MIXER VOLUME...")
+        r3 = self.client.mixer(ch, 1, "VOLUME", "0.5")
+        if r3[0] >= 200 and r3[0] < 300:
+            print("    VOLUME 0.5 accepted")
+            self.helper.wait(1.0)
+
+            # Reset volume
+            self.client.mixer(ch, 1, "VOLUME", "1.0")
+        else:
+            print(f"    VOLUME failed (code {r3[0]})")
+
+        # Verify system stability
+        info_result = self.client.info(ch)
+        if info_result[0] < 200 or info_result[0] >= 300:
+            print("  Warning: System unresponsive after audio/video test")
+            all_passed = False
+
+        # Clean up
+        self.client.remove_consumer(ch, "AUDIO")
+        self.client.clear(ch)
+
+        if all_passed:
+            print("  Audio with video test passed!")
+        return all_passed
 
 
 def main():

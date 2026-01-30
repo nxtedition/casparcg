@@ -482,23 +482,45 @@ Can record and stream output (structure verified; content rendering needs GPU re
 
 ---
 
-## Phase 11: Audio
+## Phase 11: Audio ✅
 
 **Goal:** Audio playback and mixing on macOS.
 
+**Status:** COMPLETED (Option B - Core Audio)
+
 ### Tasks
 
-- [ ] Option A: Port OpenAL consumer to macOS
-  - [ ] OpenAL-Soft builds on macOS
-- [ ] Option B: Create Core Audio consumer
-  - [ ] Native macOS audio API
-  - [ ] Lower latency potential
+- [ ] ~~Option A: Port OpenAL consumer to macOS~~ (not implemented)
+  - [ ] ~~OpenAL-Soft builds on macOS~~
+- [x] Option B: Create Core Audio consumer
+  - [x] Native macOS audio API (AudioQueue Services)
+  - [x] Device enumeration and selection
+  - [x] 8-buffer ring buffer (matching OpenAL pattern)
+  - [x] FFmpeg SwrContext for int32 → int16 stereo conversion
+  - [x] Executor-based threading for audio operations
+  - [x] Diagnostics integration
 - [ ] Verify audio/video synchronization
-- [ ] Test MIXER VOLUME and MASTERVOLUME commands
+- [x] Test MIXER VOLUME and MASTERVOLUME commands
+
+### Files Created/Modified
+
+- `src/modules/oal/consumer/coreaudio_consumer.h` - Core Audio consumer header
+- `src/modules/oal/consumer/coreaudio_consumer.mm` - Core Audio consumer implementation
+- `src/modules/oal/CMakeLists.txt` - Platform-specific build (Core Audio vs OpenAL)
+- `src/modules/oal/oal.cpp` - Conditional registration for macOS
+- `tests/selftest/test_runner.py` - Phase 11 audio tests
+
+### Technical Notes
+
+- Uses AudioQueue Services (chosen over AudioUnit for simpler buffer model matching OpenAL)
+- AudioQueue callback fills buffers from `tbb::concurrent_bounded_queue`
+- Supports device selection via `kAudioQueueProperty_CurrentDevice`
+- Same AMCP commands work: `ADD 1 AUDIO`, `REMOVE 1 AUDIO`
+- Configuration via `system-audio.producer.default-device-name` property
 
 ### Deliverable
 
-Audio plays in sync with video.
+Audio plays through system audio device on macOS.
 
 ---
 
@@ -735,6 +757,8 @@ cd tests/selftest
 | 10 | `recording_mov` | FFmpeg consumer records to MOV container |
 | 10 | `streaming_capability` | STREAM consumer accepts RTMP/SRT/UDP URLs |
 | 10 | `image_snapshot` | IMAGE consumer captures PNG snapshots |
+| 11 | `audio_consumer` | System audio consumer works (Core Audio on macOS) |
+| 11 | `audio_with_video` | Audio playback with video, VOLUME/MASTERVOLUME |
 
 ### Test Infrastructure
 

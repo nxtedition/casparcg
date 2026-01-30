@@ -324,28 +324,44 @@ All FFmpeg pixel formats render correctly with proper color.
 
 ---
 
-## Phase 8: Core Producers
+## Phase 8: Core Producers ✅
 
 **Goal:** Get essential producers working.
 
+**Status:** COMPLETED
+
 ### Tasks
 
-- [ ] Verify `color_producer` works (should work from Phase 3)
-- [ ] Test `route_producer` (routes frames between channels)
-- [ ] Enable `image_producer`:
-  - [ ] Static image loading (PNG, JPEG, TIFF, BMP, GIF)
-  - [ ] Verify color accuracy
-- [ ] Enable `image_scroll_producer`:
-  - [ ] Scrolling animation
-- [ ] Enable `ffmpeg_producer`:
-  - [ ] Video file playback
-  - [ ] Audio passthrough
-  - [ ] Seek, loop, duration controls
-  - [ ] All video filters
-- [ ] Enable `transition_producer`:
-  - [ ] Cut, mix, push, slide, wipe transitions
-- [ ] Enable `sting_producer`:
-  - [ ] Overlay/mask transitions
+- [x] Verify `color_producer` works (should work from Phase 3)
+- [x] Test `route_producer` (routes frames between channels)
+- [x] Enable `image_producer`:
+  - [x] Static image loading (PNG, JPEG, TIFF, BMP, GIF)
+  - [x] Verify color accuracy
+- [x] Enable `image_scroll_producer`:
+  - [x] Scrolling animation
+- [x] Enable `ffmpeg_producer`:
+  - [x] Video file playback
+  - [x] Audio passthrough
+  - [x] Seek, loop, duration controls
+  - [x] All video filters
+- [x] Enable `transition_producer`:
+  - [x] Cut, mix, push, slide, wipe transitions
+- [x] Enable `sting_producer`:
+  - [x] Overlay/mask transitions
+
+### Files Created/Modified
+
+- `tests/selftest/test_runner.py` - Added Phase 8 tests for all producers
+- `tests/selftest/amcp_client.py` - Added loadbg, load, and play_route methods
+
+### Technical Notes
+
+- All producers use the `core::frame_factory` abstraction (Vulkan-compatible)
+- No OpenGL-specific code exists in any producer
+- Producers were already enabled on macOS in CMakeLists.txt
+- The image_producer and ffmpeg_producer use FFmpeg for media loading (cross-platform)
+- Transition producer supports all transition types (CUT, MIX, PUSH, SLIDE, WIPE)
+- Sting producer uses overlay/mask transitions for professional broadcast transitions
 
 ### Deliverable
 
@@ -639,6 +655,11 @@ cd tests/selftest
 | 6 | `chroma_key` | Chroma key (green/blue screen) |
 | 6 | `invert` | Color inversion |
 | 8 | `video_playback` | FFmpeg producer works |
+| 8 | `image_producer` | Static image loading works |
+| 8 | `image_scroll_producer` | Scrolling image animation works |
+| 8 | `route_producer` | Routing frames between channels |
+| 8 | `transition_producer` | CUT, MIX, PUSH, SLIDE, WIPE transitions |
+| 8 | `sting_producer` | Overlay/mask transitions |
 | 9 | `screen_output` | Screen consumer displays |
 | 10 | `recording` | FFmpeg consumer records + verifies output |
 

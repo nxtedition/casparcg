@@ -144,6 +144,28 @@ class AMCPClient:
             return self.send(f"PLAY {channel}-{layer} {producer}")
         return self.send(f"PLAY {channel}-{layer}")
 
+    def loadbg(self, channel: int, layer: int, producer: str, auto_play: bool = False) -> Tuple[int, str]:
+        """Load content to background on channel/layer."""
+        cmd = f"LOADBG {channel}-{layer} {producer}"
+        if auto_play:
+            cmd += " AUTO"
+        return self.send(cmd)
+
+    def load(self, channel: int, layer: int, producer: str) -> Tuple[int, str]:
+        """Load content to foreground on channel/layer (paused)."""
+        return self.send(f"LOAD {channel}-{layer} {producer}")
+
+    def play_route(self, channel: int, layer: int, source_channel: int,
+                   source_layer: Optional[int] = None, mode: str = "") -> Tuple[int, str]:
+        """Play route producer (routes frames from another channel/layer)."""
+        if source_layer is not None:
+            route = f"route://{source_channel}-{source_layer}"
+        else:
+            route = f"route://{source_channel}"
+        if mode:
+            route += f" {mode}"
+        return self.send(f"PLAY {channel}-{layer} {route}")
+
     def stop(self, channel: int, layer: int) -> Tuple[int, str]:
         """Stop playback on channel/layer."""
         return self.send(f"STOP {channel}-{layer}")

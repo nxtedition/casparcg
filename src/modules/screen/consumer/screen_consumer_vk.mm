@@ -24,6 +24,11 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+// macOS: Use Grand Central Dispatch to marshal GLFW operations to main thread
+#ifdef __APPLE__
+#include <dispatch/dispatch.h>
+#endif
+
 #include <common/array.h>
 #include <common/diagnostics/graph.h>
 #include <common/future.h>
@@ -210,62 +215,96 @@ struct screen_consumer_vk
 
     void run()
     {
-        // Initialize GLFW
-        if (!glfwInit()) {
-            CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info("Failed to initialize GLFW"));
-        }
+        // macOS: Initialize GLFW on main thread via GCD
+        __block bool init_success = false;
+        __block GLFWwindow* created_window = nullptr;
+        __block int final_width = screen_width_;
+        __block int final_height = screen_height_;
 
-        // Tell GLFW not to create OpenGL context
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, config_.windowed ? GLFW_TRUE : GLFW_FALSE);
+        // Capture config values for use in block
+        const bool windowed = config_.windowed;
+        const int screen_index = config_.screen_index;
+        const bool borderless = config_.borderless;
+        const bool interactive = config_.interactive;
+        const bool always_on_top = config_.always_on_top;
+        const int screen_x = screen_x_;
+        const int screen_y = screen_y_;
+        std::string window_title = u8(print());
 
-        if (config_.borderless) {
-            glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
-        }
-
-        // Create window
-        GLFWmonitor* monitor = nullptr;
-        if (!config_.windowed) {
-            monitor = glfwGetPrimaryMonitor();
-            if (config_.screen_index > 0) {
-                int              monitorCount;
-                GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
-                if (config_.screen_index < monitorCount) {
-                    monitor = monitors[config_.screen_index];
-                }
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            // Initialize GLFW
+            if (!glfwInit()) {
+                CASPAR_LOG(error) << "Failed to initialize GLFW";
+                init_success = false;
+                return;
             }
 
-            const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-            screen_width_           = mode->width;
-            screen_height_          = mode->height;
+            // Tell GLFW not to create OpenGL context
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+            glfwWindowHint(GLFW_RESIZABLE, windowed ? GLFW_TRUE : GLFW_FALSE);
+
+            if (borderless) {
+                glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+            }
+
+            // Create window
+            GLFWmonitor* monitor = nullptr;
+            if (!windowed) {
+                monitor = glfwGetPrimaryMonitor();
+                if (screen_index > 0) {
+                    int monitorCount;
+                    GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
+                    if (screen_index < monitorCount) {
+                        monitor = monitors[screen_index];
+                    }
+                }
+
+                const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+                final_width = mode->width;
+                final_height = mode->height;
+            }
+
+            created_window = glfwCreateWindow(final_width, final_height, window_title.c_str(), monitor, nullptr);
+            if (!created_window) {
+                glfwTerminate();
+                CASPAR_LOG(error) << "Failed to create GLFW window";
+                init_success = false;
+                return;
+            }
+
+            // Position window
+            if (windowed) {
+                glfwSetWindowPos(created_window, screen_x, screen_y);
+            }
+
+            // Hide cursor if non-interactive
+            if (!interactive) {
+                glfwSetInputMode(created_window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+            }
+
+            // Set always on top
+            if (always_on_top) {
+                glfwSetWindowAttrib(created_window, GLFW_FLOATING, GLFW_TRUE);
+            }
+
+            init_success = true;
+        });
+
+        if (!init_success || !created_window) {
+            CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info("Failed to initialize GLFW window on main thread"));
         }
 
-        window_ = glfwCreateWindow(screen_width_, screen_height_, u8(print()).c_str(), monitor, nullptr);
-        if (!window_) {
-            glfwTerminate();
-            CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info("Failed to create GLFW window"));
-        }
+        window_ = created_window;
+        screen_width_ = final_width;
+        screen_height_ = final_height;
 
-        // Position window
-        if (config_.windowed) {
-            glfwSetWindowPos(window_, screen_x_, screen_y_);
-        }
-
-        // Hide cursor if non-interactive
-        if (!config_.interactive) {
-            glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
-        }
-
-        // Set always on top
-        if (config_.always_on_top) {
-            glfwSetWindowAttrib(window_, GLFW_FLOATING, GLFW_TRUE);
-        }
-
-        // Set resize callback user pointer
-        glfwSetWindowUserPointer(window_, this);
-        glfwSetFramebufferSizeCallback(window_, [](GLFWwindow* win, int width, int height) {
-            auto* self         = static_cast<screen_consumer_vk*>(glfwGetWindowUserPointer(win));
-            self->needs_resize_ = true;
+        // Set resize callback - must be done on main thread
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            glfwSetWindowUserPointer(window_, this);
+            glfwSetFramebufferSizeCallback(window_, [](GLFWwindow* win, int width, int height) {
+                auto* self = static_cast<screen_consumer_vk*>(glfwGetWindowUserPointer(win));
+                self->needs_resize_ = true;
+            });
         });
 
         // Initialize Vulkan
@@ -306,7 +345,7 @@ struct screen_consumer_vk
             tick();
         }
 
-        // Cleanup
+        // Cleanup Vulkan first (while window still exists)
         vk_device_->dispatch_sync([this] {
             render_pipeline_.reset();
             swapchain_.reset();
@@ -315,15 +354,30 @@ struct screen_consumer_vk
         });
         vk_device_.reset();
 
-        glfwDestroyWindow(window_);
-        glfwTerminate();
+        // Cleanup GLFW on main thread
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            if (window_) {
+                glfwDestroyWindow(window_);
+                window_ = nullptr;
+            }
+            glfwTerminate();
+        });
     }
 
     bool poll()
     {
-        glfwPollEvents();
+        // macOS: Poll events on main thread via GCD
+        __block bool should_close = false;
+        GLFWwindow* win = window_;
 
-        if (glfwWindowShouldClose(window_)) {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            glfwPollEvents();
+            if (glfwWindowShouldClose(win)) {
+                should_close = true;
+            }
+        });
+
+        if (should_close) {
             is_running_ = false;
             return true;
         }
@@ -338,8 +392,14 @@ struct screen_consumer_vk
         }
         needs_resize_ = false;
 
-        int width, height;
-        glfwGetFramebufferSize(window_, &width, &height);
+        // Get framebuffer size on main thread
+        __block int width = 0;
+        __block int height = 0;
+        GLFWwindow* win = window_;
+
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            glfwGetFramebufferSize(win, &width, &height);
+        });
 
         if (width == 0 || height == 0) {
             return;

@@ -3,8 +3,9 @@ project (screen)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     # macOS: Use Vulkan screen consumer (Phase 9)
+    # Uses .mm (Objective-C++) for Grand Central Dispatch to marshal GLFW to main thread
     set(SOURCES
-        consumer/screen_consumer_vk.cpp
+        consumer/screen_consumer_vk.mm
         consumer/screen_consumer_vk.h
 
         screen.cpp

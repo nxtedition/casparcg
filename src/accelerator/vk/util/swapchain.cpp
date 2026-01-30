@@ -123,22 +123,40 @@ struct swapchain::impl
         std::vector<VkSurfaceFormatKHR> formats(formatCount);
         vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device_, surface_, &formatCount, formats.data());
 
-        // Prefer BGRA8 SRGB
+        // Log available formats for debugging
+        CASPAR_LOG(debug) << L"[vk::swapchain] Available surface formats: " << formatCount;
         for (const auto& format : formats) {
-            if (format.format == VK_FORMAT_B8G8R8A8_SRGB &&
+            CASPAR_LOG(debug) << L"[vk::swapchain]   Format: " << format.format << L", ColorSpace: " << format.colorSpace;
+        }
+
+        // Prefer BGRA8 UNORM for direct color passthrough (matches frame texture format)
+        for (const auto& format : formats) {
+            if (format.format == VK_FORMAT_B8G8R8A8_UNORM &&
                 format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                CASPAR_LOG(info) << L"[vk::swapchain] Selected format: B8G8R8A8_UNORM";
                 return format;
             }
         }
 
-        // Fall back to BGRA8 UNORM
+        // Fall back to BGRA8 SRGB
         for (const auto& format : formats) {
-            if (format.format == VK_FORMAT_B8G8R8A8_UNORM) {
+            if (format.format == VK_FORMAT_B8G8R8A8_SRGB &&
+                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                CASPAR_LOG(info) << L"[vk::swapchain] Selected format: B8G8R8A8_SRGB (fallback)";
+                return format;
+            }
+        }
+
+        // Try any BGRA8 format
+        for (const auto& format : formats) {
+            if (format.format == VK_FORMAT_B8G8R8A8_UNORM || format.format == VK_FORMAT_B8G8R8A8_SRGB) {
+                CASPAR_LOG(info) << L"[vk::swapchain] Selected format: " << format.format;
                 return format;
             }
         }
 
         // Just use the first available format
+        CASPAR_LOG(warning) << L"[vk::swapchain] Using first available format: " << formats[0].format;
         return formats[0];
     }
 

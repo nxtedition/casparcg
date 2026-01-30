@@ -181,7 +181,10 @@ struct render_pipeline::impl
         samplerInfo.unnormalizedCoordinates = VK_FALSE;
         samplerInfo.compareEnable           = VK_FALSE;
         samplerInfo.compareOp               = VK_COMPARE_OP_ALWAYS;
-        samplerInfo.mipmapMode              = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        // Use NEAREST mipmap mode since textures have only 1 mip level
+        samplerInfo.mipmapMode              = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.minLod                  = 0.0f;
+        samplerInfo.maxLod                  = 0.0f;
 
         VK(vkCreateSampler(device_, &samplerInfo, nullptr, &sampler_));
     }

@@ -81,6 +81,9 @@ class texture final
     // Transition to SHADER_READ_ONLY_OPTIMAL after compute
     void transition_to_shader_read();
 
+    // Phase 15: Update internal layout tracking (for external transitions by graphics pipeline)
+    void set_layout(int layout);
+
   private:
     struct impl;
     std::unique_ptr<impl> impl_;

@@ -293,6 +293,22 @@ struct image_kernel::impl
         push_constants._pad5[0] = 0;
         push_constants._pad5[1] = 0;
 
+        // Debug: Log key parameters
+        static int debug_kernel_count = 0;
+        static int debug_kernel_ok = 0;
+        if (debug_kernel_count++ < 5 || debug_kernel_ok < 3) {
+            CASPAR_LOG(info) << L"[vk::image_kernel] Blend params: opacity=" << push_constants.opacity
+                              << L" src=" << push_constants.src_width << L"x" << push_constants.src_height
+                              << L" dst=" << push_constants.dst_width << L"x" << push_constants.dst_height
+                              << L" pixel_format=" << push_constants.pixel_format
+                              << L" transform_m0=" << push_constants.transform_matrix[0]
+                              << L" geometry_size=" << coords.size()
+                              << L" is_straight_alpha=" << push_constants.is_straight_alpha;
+            if (push_constants.src_width > 1 || push_constants.src_height > 1) {
+                debug_kernel_ok++;
+            }
+        }
+
         // Execute GPU blend with multi-plane support
         blend_pipeline_->execute(params.textures, *dst_tex, push_constants);
     }

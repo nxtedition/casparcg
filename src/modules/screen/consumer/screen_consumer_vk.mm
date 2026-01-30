@@ -329,6 +329,11 @@ struct screen_consumer_vk
         staging_buffer_      = std::make_shared<vk::buffer>(
             handles.device, handles.physical_device, format_desc_.size * size_multiplier, true);
 
+        // Clear texture to black on initialization to avoid showing uninitialized memory
+        frame_texture_->clear();
+        CASPAR_LOG(info) << print() << L" Texture format: " << frame_texture_->format()
+                         << L" size: " << frame_texture_->width() << L"x" << frame_texture_->height();
+
         if (config_.vsync) {
             CASPAR_LOG(info) << print() << " Enabled vsync.";
         }
@@ -446,7 +451,33 @@ struct screen_consumer_vk
 
         // Upload frame data to texture
         auto size_multiplier = config_.high_bitdepth ? 2 : 1;
-        std::memcpy(staging_buffer_->data(), in_frame.image_data(0).begin(), format_desc_.size * size_multiplier);
+        auto frame_data = in_frame.image_data(0);
+        auto expected_size = static_cast<size_t>(format_desc_.size * size_multiplier);
+
+        // Debug: Log pixel data when content changes
+        static int debug_counter = 0;
+        static uint8_t last_r = 0, last_g = 0, last_b = 0, last_a = 0;
+        if (frame_data.size() >= 4) {
+            auto* data = frame_data.begin();
+            // Log first 5 frames, or when color changes
+            bool color_changed = (data[0] != last_b || data[1] != last_g || data[2] != last_r || data[3] != last_a);
+            if (debug_counter++ < 5 || color_changed) {
+                CASPAR_LOG(info) << print() << L" Frame data (BGRA): "
+                                  << L"[" << (int)data[0] << L"," << (int)data[1] << L"," << (int)data[2] << L"," << (int)data[3] << L"]"
+                                  << (color_changed ? L" (color changed)" : L"");
+                last_b = data[0]; last_g = data[1]; last_r = data[2]; last_a = data[3];
+            }
+        }
+
+        // Validate frame data size
+        if (frame_data.size() < expected_size) {
+            CASPAR_LOG(warning) << print() << L" Frame data size mismatch: " << frame_data.size() << L" < " << expected_size;
+            return;
+        }
+
+        std::memcpy(staging_buffer_->data(), frame_data.begin(), expected_size);
+
+
         frame_texture_->copy_from(*staging_buffer_);
 
         // Calculate aspect ratio and positioning

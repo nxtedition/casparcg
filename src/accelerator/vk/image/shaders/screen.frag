@@ -76,5 +76,6 @@ void main()
         color.p = clamp(color.w + RANGE_HALF, 0.0, 1.0);
     }
 
-    out_color = color;
+    // Always output opaque (alpha=1.0) to prevent window transparency
+    out_color = vec4(color.rgb, 1.0);
 }

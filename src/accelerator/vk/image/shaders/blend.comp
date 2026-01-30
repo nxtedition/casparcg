@@ -791,6 +791,13 @@ void main()
     if (gid.x >= params.dst_width || gid.y >= params.dst_height)
         return;
 
+    // DEBUG: Write bright magenta to verify shader is executing
+    // Remove this block after testing
+    #if 1
+    imageStore(dst_image, gid, vec4(1.0, 0.0, 1.0, 1.0));
+    return;
+    #endif
+
     // Normalize destination coordinates to 0-1 range
     float dst_x_norm = float(gid.x) / float(params.dst_width);
     float dst_y_norm = float(gid.y) / float(params.dst_height);

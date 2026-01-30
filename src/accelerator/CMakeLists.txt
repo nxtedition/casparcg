@@ -29,6 +29,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         vk/util/vk_check.h
         vk/StdAfx.h
         vk_blend_shader.h
+        vk_blend_vert_shader.h
+        vk_blend_frag_shader.h
         vk_screen_vert_shader.h
         vk_screen_frag_shader.h
         accelerator.h
@@ -41,7 +43,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         message(FATAL_ERROR "glslangValidator not found! Please install the Vulkan SDK.")
     endif()
 
-    # Compile compute shader to SPIR-V
+    # Compile compute shader to SPIR-V (kept for reference, not currently used)
     set(BLEND_SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/vk/image/shaders/blend.comp)
     set(BLEND_SHADER_SPV ${CMAKE_CURRENT_BINARY_DIR}/blend.comp.spv)
 
@@ -50,6 +52,26 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         COMMAND ${GLSLANG_VALIDATOR} -V ${BLEND_SHADER_SRC} -o ${BLEND_SHADER_SPV}
         DEPENDS ${BLEND_SHADER_SRC}
         COMMENT "Compiling blend.comp to SPIR-V"
+    )
+
+    # Compile blend graphics shaders to SPIR-V (Phase 15 - graphics pipeline)
+    set(BLEND_VERT_SRC ${CMAKE_CURRENT_SOURCE_DIR}/vk/image/shaders/blend.vert)
+    set(BLEND_VERT_SPV ${CMAKE_CURRENT_BINARY_DIR}/blend.vert.spv)
+    set(BLEND_FRAG_SRC ${CMAKE_CURRENT_SOURCE_DIR}/vk/image/shaders/blend.frag)
+    set(BLEND_FRAG_SPV ${CMAKE_CURRENT_BINARY_DIR}/blend.frag.spv)
+
+    add_custom_command(
+        OUTPUT ${BLEND_VERT_SPV}
+        COMMAND ${GLSLANG_VALIDATOR} -V ${BLEND_VERT_SRC} -o ${BLEND_VERT_SPV}
+        DEPENDS ${BLEND_VERT_SRC}
+        COMMENT "Compiling blend.vert to SPIR-V"
+    )
+
+    add_custom_command(
+        OUTPUT ${BLEND_FRAG_SPV}
+        COMMAND ${GLSLANG_VALIDATOR} -V ${BLEND_FRAG_SRC} -o ${BLEND_FRAG_SPV}
+        DEPENDS ${BLEND_FRAG_SRC}
+        COMMENT "Compiling blend.frag to SPIR-V"
     )
 
     # Compile screen shaders to SPIR-V (Phase 9)
@@ -74,6 +96,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 
     # Convert SPIR-V to C header using bin2c
     bin2c_spv("${BLEND_SHADER_SPV}" "vk_blend_shader.h" "caspar::accelerator::vk" "blend_shader_spv")
+    bin2c_spv("${BLEND_VERT_SPV}" "vk_blend_vert_shader.h" "caspar::accelerator::vk" "blend_vert_shader_spv")
+    bin2c_spv("${BLEND_FRAG_SPV}" "vk_blend_frag_shader.h" "caspar::accelerator::vk" "blend_frag_shader_spv")
     bin2c_spv("${SCREEN_VERT_SPV}" "vk_screen_vert_shader.h" "caspar::accelerator::vk" "screen_vert_shader_spv")
     bin2c_spv("${SCREEN_FRAG_SPV}" "vk_screen_frag_shader.h" "caspar::accelerator::vk" "screen_frag_shader_spv")
 else()

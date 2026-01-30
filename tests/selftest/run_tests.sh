@@ -144,9 +144,21 @@ if [[ $START_SERVER -eq 1 ]]; then
     cp "$CONFIG_FILE" "$BUILD_DIR/casparcg.config"
     mkdir -p "$BUILD_DIR/media" "$BUILD_DIR/log" "$BUILD_DIR/data" "$BUILD_DIR/template"
 
-    # Kill any existing CasparCG instance on the test port
+    # Kill any existing CasparCG processes (by name, catches frozen instances)
+    EXISTING_PIDS=$(pgrep -x casparcg 2>/dev/null || true)
+    if [[ -n "$EXISTING_PIDS" ]]; then
+        echo "Found existing CasparCG process(es): $EXISTING_PIDS"
+        echo "Killing existing CasparCG instances..."
+        pkill -x casparcg 2>/dev/null || true
+        sleep 1
+        # Force kill any that didn't stop gracefully
+        pkill -9 -x casparcg 2>/dev/null || true
+        sleep 0.5
+    fi
+
+    # Also check the port in case something else is using it
     if lsof -i ":$CASPARCG_PORT" -t > /dev/null 2>&1; then
-        echo "Stopping existing CasparCG instance on port $CASPARCG_PORT..."
+        echo "Warning: Port $CASPARCG_PORT still in use, killing process..."
         lsof -i ":$CASPARCG_PORT" -t | xargs kill 2>/dev/null || true
         sleep 1
     fi

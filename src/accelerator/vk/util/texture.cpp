@@ -26,14 +26,18 @@
 #include "vk_check.h"
 
 #include <common/bit_depth.h>
+#include <common/log.h>
 
 #include <vulkan/vulkan.h>
 
 namespace caspar { namespace accelerator { namespace vk {
 
 // Format tables matching OGL pattern
-// stride: 1=R, 2=RG, 3=RGB/BGR, 4=RGBA/BGRA
-static VkFormat FORMAT_8BIT[]  = {VK_FORMAT_UNDEFINED, VK_FORMAT_R8_UNORM, VK_FORMAT_R8G8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_B8G8R8A8_UNORM};
+// stride: 1=R, 2=RG, 3=RGB, 4=RGBA
+// NOTE: Using RGBA format instead of BGRA for Vulkan compute shader compatibility.
+// The compute shader uses 'rgba8' storage image format which requires R8G8B8A8_UNORM.
+// BGRA swizzling is handled in the shader for PIXEL_FORMAT_BGRA inputs.
+static VkFormat FORMAT_8BIT[]  = {VK_FORMAT_UNDEFINED, VK_FORMAT_R8_UNORM, VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8B8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
 static VkFormat FORMAT_16BIT[] = {VK_FORMAT_UNDEFINED, VK_FORMAT_R16_UNORM, VK_FORMAT_R16G16_UNORM, VK_FORMAT_R16G16B16_UNORM, VK_FORMAT_R16G16B16A16_UNORM};
 
 struct texture::impl
@@ -80,6 +84,20 @@ struct texture::impl
         if (format_ == VK_FORMAT_UNDEFINED) {
             CASPAR_THROW_EXCEPTION(caspar::vk::vk_exception()
                                    << msg_info("Unsupported texture format (stride=" + std::to_string(stride_) + ")"));
+        }
+
+        // Check format properties for storage image support
+        static bool format_checked = false;
+        if (!format_checked && format_ == VK_FORMAT_R8G8B8A8_UNORM) {
+            format_checked = true;
+            VkFormatProperties formatProps;
+            vkGetPhysicalDeviceFormatProperties(physical_device_, format_, &formatProps);
+            CASPAR_LOG(info) << L"[vk::texture] Format R8G8B8A8_UNORM properties:"
+                              << L" linearTiling=" << formatProps.linearTilingFeatures
+                              << L" optimalTiling=" << formatProps.optimalTilingFeatures
+                              << L" buffer=" << formatProps.bufferFeatures
+                              << L" STORAGE_IMAGE_BIT=" << VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
+                              << L" hasStorageImage=" << ((formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) ? L"YES" : L"NO");
         }
 
         // Create image
@@ -142,6 +160,11 @@ struct texture::impl
         viewInfo.image                           = image_;
         viewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
         viewInfo.format                          = format_;
+        // Explicit component swizzle for proper color channel mapping
+        viewInfo.components.r                    = VK_COMPONENT_SWIZZLE_IDENTITY;
+        viewInfo.components.g                    = VK_COMPONENT_SWIZZLE_IDENTITY;
+        viewInfo.components.b                    = VK_COMPONENT_SWIZZLE_IDENTITY;
+        viewInfo.components.a                    = VK_COMPONENT_SWIZZLE_IDENTITY;
         viewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.baseMipLevel   = 0;
         viewInfo.subresourceRange.levelCount     = 1;
@@ -301,6 +324,13 @@ struct texture::impl
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
             sourceStage           = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             destinationStage      = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                   newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+            // Transition from shader read to transfer destination (for copy_from on subsequent frames)
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_TRANSFER_BIT;
         } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL &&
                    newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -345,6 +375,12 @@ struct texture::impl
 
     void copy_from(buffer& src)
     {
+        static int copy_debug_count = 0;
+        if (copy_debug_count++ < 5) {
+            CASPAR_LOG(info) << L"[vk::texture] copy_from: current_layout=" << current_layout_
+                              << L" size=" << size_ << L" buffer_size=" << src.size();
+        }
+
         auto cmdBuffer = begin_single_time_commands();
 
         // Transition to transfer destination
@@ -373,6 +409,14 @@ struct texture::impl
 
     void copy_to(buffer& dst)
     {
+        static int copy_to_debug = 0;
+        if (copy_to_debug++ < 5) {
+            CASPAR_LOG(info) << L"[vk::texture] copy_to: current_layout=" << current_layout_
+                              << L" size=" << size_ << L" dst_size=" << dst.size()
+                              << L" width=" << width_ << L" height=" << height_
+                              << L" image=" << (void*)image_ << L" image_view=" << (void*)image_view_;
+        }
+
         auto cmdBuffer = begin_single_time_commands();
 
         // Transition to transfer source
@@ -420,6 +464,15 @@ struct texture::impl
         transition_image_layout(cmdBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         end_single_time_commands(cmdBuffer);
+
+        // Debug: Check what was copied
+        static int copy_to_verify = 0;
+        if (copy_to_verify++ < 5) {
+            auto* data = static_cast<uint8_t*>(dst.data());
+            CASPAR_LOG(info) << L"[vk::texture] copy_to result: ["
+                              << (int)data[0] << L"," << (int)data[1] << L","
+                              << (int)data[2] << L"," << (int)data[3] << L"]";
+        }
     }
 
     void clear()
@@ -510,5 +563,6 @@ int               texture::size() const { return impl_->size_; }
 int               texture::format() const { return static_cast<int>(impl_->get_format()); }
 void              texture::transition_to_general() { impl_->transition_to_general(); }
 void              texture::transition_to_shader_read() { impl_->transition_to_shader_read(); }
+void              texture::set_layout(int layout) { impl_->current_layout_ = static_cast<VkImageLayout>(layout); }
 
 }}} // namespace caspar::accelerator::vk

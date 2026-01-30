@@ -52,11 +52,12 @@ mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
 # Configure with CMake
+# Disable HTML/CEF module (not fully supported on macOS yet)
 echo "Configuring with CMake..."
 if [[ $VERBOSE -eq 1 ]]; then
-    cmake "${SRC_DIR}"
+    cmake "${SRC_DIR}" -DENABLE_HTML=OFF
 else
-    cmake "${SRC_DIR}" 2>&1 | grep -E "^--|Found|Error|Warning|==="
+    cmake "${SRC_DIR}" -DENABLE_HTML=OFF 2>&1 | grep -E "^--|Found|Error|Warning|==="
 fi
 
 # Build

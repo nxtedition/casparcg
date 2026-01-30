@@ -446,9 +446,35 @@ CasparCG displays video output in a macOS window.
 - ffmpeg_consumer accepts both FILE (for recording) and STREAM (for streaming) modes
 - REMOVE command requires same parameters as ADD to identify consumer by index
 - Recording produces valid H.264/MP4 and MOV files with correct resolution and frame rate
-- GPU-to-CPU readback produces black frames - this is a Vulkan device.cpp issue that needs separate investigation
 - Audio stream encoding has issues (corrupted AAC) - use `-an` flag to disable audio for testing
 - ProRes encoding depends on FFmpeg build having prores_ks encoder
+- CasparCG ffmpeg_consumer expects `-codec:v` format, not `-c:v` shorthand
+
+### GPU Readback Issue (Known Bug)
+
+**Symptom:** Recorded videos contain black frames instead of rendered content.
+
+**Investigation Findings:**
+1. The ffmpeg_consumer and screen_consumer both use `const_frame::image_data()` for pixel access
+2. This data comes from `image_mixer::render()` → `device::copy_async()` → `texture::copy_to()`
+3. The Vulkan copy_to() properly transitions layouts and uses memory barriers
+
+**Attempted Fixes:**
+- Added buffer memory barrier in `texture.cpp::copy_to()` with VK_ACCESS_HOST_READ_BIT
+- Added explicit GENERAL → TRANSFER_SRC_OPTIMAL transition case
+- Added SHADER_WRITE_BIT to SHADER_READ_ONLY → TRANSFER_SRC transition
+- Added post-dispatch memory barrier in `pipeline.cpp`
+
+**Status:** The recording structure is correct (resolution, framerate, frame count) but pixel data is black. This suggests either:
+- Compute shader isn't actually writing to the output texture
+- MoltenVK has different synchronization requirements
+- Layout tracking (`current_layout_`) may be out of sync with actual image state
+
+**Next Investigation Steps:**
+1. Add Vulkan debug validation to verify shader writes
+2. Test with explicit vkDeviceWaitIdle() before copy
+3. Verify compute shader is actually being dispatched with correct parameters
+4. Check if color producer frames are reaching the blend pipeline
 
 ### Deliverable
 

@@ -40,7 +40,8 @@ class TestConfig:
 
     # FFmpeg consumer settings
     # Note: -an disables audio to avoid AAC codec issues during analysis
-    ffmpeg_args: str = "-an -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p"
+    # Use -codec:v (not -c:v) as CasparCG's ffmpeg_consumer parses options differently
+    ffmpeg_args: str = "-an -codec:v libx264 -preset:v ultrafast -crf:v 18 -pix_fmt:v yuv420p"
 
     # Timeouts
     startup_wait: float = 1.0  # Wait after starting playback

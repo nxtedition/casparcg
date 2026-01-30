@@ -295,6 +295,21 @@ struct blend_pipeline::impl
         uint32_t groupCountY = (params.dst_height + 15) / 16;
         vkCmdDispatch(cmdBuffer, groupCountX, groupCountY, 1);
 
+        // Post-dispatch memory barrier to ensure compute shader writes are complete and visible.
+        // This is critical for MoltenVK/Metal where implicit synchronization may not be sufficient.
+        VkMemoryBarrier memBarrier{};
+        memBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_MEMORY_READ_BIT;
+
+        vkCmdPipelineBarrier(cmdBuffer,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             0,
+                             1, &memBarrier,
+                             0, nullptr,
+                             0, nullptr);
+
         end_command_buffer(cmdBuffer);
 
         // Free descriptor set

@@ -1296,7 +1296,8 @@ class TestRunner:
 
         # ProRes encoding args - use prores_ks encoder
         # prores_ks is the FFmpeg ProRes encoder
-        prores_args = "-c:v prores_ks -profile:v 0 -pix_fmt yuv422p10le"
+        # Use -codec:v (not -c:v) as CasparCG's ffmpeg_consumer parses options differently
+        prores_args = "-codec:v prores_ks -profile:v 0 -pix_fmt:v yuv422p10le -an"
         consumer_args = f"{output_file} {prores_args}"
 
         # Start recording
@@ -1361,7 +1362,8 @@ class TestRunner:
         print("  Testing MOV container recording...")
 
         # H.264 in MOV container
-        mov_args = "-c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -f mov"
+        # Use -codec:v (not -c:v) as CasparCG's ffmpeg_consumer parses options differently
+        mov_args = "-codec:v libx264 -preset:v ultrafast -crf:v 18 -pix_fmt:v yuv420p -format mov -an"
         consumer_args = f"{output_file} {mov_args}"
 
         # Start recording

@@ -294,9 +294,12 @@ struct texture::impl
             destinationStage      = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
                    newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            // Wait for any shader operations (both compute and fragment) to complete.
+            // This is critical for GPU readback: data written by compute shaders and
+            // transitioned to SHADER_READ_ONLY_OPTIMAL must be visible to transfer reads.
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            sourceStage           = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             destinationStage      = VK_PIPELINE_STAGE_TRANSFER_BIT;
         } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL &&
                    newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
@@ -320,6 +323,13 @@ struct texture::impl
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             sourceStage           = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
             destinationStage      = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        // Phase 10: GENERAL → TRANSFER_SRC for GPU readback (copy_to)
+        } else if (oldLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+            // Wait for compute shader writes to complete before transfer read
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_TRANSFER_BIT;
         } else {
             // General fallback
             barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
@@ -382,6 +392,29 @@ struct texture::impl
 
         vkCmdCopyImageToBuffer(
             cmdBuffer, image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, static_cast<VkBuffer>(dst.handle()), 1, &region);
+
+        // Add buffer memory barrier to ensure GPU writes are visible to host
+        // This is critical for correct GPU->CPU readback
+        VkBufferMemoryBarrier bufBarrier{};
+        bufBarrier.sType               = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bufBarrier.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bufBarrier.dstAccessMask       = VK_ACCESS_HOST_READ_BIT;
+        bufBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufBarrier.buffer              = static_cast<VkBuffer>(dst.handle());
+        bufBarrier.offset              = 0;
+        bufBarrier.size                = VK_WHOLE_SIZE;
+
+        vkCmdPipelineBarrier(cmdBuffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_HOST_BIT,
+                             0,
+                             0,
+                             nullptr,
+                             1,
+                             &bufBarrier,
+                             0,
+                             nullptr);
 
         // Transition back to shader read
         transition_image_layout(cmdBuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);

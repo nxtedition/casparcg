@@ -195,6 +195,32 @@ class AMCPClient:
         """Set layer saturation."""
         return self.mixer(channel, layer, "SATURATION", saturation)
 
+    def mixer_levels(self, channel: int, layer: int,
+                     min_input: float, max_input: float, gamma: float,
+                     min_output: float, max_output: float) -> Tuple[int, str]:
+        """Set layer levels control (input/output range and gamma)."""
+        return self.mixer(channel, layer, "LEVELS",
+                          min_input, max_input, gamma, min_output, max_output)
+
+    def mixer_chroma(self, channel: int, layer: int,
+                     enable: int, target_hue: float, hue_width: float,
+                     min_sat: float, min_bri: float, softness: float,
+                     spill: float, spill_sat: float, show_mask: int = 0) -> Tuple[int, str]:
+        """Set layer chroma key parameters (modern 9-parameter format)."""
+        return self.mixer(channel, layer, "CHROMA",
+                          enable, target_hue, hue_width, min_sat, min_bri,
+                          softness, spill, spill_sat, show_mask)
+
+    def mixer_chroma_legacy(self, channel: int, layer: int,
+                            mode: str, threshold: float = 0.0,
+                            softness: float = 0.0, spill: float = 0.0) -> Tuple[int, str]:
+        """Set layer chroma key parameters (legacy format: NONE|GREEN|BLUE)."""
+        return self.mixer(channel, layer, "CHROMA", mode, threshold, softness, spill)
+
+    def mixer_invert(self, channel: int, layer: int, invert: int = 1) -> Tuple[int, str]:
+        """Set layer invert mode (0=off, 1=on)."""
+        return self.mixer(channel, layer, "INVERT", invert)
+
 
 class AMCPTestHelper:
     """Helper class for running AMCP-based tests."""

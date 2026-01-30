@@ -35,6 +35,7 @@ class texture;
  * Must match the layout in blend.comp
  *
  * Phase 5: Extended with full transform matrix and geometry parameters.
+ * Phase 6: Extended with color adjustments and chroma key parameters.
  */
 struct blend_push_constants
 {
@@ -80,7 +81,38 @@ struct blend_push_constants
     int32_t use_perspective;    // 1 if perspective is non-default
     int32_t use_clipping;       // 1 if clipping should be applied
     int32_t use_cropping;       // 1 if cropping should be applied
+    int32_t invert;             // 1 if colors should be inverted
+
+    // Phase 6: Color adjustments (Contrast/Saturation/Brightness)
+    int32_t use_csb;            // 1 if CSB should be applied
+    float   brightness;         // 1.0 = normal
+    float   saturation;         // 1.0 = normal
+    float   contrast;           // 1.0 = normal
+
+    // Phase 6: Levels control
+    int32_t use_levels;         // 1 if levels should be applied
+    float   levels_min_input;   // 0.0-1.0
+    float   levels_max_input;   // 0.0-1.0
+    float   levels_gamma;       // 0.1-10.0
+
+    float   levels_min_output;  // 0.0-1.0
+    float   levels_max_output;  // 0.0-1.0
     int32_t _pad2;              // Padding for alignment
+    int32_t _pad3;              // Padding for alignment
+
+    // Phase 6: Chroma key parameters
+    int32_t use_chroma;                     // 1 if chroma keying enabled
+    int32_t chroma_show_mask;               // 1 to visualize alpha mask
+    float   chroma_target_hue;              // 0.0-1.0 (hue in 0-360 mapped to 0-1)
+    float   chroma_hue_width;               // 0.0-1.0
+
+    float   chroma_min_saturation;          // 0.0-1.0
+    float   chroma_min_brightness;          // 0.0-1.0
+    float   chroma_softness;                // 0.0-1.0
+    float   chroma_spill_suppress;          // 0.0-1.0 (range in 0-360 mapped to 0-1)
+
+    float   chroma_spill_suppress_saturation; // 0.0-1.0
+    int32_t _pad4[3];                       // Padding for alignment
 };
 
 /**

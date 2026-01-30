@@ -94,7 +94,7 @@ struct image_kernel::impl
         blend_pipeline_ = std::make_unique<blend_pipeline>(
             handles.device, handles.physical_device, handles.command_pool, handles.queue);
 
-        CASPAR_LOG(info) << L"[vk::image_kernel] Vulkan rendering kernel initialized (GPU transforms - Phase 5)";
+        CASPAR_LOG(info) << L"[vk::image_kernel] Vulkan rendering kernel initialized (GPU color processing - Phase 6)";
     }
 
     ~impl() {}
@@ -178,7 +178,45 @@ struct image_kernel::impl
             push_constants.use_perspective = is_default_perspective(transform.perspective) ? 0 : 1;
             push_constants.use_clipping    = transform.enable_geometry_modifiers ? 1 : 0;
             push_constants.use_cropping    = transform.enable_geometry_modifiers ? 1 : 0;
-            push_constants._pad2           = 0;
+            push_constants.invert          = transform.invert ? 1 : 0;
+
+            // Phase 6: Color adjustments (Contrast/Saturation/Brightness)
+            bool use_csb = std::abs(transform.brightness - 1.0) > epsilon ||
+                           std::abs(transform.saturation - 1.0) > epsilon ||
+                           std::abs(transform.contrast - 1.0) > epsilon;
+            push_constants.use_csb     = use_csb ? 1 : 0;
+            push_constants.brightness  = static_cast<float>(transform.brightness);
+            push_constants.saturation  = static_cast<float>(transform.saturation);
+            push_constants.contrast    = static_cast<float>(transform.contrast);
+
+            // Phase 6: Levels control
+            bool use_levels = std::abs(transform.levels.min_input) > epsilon ||
+                              std::abs(transform.levels.max_input - 1.0) > epsilon ||
+                              std::abs(transform.levels.gamma - 1.0) > epsilon ||
+                              std::abs(transform.levels.min_output) > epsilon ||
+                              std::abs(transform.levels.max_output - 1.0) > epsilon;
+            push_constants.use_levels        = use_levels ? 1 : 0;
+            push_constants.levels_min_input  = static_cast<float>(transform.levels.min_input);
+            push_constants.levels_max_input  = static_cast<float>(transform.levels.max_input);
+            push_constants.levels_gamma      = static_cast<float>(transform.levels.gamma);
+            push_constants.levels_min_output = static_cast<float>(transform.levels.min_output);
+            push_constants.levels_max_output = static_cast<float>(transform.levels.max_output);
+            push_constants._pad2             = 0;
+            push_constants._pad3             = 0;
+
+            // Phase 6: Chroma key parameters
+            push_constants.use_chroma                       = transform.chroma.enable ? 1 : 0;
+            push_constants.chroma_show_mask                 = transform.chroma.show_mask ? 1 : 0;
+            push_constants.chroma_target_hue                = static_cast<float>(transform.chroma.target_hue / 360.0);
+            push_constants.chroma_hue_width                 = static_cast<float>(transform.chroma.hue_width);
+            push_constants.chroma_min_saturation            = static_cast<float>(transform.chroma.min_saturation);
+            push_constants.chroma_min_brightness            = static_cast<float>(transform.chroma.min_brightness);
+            push_constants.chroma_softness                  = static_cast<float>(transform.chroma.softness);
+            push_constants.chroma_spill_suppress            = static_cast<float>(transform.chroma.spill_suppress / 360.0);
+            push_constants.chroma_spill_suppress_saturation = static_cast<float>(transform.chroma.spill_suppress_saturation);
+            push_constants._pad4[0]                         = 0;
+            push_constants._pad4[1]                         = 0;
+            push_constants._pad4[2]                         = 0;
 
             // Execute GPU blend with transforms
             blend_pipeline_->execute(*src_tex, *dst_tex, push_constants);

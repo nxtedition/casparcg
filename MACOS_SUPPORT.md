@@ -237,28 +237,46 @@ All geometric transforms work via MIXER commands.
 
 ---
 
-## Phase 6: Color Processing & Effects
+## Phase 6: Color Processing & Effects ✅
 
 **Goal:** Implement color adjustment and keying effects.
 
+**Status:** COMPLETED
+
 ### Tasks
 
-- [ ] Implement color adjustments in fragment shader:
-  - [ ] BRIGHTNESS
-  - [ ] CONTRAST
-  - [ ] SATURATION
-  - [ ] LEVELS (min/max input/output, gamma)
-  - [ ] INVERT
-- [ ] Implement chroma key:
-  - [ ] Hue/saturation/brightness thresholds
-  - [ ] Softness controls
-  - [ ] Spill suppression
-- [ ] Implement keyer modes (internal/external key)
-- [ ] Implement straight alpha vs premultiplied alpha handling
+- [x] Implement color adjustments in compute shader:
+  - [x] BRIGHTNESS
+  - [x] CONTRAST
+  - [x] SATURATION
+  - [x] LEVELS (min/max input/output, gamma)
+  - [x] INVERT
+- [x] Implement chroma key:
+  - [x] Hue/saturation/brightness thresholds
+  - [x] Softness controls
+  - [x] Spill suppression
+- [ ] Implement keyer modes (internal/external key) - deferred to Phase 7
+- [ ] Implement straight alpha vs premultiplied alpha handling - deferred to Phase 7
+
+### Files Created/Modified
+
+- `src/accelerator/vk/util/pipeline.h` - Extended blend_push_constants with color parameters
+- `src/accelerator/vk/image/shaders/blend.comp` - Added CSB, levels, invert, and chroma key
+- `src/accelerator/vk/image/image_kernel.cpp` - Pass color parameters to shader
+- `tests/selftest/amcp_client.py` - Added levels, chroma, invert commands
+- `tests/selftest/test_runner.py` - Added Phase 6 tests
+
+### Technical Notes
+
+- ContrastSaturationBrightness uses luma-based mixing for proper color space math
+- Levels control uses standard Photoshop-style input/output range mapping with gamma
+- Chroma key implements color distance algorithm from van den Bergh & Lalioti paper
+- Spill suppression shifts hue away from target color and desaturates
+- Processing order: chroma key → levels → CSB → opacity → invert → blend
 
 ### Deliverable
 
-All MIXER color commands functional.
+All MIXER color commands functional (BRIGHTNESS, CONTRAST, SATURATION, LEVELS, CHROMA, INVERT).
 
 ---
 
@@ -600,6 +618,9 @@ cd tests/selftest
 | 4 | `blend_modes` | All blend modes execute |
 | 5 | `transforms` | FILL, ROTATION work |
 | 6 | `color_adjust` | Brightness/contrast/saturation |
+| 6 | `levels` | Levels control (min/max/gamma) |
+| 6 | `chroma_key` | Chroma key (green/blue screen) |
+| 6 | `invert` | Color inversion |
 | 8 | `video_playback` | FFmpeg producer works |
 | 9 | `screen_output` | Screen consumer displays |
 | 10 | `recording` | FFmpeg consumer records + verifies output |

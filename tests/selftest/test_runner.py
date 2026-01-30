@@ -77,6 +77,12 @@ class TestRunner:
         # Phase 6: Color Processing
         self.register_test("color_adjust", 6, self.test_color_adjustments,
                            "Test brightness, contrast, saturation")
+        self.register_test("levels", 6, self.test_levels,
+                           "Test levels control (min/max/gamma)")
+        self.register_test("chroma_key", 6, self.test_chroma_key,
+                           "Test chroma key (green/blue screen)")
+        self.register_test("invert", 6, self.test_invert,
+                           "Test color inversion")
 
         # Phase 8: Producers
         self.register_test("video_playback", 8, self.test_video_playback,
@@ -576,6 +582,171 @@ class TestRunner:
         self.client.mixer_saturation(ch, 1, 1.0)
 
         return True
+
+    def test_levels(self) -> bool:
+        """Test levels control (Phase 6).
+
+        Tests the MIXER LEVELS command which controls:
+        - min_input: clips lower range of input (0-1)
+        - max_input: clips upper range of input (0-1)
+        - gamma: gamma correction curve (0.1-10.0)
+        - min_output: output floor (0-1)
+        - max_output: output ceiling (0-1)
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        # Play a color
+        r1 = self.client.play_color(ch, 1, "RED")
+        if not self.helper.assert_success(r1, "Play RED"):
+            return False
+
+        print("  Testing LEVELS control...")
+
+        # Test basic levels - darken output
+        r2 = self.client.mixer_levels(ch, 1, 0.0, 1.0, 1.0, 0.0, 0.5)
+        if not self.helper.assert_success(r2, "Set levels (darken output to 50%)"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Test gamma correction
+        r3 = self.client.mixer_levels(ch, 1, 0.0, 1.0, 2.0, 0.0, 1.0)
+        if not self.helper.assert_success(r3, "Set gamma to 2.0"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Test input clipping
+        r4 = self.client.mixer_levels(ch, 1, 0.2, 0.8, 1.0, 0.0, 1.0)
+        if not self.helper.assert_success(r4, "Set input range 0.2-0.8"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Test output range (posterize effect)
+        r5 = self.client.mixer_levels(ch, 1, 0.0, 1.0, 1.0, 0.2, 0.8)
+        if not self.helper.assert_success(r5, "Set output range 0.2-0.8"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Reset levels
+        r6 = self.client.mixer_levels(ch, 1, 0.0, 1.0, 1.0, 0.0, 1.0)
+        if not self.helper.assert_success(r6, "Reset levels to default"):
+            all_passed = False
+
+        if all_passed:
+            print("  All levels tests passed!")
+        else:
+            print("  Some levels tests failed")
+
+        return all_passed
+
+    def test_chroma_key(self) -> bool:
+        """Test chroma key (Phase 6).
+
+        Tests the MIXER CHROMA command for green/blue screen keying:
+        - target_hue: target color (0-360 degrees, green=120, blue=240)
+        - hue_width: width of hue selection range (0-1)
+        - min_saturation: minimum saturation threshold (0-1)
+        - min_brightness: minimum brightness threshold (0-1)
+        - softness: edge softness/feathering (0-1)
+        - spill_suppress: spill suppression range (0-360)
+        - spill_suppress_saturation: desaturation for spill suppression (0-1)
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        # Play a green color to test keying
+        r1 = self.client.play_color(ch, 1, "GREEN")
+        if not self.helper.assert_success(r1, "Play GREEN"):
+            return False
+
+        print("  Testing CHROMA key...")
+
+        # Test legacy format - GREEN key
+        r2 = self.client.mixer_chroma_legacy(ch, 1, "GREEN", 0.5, 0.1, 0.1)
+        if not self.helper.assert_success(r2, "Enable GREEN chroma key (legacy format)"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Disable chroma key
+        r3 = self.client.mixer_chroma_legacy(ch, 1, "NONE")
+        if not self.helper.assert_success(r3, "Disable chroma key"):
+            all_passed = False
+        self.helper.wait(0.3)
+
+        # Test modern format - custom hue (green at 120 degrees = 0.333)
+        r4 = self.client.mixer_chroma(ch, 1, 1, 120.0, 0.1, 0.2, 0.2, 0.1, 30.0, 0.5, 0)
+        if not self.helper.assert_success(r4, "Enable chroma key (modern format, hue=120)"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Test show_mask mode
+        r5 = self.client.mixer_chroma(ch, 1, 1, 120.0, 0.1, 0.2, 0.2, 0.1, 30.0, 0.5, 1)
+        if not self.helper.assert_success(r5, "Enable chroma key show_mask mode"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Test blue key
+        self.client.play_color(ch, 1, "BLUE")
+        r6 = self.client.mixer_chroma_legacy(ch, 1, "BLUE", 0.5, 0.1, 0.1)
+        if not self.helper.assert_success(r6, "Enable BLUE chroma key"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Disable chroma key
+        r7 = self.client.mixer_chroma_legacy(ch, 1, "NONE")
+        if not self.helper.assert_success(r7, "Disable chroma key"):
+            all_passed = False
+
+        if all_passed:
+            print("  All chroma key tests passed!")
+        else:
+            print("  Some chroma key tests failed")
+
+        return all_passed
+
+    def test_invert(self) -> bool:
+        """Test color inversion (Phase 6).
+
+        Tests the MIXER INVERT command which inverts all colors.
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        # Play a color
+        r1 = self.client.play_color(ch, 1, "RED")
+        if not self.helper.assert_success(r1, "Play RED"):
+            return False
+
+        print("  Testing INVERT...")
+
+        # Enable invert (RED should become CYAN)
+        r2 = self.client.mixer_invert(ch, 1, 1)
+        if not self.helper.assert_success(r2, "Enable color inversion"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Disable invert
+        r3 = self.client.mixer_invert(ch, 1, 0)
+        if not self.helper.assert_success(r3, "Disable color inversion"):
+            all_passed = False
+        self.helper.wait(0.3)
+
+        # Test with white
+        self.client.play_color(ch, 1, "WHITE")
+        r4 = self.client.mixer_invert(ch, 1, 1)
+        if not self.helper.assert_success(r4, "Invert WHITE (should become BLACK)"):
+            all_passed = False
+        self.helper.wait(0.5)
+
+        # Disable invert
+        self.client.mixer_invert(ch, 1, 0)
+
+        if all_passed:
+            print("  All invert tests passed!")
+        else:
+            print("  Some invert tests failed")
+
+        return all_passed
 
     def test_video_playback(self) -> bool:
         """Test video file playback (requires test media)."""

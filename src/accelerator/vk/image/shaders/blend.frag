@@ -285,6 +285,25 @@ vec4 get_rgba_color(vec2 tex_coord)
             return vec4(texel.rgb, 1.0) * params.precision_factor[0];
         }
 
+    case PIXEL_FORMAT_GBRP:
+        {
+            // GBRP: Green, Blue, Red in separate planes
+            float g = texture(plane0, tex_coord).r * params.precision_factor[0];
+            float b = texture(plane1, tex_coord).r * params.precision_factor[1];
+            float r = texture(plane2, tex_coord).r * params.precision_factor[2];
+            return vec4(r, g, b, 1.0);
+        }
+
+    case PIXEL_FORMAT_GBRAP:
+        {
+            // GBRAP: Green, Blue, Red, Alpha in separate planes
+            float g = texture(plane0, tex_coord).r * params.precision_factor[0];
+            float b = texture(plane1, tex_coord).r * params.precision_factor[1];
+            float r = texture(plane2, tex_coord).r * params.precision_factor[2];
+            float a = texture(plane3, tex_coord).r * params.precision_factor[3];
+            return vec4(r, g, b, a);
+        }
+
     default:
         return texture(plane0, tex_coord);
     }

@@ -43,6 +43,35 @@ std::shared_ptr<AVPacket> alloc_packet()
     return packet;
 }
 
+bool has_straight_alpha(AVPixelFormat pix_fmt)
+{
+    // Check if the pixel format has an alpha channel
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pix_fmt);
+    if (!desc) {
+        return false;
+    }
+
+    // Check for alpha component
+    bool has_alpha = (desc->flags & AV_PIX_FMT_FLAG_ALPHA) != 0;
+    if (!has_alpha) {
+        return false;
+    }
+
+    // Most video formats with alpha use straight (unassociated) alpha:
+    // - ProRes 4444 (YUVA formats)
+    // - DNxHR 444
+    // - Animation codec
+    // - Uncompressed formats
+    //
+    // Premultiplied alpha is mainly used by:
+    // - Some compositing software exports
+    // - Some PNG files (though rarely)
+    //
+    // For video playback, assume straight alpha as it's the industry standard
+    // for professional video formats with alpha channels.
+    return true;
+}
+
 core::mutable_frame make_frame(void*                            tag,
                                core::frame_factory&             frame_factory,
                                std::shared_ptr<AVFrame>         video,
@@ -151,10 +180,25 @@ std::tuple<core::pixel_format, common::bit_depth> get_pixel_format(AVPixelFormat
             return {core::pixel_format::ycbcr, common::bit_depth::bit8};
         case AV_PIX_FMT_YUVA420P:
             return {core::pixel_format::ycbcra, common::bit_depth::bit8};
+        case AV_PIX_FMT_YUVA420P10LE:
+        case AV_PIX_FMT_YUVA420P10BE:
+            return {core::pixel_format::ycbcra, common::bit_depth::bit10};
         case AV_PIX_FMT_YUVA422P:
             return {core::pixel_format::ycbcra, common::bit_depth::bit8};
+        case AV_PIX_FMT_YUVA422P10LE:
+        case AV_PIX_FMT_YUVA422P10BE:
+            return {core::pixel_format::ycbcra, common::bit_depth::bit10};
+        case AV_PIX_FMT_YUVA422P12LE:
+        case AV_PIX_FMT_YUVA422P12BE:
+            return {core::pixel_format::ycbcra, common::bit_depth::bit12};
         case AV_PIX_FMT_YUVA444P:
             return {core::pixel_format::ycbcra, common::bit_depth::bit8};
+        case AV_PIX_FMT_YUVA444P10LE:
+        case AV_PIX_FMT_YUVA444P10BE:
+            return {core::pixel_format::ycbcra, common::bit_depth::bit10};
+        case AV_PIX_FMT_YUVA444P12LE:
+        case AV_PIX_FMT_YUVA444P12BE:
+            return {core::pixel_format::ycbcra, common::bit_depth::bit12};
         case AV_PIX_FMT_UYVY422:
             return {core::pixel_format::uyvy, common::bit_depth::bit8};
         case AV_PIX_FMT_GBRP:

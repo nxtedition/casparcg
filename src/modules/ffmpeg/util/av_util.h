@@ -32,6 +32,11 @@ core::pixel_format_desc pixel_format_desc(AVPixelFormat     pix_fmt,
                                           int               height,
                                           std::vector<int>& data_map,
                                           core::color_space color_space = core::color_space::bt709);
+
+// Check if a pixel format has an alpha channel and uses straight (unassociated) alpha
+// Most video formats with alpha (ProRes 4444, DNxHR, etc.) use straight alpha
+bool has_straight_alpha(AVPixelFormat pix_fmt);
+
 core::mutable_frame     make_frame(void*                    tag,
                                    core::frame_factory&     frame_factory,
                                    std::shared_ptr<AVFrame> video,

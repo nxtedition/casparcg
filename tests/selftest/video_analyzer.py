@@ -333,6 +333,81 @@ class VideoAnalyzer:
                   f"got {info.width}x{info.height}")
             return False
 
+    def analyze_alpha_channel(self, filepath: str, frames: List[int] = None) -> Dict[int, Dict[str, Any]]:
+        """Analyze alpha channel values at specified frames.
+
+        Returns dict of frame_number -> {'min_alpha': int, 'max_alpha': int, 'avg_alpha': float,
+                                         'has_transparency': bool, 'sample_rgba': (r,g,b,a)}
+        """
+        if frames is None:
+            frames = [0, 10, 20, 30, 40, 50]
+
+        results = {}
+        info = self.get_video_info(filepath)
+        if not info:
+            return results
+
+        for frame_num in frames:
+            if frame_num >= info.frame_count:
+                continue
+
+            try:
+                timestamp = frame_num / info.fps
+
+                # Extract frame as RGBA raw data
+                cmd = [
+                    self.ffmpeg_path,
+                    "-ss", str(timestamp),
+                    "-i", filepath,
+                    "-vframes", "1",
+                    "-f", "rawvideo",
+                    "-pix_fmt", "rgba",
+                    "-"
+                ]
+                result = subprocess.run(cmd, capture_output=True, timeout=10)
+
+                if result.returncode != 0:
+                    continue
+
+                data = result.stdout
+                if len(data) < 4:
+                    continue
+
+                # Analyze RGBA values
+                pixels = len(data) // 4
+                r_vals = []
+                g_vals = []
+                b_vals = []
+                a_vals = []
+
+                for i in range(min(pixels, 10000)):  # Sample up to 10000 pixels
+                    offset = i * 4
+                    r_vals.append(data[offset])
+                    g_vals.append(data[offset + 1])
+                    b_vals.append(data[offset + 2])
+                    a_vals.append(data[offset + 3])
+
+                # Get center pixel
+                center_offset = (pixels // 2) * 4
+                if center_offset + 3 < len(data):
+                    center_rgba = (data[center_offset], data[center_offset+1],
+                                   data[center_offset+2], data[center_offset+3])
+                else:
+                    center_rgba = (0, 0, 0, 0)
+
+                results[frame_num] = {
+                    'min_alpha': min(a_vals),
+                    'max_alpha': max(a_vals),
+                    'avg_alpha': sum(a_vals) / len(a_vals),
+                    'has_transparency': min(a_vals) < 255,
+                    'center_rgba': center_rgba,
+                    'avg_rgb': (sum(r_vals)//len(r_vals), sum(g_vals)//len(g_vals), sum(b_vals)//len(b_vals))
+                }
+            except Exception as e:
+                print(f"  Error analyzing frame {frame_num}: {e}")
+
+        return results
+
     def get_color_at_regions(self, filepath: str, frame_number: int,
                              regions: Dict[str, Tuple[int, int, int, int]]) -> Dict[str, FrameColor]:
         """Get average colors for multiple regions."""

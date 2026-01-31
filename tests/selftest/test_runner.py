@@ -1712,6 +1712,25 @@ class TestRunner:
         print("  Testing video overlay with alpha channel...")
         print("  This test uses mathilda.mp4 and wipe.mov from the media folder")
 
+        # First, analyze the source wipe video to understand its alpha channel
+        print("\n  === Pre-test: Analyze source wipe video ===")
+        # Find the media folder relative to the test output dir (which is in build/shell/)
+        shell_dir = os.path.dirname(os.path.abspath(self.config.output_dir))
+        wipe_path = os.path.join(shell_dir, "media", "wipe.mov")
+        if not os.path.exists(wipe_path):
+            # Try from current working directory
+            wipe_path = os.path.join(os.getcwd(), "..", "..", "build", "shell", "media", "wipe.mov")
+        if os.path.exists(wipe_path):
+            print(f"  Analyzing source wipe video: {wipe_path}")
+            alpha_info = self.analyzer.analyze_alpha_channel(wipe_path, frames=[0, 10, 20, 30, 40, 50, 60])
+            for frame_num, info in sorted(alpha_info.items()):
+                rgba = info.get('center_rgba', (0,0,0,0))
+                avg_rgb = info.get('avg_rgb', (0,0,0))
+                print(f"    Frame {frame_num}: alpha={info['min_alpha']}-{info['max_alpha']} (avg={info['avg_alpha']:.0f}), "
+                      f"center_rgba={rgba}, avg_rgb={avg_rgb}, transparent={info['has_transparency']}")
+        else:
+            print(f"  Could not find source wipe video for analysis")
+
         # Clear and start fresh
         self.client.clear(ch)
         self.helper.wait(0.3)
@@ -1764,15 +1783,64 @@ class TestRunner:
         else:
             print("  Could not create baseline recording")
 
-        # Test 3: Add wipe with alpha on top and record
-        print("\n  === Test 3: Add wipe overlay and record (bug reproduction) ===")
-        result = self.client.play(ch, 12, "wipe LOOP")
+        # Test 3a: Play wipe ALONE (without mathilda) to test if wipe renders correctly
+        print("\n  === Test 3a: Play wipe ALONE (isolate wipe rendering) ===")
+        self.client.clear(ch)  # Clear mathilda first
+        self.helper.wait(0.3)
+
+        result = self.client.play(ch, 1, "wipe LOOP")
         code, msg = result
 
         if code == 404:
-            print("  Media file 'wipe' not found - skipping overlay test")
+            print("  Media file 'wipe' not found - skipping wipe test")
             print("  Add wipe.mov to the media folder to enable this test")
             return all_passed
+
+        if not self.helper.assert_success(result, "Play wipe alone on layer 1"):
+            all_passed = False
+
+        self.helper.wait(0.5)
+
+        # Record wipe alone
+        wipe_alone_file = get_output_path(self.config, "test_wipe_alone.mp4")
+        if os.path.exists(wipe_alone_file):
+            os.remove(wipe_alone_file)
+
+        consumer_args = f"{wipe_alone_file} {self.config.ffmpeg_args}"
+        self.client.add_consumer(ch, "FILE", consumer_args)
+        self.helper.wait(2.0)
+        self.client.remove_consumer(ch, "FILE", consumer_args)
+        self.helper.wait(0.5)
+
+        # Analyze wipe alone - should show wipe color (dark blue) when opaque
+        if os.path.exists(wipe_alone_file):
+            info = self.analyzer.get_video_info(wipe_alone_file)
+            if info and info.frame_count > 0:
+                for frame_num in [10, 30, 50]:
+                    if frame_num < info.frame_count:
+                        color = self.analyzer.get_average_color(wipe_alone_file, frame_number=frame_num)
+                        if color:
+                            # Wipe alone should show wipe color (dark blue ~1,15,59) when opaque
+                            # Or transparent black (0,0,0) when alpha=0
+                            print(f"  Wipe alone frame {frame_num}: R={color.r}, G={color.g}, B={color.b}")
+                            if frame_num == 30:  # Should be fully opaque
+                                if color.r < 5 and color.g < 20 and color.b < 70 and color.b > 40:
+                                    print(f"    OK: Wipe is rendering dark blue color")
+                                elif color.r < 5 and color.g < 5 and color.b < 5:
+                                    print(f"    BUG: Wipe is BLACK - YUVA rendering issue!")
+                                else:
+                                    print(f"    Unexpected color")
+
+        # Test 3b: Now play mathilda again and add wipe overlay
+        print("\n  === Test 3b: Add wipe overlay over mathilda ===")
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Play mathilda first
+        self.client.play(ch, 10, "mathilda")
+        self.helper.wait(0.5)
+
+        result = self.client.play(ch, 12, "wipe LOOP")
 
         if not self.helper.assert_success(result, "Play wipe on layer 12"):
             all_passed = False

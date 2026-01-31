@@ -575,11 +575,18 @@ struct blend_pipeline::impl
 
         // Debug logging
         static int render_debug = 0;
-        if (render_debug++ < 5) {
+        if (render_debug++ < 30) {
             CASPAR_LOG(info) << L"[vk::blend_pipeline] Render: "
                               << params.dst_width << L"x" << params.dst_height
                               << L" blend_mode=" << params.blend_mode
-                              << L" opacity=" << params.opacity;
+                              << L" opacity=" << params.opacity
+                              << L" pixel_format=" << params.pixel_format
+                              << L" src=" << params.src_width << L"x" << params.src_height
+                              << L" transform_m[0-2]=[" << params.transform_matrix[0]
+                              << L"," << params.transform_matrix[4]
+                              << L"," << params.transform_matrix[8] << L"]"
+                              << L" plane0_view=" << (void*)imageInfos[0].imageView
+                              << L" dst_view=" << (void*)dstImageView;
         }
 
         // Draw full-screen triangle (3 vertices, generated in vertex shader)

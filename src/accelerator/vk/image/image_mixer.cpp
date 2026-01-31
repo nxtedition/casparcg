@@ -87,6 +87,12 @@ class image_renderer
     std::future<array<const std::uint8_t>> operator()(std::vector<layer>             layers,
                                                       const core::video_format_desc& format_desc)
     {
+        // Debug: Log layer count
+        static int render_debug = 0;
+        if (render_debug++ < 30) {
+            CASPAR_LOG(info) << L"[vk::image_mixer] render: layers.size=" << layers.size();
+        }
+
         if (layers.empty()) {
             // Bypass GPU with empty frame (black)
             static const std::vector<uint8_t, boost::alignment::aligned_allocator<uint8_t, 32>> buffer(
@@ -97,6 +103,9 @@ class image_renderer
         return flatten(device_->dispatch_async(
             [this, format_desc, layers = std::move(layers)]() mutable -> std::shared_future<array<const std::uint8_t>> {
                 auto target_texture = device_->create_texture(format_desc.width, format_desc.height, 4, depth_);
+
+                // Clear to transparent black before rendering to avoid undefined content
+                target_texture->clear();
 
                 draw(target_texture, std::move(layers), format_desc);
 
@@ -133,6 +142,7 @@ class image_renderer
         if (layer.blend_mode != core::blend_mode::normal) {
             // Non-normal blend modes need precomposition
             auto layer_texture = device_->create_texture(target_texture->width(), target_texture->height(), 4, depth_);
+            layer_texture->clear();  // Clear to transparent before compositing
 
             for (auto& item : layer.items)
                 draw(layer_texture, std::move(item), layer_key_texture, local_key_texture, local_mix_texture,
@@ -174,9 +184,10 @@ class image_renderer
 
         if (params.transform.is_key) {
             // Key: use as mask for next non-key item
-            local_key_texture = local_key_texture
-                                    ? local_key_texture
-                                    : device_->create_texture(target_texture->width(), target_texture->height(), 1, depth_);
+            if (!local_key_texture) {
+                local_key_texture = device_->create_texture(target_texture->width(), target_texture->height(), 1, depth_);
+                local_key_texture->clear();
+            }
 
             params.background = local_key_texture;
             params.local_key  = nullptr;
@@ -185,9 +196,10 @@ class image_renderer
             kernel_.draw(params);
         } else if (params.transform.is_mix) {
             // Mix: precompose items before drawing to channel
-            local_mix_texture = local_mix_texture
-                                    ? local_mix_texture
-                                    : device_->create_texture(target_texture->width(), target_texture->height(), 4, depth_);
+            if (!local_mix_texture) {
+                local_mix_texture = device_->create_texture(target_texture->width(), target_texture->height(), 4, depth_);
+                local_mix_texture->clear();
+            }
 
             params.background = local_mix_texture;
             params.local_key  = std::move(local_key_texture);

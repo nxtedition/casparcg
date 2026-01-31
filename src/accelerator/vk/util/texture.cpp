@@ -376,9 +376,14 @@ struct texture::impl
     void copy_from(buffer& src)
     {
         static int copy_debug_count = 0;
-        if (copy_debug_count++ < 5) {
+        if (copy_debug_count++ < 10) {
+            // Log buffer content for debugging
+            auto* data = static_cast<uint8_t*>(src.data());
             CASPAR_LOG(info) << L"[vk::texture] copy_from: current_layout=" << current_layout_
-                              << L" size=" << size_ << L" buffer_size=" << src.size();
+                              << L" size=" << size_ << L" buffer_size=" << src.size()
+                              << L" format=" << format_
+                              << L" first_pixels=[" << (int)data[0] << L"," << (int)data[1] << L","
+                              << (int)data[2] << L"," << (int)data[3] << L"]";
         }
 
         auto cmdBuffer = begin_single_time_commands();
@@ -410,7 +415,7 @@ struct texture::impl
     void copy_to(buffer& dst)
     {
         static int copy_to_debug = 0;
-        if (copy_to_debug++ < 5) {
+        if (copy_to_debug++ < 30) {
             CASPAR_LOG(info) << L"[vk::texture] copy_to: current_layout=" << current_layout_
                               << L" size=" << size_ << L" dst_size=" << dst.size()
                               << L" width=" << width_ << L" height=" << height_
@@ -467,7 +472,7 @@ struct texture::impl
 
         // Debug: Check what was copied
         static int copy_to_verify = 0;
-        if (copy_to_verify++ < 5) {
+        if (copy_to_verify++ < 30) {
             auto* data = static_cast<uint8_t*>(dst.data());
             CASPAR_LOG(info) << L"[vk::texture] copy_to result: ["
                               << (int)data[0] << L"," << (int)data[1] << L","

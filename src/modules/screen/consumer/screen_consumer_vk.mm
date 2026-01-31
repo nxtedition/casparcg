@@ -459,9 +459,9 @@ struct screen_consumer_vk
         static uint8_t last_r = 0, last_g = 0, last_b = 0, last_a = 0;
         if (frame_data.size() >= 4) {
             auto* data = frame_data.begin();
-            // Log first 5 frames, or when color changes
+            // Log first 30 frames, or when color changes
             bool color_changed = (data[0] != last_b || data[1] != last_g || data[2] != last_r || data[3] != last_a);
-            if (debug_counter++ < 5 || color_changed) {
+            if (debug_counter++ < 30 || color_changed) {
                 CASPAR_LOG(info) << print() << L" Frame data (BGRA): "
                                   << L"[" << (int)data[0] << L"," << (int)data[1] << L"," << (int)data[2] << L"," << (int)data[3] << L"]"
                                   << (color_changed ? L" (color changed)" : L"");

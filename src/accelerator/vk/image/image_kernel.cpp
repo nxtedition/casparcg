@@ -296,14 +296,18 @@ struct image_kernel::impl
         // Debug: Log key parameters
         static int debug_kernel_count = 0;
         static int debug_kernel_ok = 0;
-        if (debug_kernel_count++ < 5 || debug_kernel_ok < 3) {
-            CASPAR_LOG(info) << L"[vk::image_kernel] Blend params: opacity=" << push_constants.opacity
+        if (debug_kernel_count++ < 30 || debug_kernel_ok < 10) {
+            CASPAR_LOG(info) << L"[vk::image_kernel] Blend: opacity=" << push_constants.opacity
                               << L" src=" << push_constants.src_width << L"x" << push_constants.src_height
                               << L" dst=" << push_constants.dst_width << L"x" << push_constants.dst_height
                               << L" pixel_format=" << push_constants.pixel_format
-                              << L" transform_m0=" << push_constants.transform_matrix[0]
-                              << L" geometry_size=" << coords.size()
-                              << L" is_straight_alpha=" << push_constants.is_straight_alpha;
+                              << L" transform=[" << push_constants.transform_matrix[0]
+                              << L"," << push_constants.transform_matrix[4]
+                              << L"," << push_constants.transform_matrix[8] << L"]"
+                              << L" fill_scale=[" << transform.fill_scale[0] << L"," << transform.fill_scale[1] << L"]"
+                              << L" fill_trans=[" << transform.fill_translation[0] << L"," << transform.fill_translation[1] << L"]"
+                              << L" textures=" << params.textures.size()
+                              << L" tex0=" << (params.textures.size() > 0 ? (void*)params.textures[0].get() : nullptr);
             if (push_constants.src_width > 1 || push_constants.src_height > 1) {
                 debug_kernel_ok++;
             }

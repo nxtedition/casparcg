@@ -29,6 +29,7 @@
 #include "image/image_mixer.h"
 
 #include <common/diagnostics/graph.h>
+#include <common/log.h>
 
 #include <core/frame/draw_frame.h>
 #include <core/frame/frame_transform.h>
@@ -89,7 +90,16 @@ struct mixer::impl
                                     desc.planes.push_back(
                                         pixel_format_desc::plane(format_desc.width, format_desc.height, 4, depth));
                                     std::vector<array<const uint8_t>> image_data;
-                                    image_data.emplace_back(std::move(image.get()));
+                                    auto img = std::move(image.get());
+                                    // Debug: Log first pixels of rendered frame
+                                    static int mixer_debug = 0;
+                                    if (mixer_debug++ < 20 && img.size() >= 4) {
+                                        auto* data = img.begin();
+                                        CASPAR_LOG(info) << L"[mixer] Frame created: size=" << img.size()
+                                                          << L" first_pixels=[" << (int)data[0] << L"," << (int)data[1]
+                                                          << L"," << (int)data[2] << L"," << (int)data[3] << L"]";
+                                    }
+                                    image_data.emplace_back(std::move(img));
                                     return const_frame(tag, std::move(image_data), std::move(audio), desc);
                                 }));
 

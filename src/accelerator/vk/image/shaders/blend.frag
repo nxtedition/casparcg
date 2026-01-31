@@ -42,100 +42,133 @@ layout(binding = 3) uniform sampler2D plane3;
 layout(binding = 4) uniform sampler2D dst_sampler;
 
 // Push constants for parameters
-// Must match blend_push_constants in pipeline.h
+// Must match blend_push_constants in pipeline.h EXACTLY (scalar layout)
+// Using float arrays instead of mat3/vec3 to match C++ struct layout
 layout(push_constant) uniform PushConstants {
-    // Blend parameters
+    // Blend parameters (16 bytes)
     int   blend_mode;      // 0-28 blend mode index
     int   keyer;           // 0=linear, 1=additive
     float opacity;         // 0.0-1.0
     int   _pad0;
 
-    // Transform matrix (3x3, column-major)
-    mat3  transform_matrix;
-    vec3  _pad1;
+    // Transform matrix (3x3, stored as float[9] + float[3] pad = 48 bytes)
+    float transform_matrix[9];
+    float _pad1[3];
 
-    // Perspective corners (ul, ur, ll, lr - each is vec2)
-    vec2  perspective_ul;
-    vec2  perspective_ur;
-    vec2  perspective_ll;
-    vec2  perspective_lr;
+    // Perspective corners (ul, ur, ll, lr - each is float[2], total 32 bytes)
+    float perspective_ul[2];
+    float perspective_ur[2];
+    float perspective_ll[2];
+    float perspective_lr[2];
 
-    // Clipping rectangle (normalized 0-1)
+    // Clipping rectangle (16 bytes)
     float clip_left;
     float clip_top;
     float clip_right;
     float clip_bottom;
 
-    // Cropping rectangle (normalized 0-1)
+    // Cropping rectangle (16 bytes)
     float crop_left;
     float crop_top;
     float crop_right;
     float crop_bottom;
 
-    // Image dimensions
+    // Image dimensions (16 bytes)
     int   src_width;
     int   src_height;
     int   dst_width;
     int   dst_height;
 
-    // Feature flags
+    // Feature flags (16 bytes)
     int   use_perspective;
     int   use_clipping;
     int   use_cropping;
     int   invert;
 
-    // Phase 6: Color adjustments (Contrast/Saturation/Brightness)
+    // Phase 6: Color adjustments (16 bytes)
     int   use_csb;
     float brightness;
     float saturation;
     float contrast;
 
-    // Phase 6: Levels control
+    // Phase 6: Levels control (16 bytes)
     int   use_levels;
     float levels_min_input;
     float levels_max_input;
     float levels_gamma;
 
+    // Levels output + padding (16 bytes)
     float levels_min_output;
     float levels_max_output;
     int   _pad2;
     int   _pad3;
 
-    // Phase 6: Chroma key parameters
+    // Phase 6: Chroma key parameters (16 bytes)
     int   use_chroma;
     int   chroma_show_mask;
     float chroma_target_hue;
     float chroma_hue_width;
 
+    // Chroma key continued (16 bytes)
     float chroma_min_saturation;
     float chroma_min_brightness;
     float chroma_softness;
     float chroma_spill_suppress;
 
+    // Chroma spill + padding (16 bytes)
     float chroma_spill_suppress_saturation;
     int   _pad4[3];
 
-    // Phase 7: Pixel format and color space
+    // Phase 7: Pixel format and color space (16 bytes)
     int   pixel_format;        // 0-12
     int   color_space;         // 0=bt601, 1=bt709, 2=bt2020
     int   num_planes;          // 1-4
     int   is_straight_alpha;   // 1 if non-premultiplied
 
-    // Precision factors (per plane)
-    vec4  precision_factor;
+    // Precision factors (16 bytes)
+    float precision_factor[4];
 
-    // Color matrix (3x3 + padding, row-major)
-    mat3  color_matrix;
-    vec3  _pad_cm;
+    // Color matrix (3x3 + 3 padding, stored as float[12] = 48 bytes)
+    float color_matrix[12];
 
-    // Luma coefficients
-    vec4  luma_coeff;
+    // Luma coefficients (16 bytes)
+    float luma_coeff[4];
 
-    // Plane 1 dimensions (for chroma subsampling)
+    // Plane 1 dimensions (16 bytes)
     int   plane1_width;
     int   plane1_height;
     int   _pad5[2];
 } params;
+
+// ============================================================================
+// Helper Functions for Array-to-Matrix Conversion
+// ============================================================================
+
+// Construct mat3 from float[9] array (column-major order)
+mat3 array_to_mat3(float arr[9])
+{
+    return mat3(
+        arr[0], arr[1], arr[2],  // Column 0
+        arr[3], arr[4], arr[5],  // Column 1
+        arr[6], arr[7], arr[8]   // Column 2
+    );
+}
+
+// Construct mat3 from float[12] array (with padding, column-major order)
+mat3 array12_to_mat3(float arr[12])
+{
+    return mat3(
+        arr[0], arr[1], arr[2],  // Column 0
+        arr[3], arr[4], arr[5],  // Column 1
+        arr[6], arr[7], arr[8]   // Column 2
+    );
+}
+
+// Get vec3 from luma coefficients array
+vec3 get_luma_coeff()
+{
+    return vec3(params.luma_coeff[0], params.luma_coeff[1], params.luma_coeff[2]);
+}
 
 // ============================================================================
 // Pixel Format Constants
@@ -168,7 +201,8 @@ vec4 ycbcra_to_rgba(float Y, float Cb, float Cr, float A)
     YCbCr -= vec3(16.0, 128.0, 128.0);
     YCbCr *= vec3(luma_coefficient, chroma_coefficient, chroma_coefficient);
 
-    vec3 rgb = params.color_matrix * YCbCr / 255.0;
+    mat3 color_mat = array12_to_mat3(params.color_matrix);
+    vec3 rgb = color_mat * YCbCr / 255.0;
     return vec4(rgb.bgr, A);
 }
 
@@ -358,7 +392,7 @@ vec3 ContrastSaturationBrightness(vec4 color, float brt, float sat, float con)
     const float AvgLumR = 0.5;
     const float AvgLumG = 0.5;
     const float AvgLumB = 0.5;
-    vec3 LumCoeff = params.luma_coeff.bgr;
+    vec3 LumCoeff = get_luma_coeff().bgr;
 
     if (color.a > 0.0)
         color.rgb /= color.a;
@@ -601,7 +635,8 @@ void main()
     }
 
     // Apply inverse transform to get source coordinates
-    mat3 inv_transform = inverse_mat3(params.transform_matrix);
+    mat3 transform_mat = array_to_mat3(params.transform_matrix);
+    mat3 inv_transform = inverse_mat3(transform_mat);
     vec2 src_pos = transform_point(inv_transform, dst_pos);
 
     // Check if source coordinate is in valid range (0-1)
@@ -620,7 +655,7 @@ void main()
         }
     }
 
-    // Get source color
+    // Get source color using pixel format
     vec4 src_color = get_rgba_color(src_pos);
 
     // Apply opacity
@@ -651,7 +686,7 @@ void main()
         src_color.rgb = vec3(1.0) - src_color.rgb;
     }
 
-    // Convert to straight alpha if needed
+    // Convert to straight alpha if needed (premultiply)
     if (params.is_straight_alpha != 0 && src_color.a > 0.0)
     {
         src_color.rgb *= src_color.a;

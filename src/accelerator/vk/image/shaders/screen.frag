@@ -77,5 +77,7 @@ void main()
     }
 
     // Always output opaque (alpha=1.0) to prevent window transparency
-    out_color = vec4(color.rgb, 1.0);
+    // Note: Frame texture is R8G8B8A8 (RGBA) but swapchain is B8G8R8A8 (BGRA)
+    // We need to swizzle RGB->BGR to match the swapchain format
+    out_color = vec4(color.bgr, 1.0);
 }

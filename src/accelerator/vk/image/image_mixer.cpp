@@ -26,6 +26,7 @@
 
 #include "../util/device.h"
 #include "../util/texture.h"
+#include "../util/vk_check.h"
 
 #include <common/array.h>
 #include <common/future.h>
@@ -40,6 +41,7 @@
 #include <boost/align/aligned_allocator.hpp>
 
 #include <any>
+#include <atomic>
 #include <cstring>
 #include <stack>
 #include <vector>
@@ -87,6 +89,19 @@ class image_renderer
     std::future<array<const std::uint8_t>> operator()(std::vector<layer>             layers,
                                                       const core::video_format_desc& format_desc)
     {
+        // Return black frame if device is lost
+        if (device_->is_device_lost()) {
+            // Periodically attempt recovery (every ~50 frames at 50fps = ~1 second)
+            static std::atomic<int> recovery_counter{0};
+            if (++recovery_counter % 50 == 0) {
+                device_->attempt_recovery();
+            }
+
+            static const std::vector<uint8_t, boost::alignment::aligned_allocator<uint8_t, 32>> buffer(
+                max_frame_size_, 0);
+            return make_ready_future(array<const std::uint8_t>(buffer.data(), format_desc.size, true));
+        }
+
         if (layers.empty()) {
             // Bypass GPU with empty frame (black)
             static const std::vector<uint8_t, boost::alignment::aligned_allocator<uint8_t, 32>> buffer(
@@ -96,14 +111,23 @@ class image_renderer
 
         return flatten(device_->dispatch_async(
             [this, format_desc, layers = std::move(layers)]() mutable -> std::shared_future<array<const std::uint8_t>> {
-                auto target_texture = device_->create_texture(format_desc.width, format_desc.height, 4, depth_);
+                try {
+                    auto target_texture = device_->create_texture(format_desc.width, format_desc.height, 4, depth_);
 
-                // Clear to transparent black before rendering to avoid undefined content
-                target_texture->clear();
+                    // Clear to transparent black before rendering to avoid undefined content
+                    target_texture->clear();
 
-                draw(target_texture, std::move(layers), format_desc);
+                    draw(target_texture, std::move(layers), format_desc);
 
-                return device_->copy_async(target_texture);
+                    return device_->copy_async(target_texture);
+                } catch (const caspar::vk::device_lost_exception&) {
+                    // Mark device as lost and return black frame
+                    device_->mark_device_lost();
+
+                    static const std::vector<uint8_t, boost::alignment::aligned_allocator<uint8_t, 32>> buffer(
+                        max_frame_size_, 0);
+                    return make_ready_future(array<const std::uint8_t>(buffer.data(), format_desc.size, true));
+                }
             }));
     }
 

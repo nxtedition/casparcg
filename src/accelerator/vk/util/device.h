@@ -83,6 +83,14 @@ class device final
     // Resource usage logging (for diagnostics)
     void log_resource_usage(const std::wstring& context) const;
 
+    // Device lost state management
+    bool is_device_lost() const;
+    void mark_device_lost();
+
+    // Attempt to recover from device lost state
+    // Returns true if recovery was successful
+    bool attempt_recovery();
+
     // Vulkan handle accessors (for internal use by buffer/texture)
     struct vulkan_handles
     {

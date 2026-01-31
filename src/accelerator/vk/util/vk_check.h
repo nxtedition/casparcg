@@ -34,6 +34,11 @@ struct vk_exception : virtual caspar_exception
 {
 };
 
+// Special exception for device lost - allows targeted handling
+struct device_lost_exception : virtual vk_exception
+{
+};
+
 inline const char* vk_result_to_string(VkResult result)
 {
     switch (result) {
@@ -104,6 +109,11 @@ inline void vk_check_error(VkResult result, const std::string& expr, const char*
            << "\n\tExpression: " << expr << "\n\tFunction: " << func << "\n\tFile: " << file << "\n\tLine: " << line;
 
         CASPAR_LOG(error) << ss.str();
+
+        // Throw specific exception for device lost to enable targeted recovery
+        if (result == VK_ERROR_DEVICE_LOST) {
+            CASPAR_THROW_EXCEPTION(device_lost_exception() << msg_info(ss.str()));
+        }
         CASPAR_THROW_EXCEPTION(vk_exception() << msg_info(ss.str()));
     }
 }

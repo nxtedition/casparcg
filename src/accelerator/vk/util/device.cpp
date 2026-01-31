@@ -100,6 +100,11 @@ struct device::impl : public std::enable_shared_from_this<impl>
     VkCommandPool    command_pool_    = VK_NULL_HANDLE;
     uint32_t         queue_family_index_ = 0;
 
+    // Device lost state tracking
+    std::atomic<bool> device_lost_{false};
+    std::atomic<int>  recovery_attempts_{0};
+    static constexpr int max_recovery_attempts_ = 5;
+
 #ifndef NDEBUG
     VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
 #endif
@@ -777,6 +782,88 @@ device::vulkan_handles device::get_handles() const
     handles.command_pool       = impl_->command_pool_;
     handles.queue_family_index = impl_->queue_family_index_;
     return handles;
+}
+
+bool device::is_device_lost() const
+{
+    return impl_->device_lost_.load(std::memory_order_relaxed);
+}
+
+void device::mark_device_lost()
+{
+    bool expected = false;
+    if (impl_->device_lost_.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
+        CASPAR_LOG(error) << L"[vk::device] Vulkan device lost - GPU may be overloaded or unavailable. "
+                          << L"Outputting black frames while attempting recovery...";
+    }
+}
+
+bool device::attempt_recovery()
+{
+    if (!impl_->device_lost_.load(std::memory_order_relaxed)) {
+        return true; // Not in device lost state
+    }
+
+    int attempts = impl_->recovery_attempts_.fetch_add(1, std::memory_order_relaxed);
+    if (attempts >= impl::max_recovery_attempts_) {
+        if (attempts == impl::max_recovery_attempts_) {
+            CASPAR_LOG(error) << L"[vk::device] Recovery failed after " << impl::max_recovery_attempts_
+                              << L" attempts. Manual restart may be required.";
+        }
+        return false;
+    }
+
+    CASPAR_LOG(info) << L"[vk::device] Attempting device recovery (attempt " << (attempts + 1)
+                     << L"/" << impl::max_recovery_attempts_ << L")...";
+
+    try {
+        // Wait for any pending operations to complete
+        if (impl_->device_ != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(impl_->device_);
+        }
+
+        // Clear all resource pools (they hold references to invalid resources)
+        for (auto& depth_pools : impl_->device_pools_) {
+            for (auto& pools : depth_pools) {
+                for (auto& pool : pools)
+                    pool.second.clear();
+            }
+        }
+        for (auto& pools : impl_->host_pools_) {
+            for (auto& pool : pools)
+                pool.second.clear();
+        }
+
+        // Destroy old command pool
+        if (impl_->command_pool_ != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(impl_->device_, impl_->command_pool_, nullptr);
+            impl_->command_pool_ = VK_NULL_HANDLE;
+        }
+
+        // Destroy old device
+        if (impl_->device_ != VK_NULL_HANDLE) {
+            vkDestroyDevice(impl_->device_, nullptr);
+            impl_->device_ = VK_NULL_HANDLE;
+        }
+
+        // Recreate logical device and command pool
+        impl_->create_logical_device();
+        impl_->create_command_pool();
+
+        // Recovery successful
+        impl_->device_lost_.store(false, std::memory_order_relaxed);
+        impl_->recovery_attempts_.store(0, std::memory_order_relaxed);
+
+        CASPAR_LOG(info) << L"[vk::device] Device recovery successful. Resuming normal operation.";
+        return true;
+
+    } catch (const std::exception& e) {
+        CASPAR_LOG(warning) << L"[vk::device] Recovery attempt " << (attempts + 1) << L" failed: " << e.what();
+        return false;
+    } catch (...) {
+        CASPAR_LOG(warning) << L"[vk::device] Recovery attempt " << (attempts + 1) << L" failed with unknown error.";
+        return false;
+    }
 }
 
 }}} // namespace caspar::accelerator::vk

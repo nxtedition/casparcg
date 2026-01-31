@@ -144,23 +144,28 @@ layout(push_constant) uniform PushConstants {
 // Helper Functions for Array-to-Matrix Conversion
 // ============================================================================
 
-// Construct mat3 from float[9] array (column-major order)
+// Construct mat3 from float[9] array
+// Input is ROW-MAJOR from C++ (each row = [Y_coeff, Cb_coeff, Cr_coeff] for R, G, B)
+// GLSL mat3 constructor expects COLUMN-MAJOR, so we transpose here
 mat3 array_to_mat3(float arr[9])
 {
+    // Transpose: row-major input to column-major mat3
     return mat3(
-        arr[0], arr[1], arr[2],  // Column 0
-        arr[3], arr[4], arr[5],  // Column 1
-        arr[6], arr[7], arr[8]   // Column 2
+        arr[0], arr[3], arr[6],  // Column 0: Y coefficients for R, G, B
+        arr[1], arr[4], arr[7],  // Column 1: Cb coefficients for R, G, B
+        arr[2], arr[5], arr[8]   // Column 2: Cr coefficients for R, G, B
     );
 }
 
-// Construct mat3 from float[12] array (with padding, column-major order)
+// Construct mat3 from float[12] array (with padding)
+// Same transpose logic as array_to_mat3
 mat3 array12_to_mat3(float arr[12])
 {
+    // Transpose: row-major input to column-major mat3
     return mat3(
-        arr[0], arr[1], arr[2],  // Column 0
-        arr[3], arr[4], arr[5],  // Column 1
-        arr[6], arr[7], arr[8]   // Column 2
+        arr[0], arr[3], arr[6],  // Column 0: Y coefficients for R, G, B
+        arr[1], arr[4], arr[7],  // Column 1: Cb coefficients for R, G, B
+        arr[2], arr[5], arr[8]   // Column 2: Cr coefficients for R, G, B
     );
 }
 
@@ -203,7 +208,7 @@ vec4 ycbcra_to_rgba(float Y, float Cb, float Cr, float A)
 
     mat3 color_mat = array12_to_mat3(params.color_matrix);
     vec3 rgb = color_mat * YCbCr / 255.0;
-    return vec4(rgb.bgr, A);
+    return vec4(rgb, A);  // Output RGBA directly, no swizzle needed
 }
 
 // ============================================================================

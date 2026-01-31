@@ -164,6 +164,8 @@ class TestRunner:
                            "Stress test with many layers on single channel")
         self.register_test("stress_rapid", 15, self.test_stress_rapid,
                            "Stress test with rapid command execution")
+        self.register_test("stress_video_switch", 15, self.test_stress_video_switch,
+                           "Stress test: rapid video file switching")
         self.register_test("performance_recording", 15, self.test_performance_recording,
                            "Performance test: recording frame rate stability")
 
@@ -3083,6 +3085,171 @@ class TestRunner:
 
         if all_passed:
             print("  Rapid command stress test passed!")
+        return all_passed
+
+    def test_stress_video_switch(self) -> bool:
+        """Stress test: rapid video file switching (Phase 15).
+
+        Tests system stability when rapidly switching between video files.
+        This is a regression test for a crash that occurred when stopping
+        one video and immediately starting another.
+
+        The test uses two video files (mathilda.mp4 and slow.mov) and
+        rapidly switches between them to stress test:
+        - GPU resource cleanup during producer destruction
+        - Texture/buffer pool recycling
+        - Descriptor pool allocation/freeing
+        - Memory management during rapid producer creation
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+
+        print("  Testing stress: rapid video file switching...")
+
+        # Clear channel first
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Video files to switch between (relative to media folder)
+        # These are the files mentioned by the user as being available
+        video_files = ["mathilda", "slow"]
+
+        # Check if video files are playable
+        print("  Checking video file availability...")
+        for video in video_files:
+            r = self.client.load(ch, 1, video)
+            if r[0] >= 400:
+                print(f"    WARN: Video '{video}' may not be available: {r[1]}")
+            else:
+                print(f"    OK: Video '{video}' is available")
+        self.client.clear(ch)
+        self.helper.wait(0.2)
+
+        # Test 1: Rapid switching (stop + play immediately)
+        print("  Test 1: Rapid stop/play switching (20 iterations)...")
+        error_count = 0
+        start_time = time.time()
+
+        for i in range(20):
+            video = video_files[i % len(video_files)]
+
+            # Stop current content (if any)
+            self.client.stop(ch, 1)
+
+            # Immediately play new content
+            r = self.client.play(ch, 1, video)
+            if r[0] < 200 or r[0] >= 300:
+                error_count += 1
+                print(f"    FAIL iteration {i}: Play '{video}' failed: {r[1]}")
+
+            # Very short delay - just enough to let the system process
+            time.sleep(0.05)
+
+        elapsed = time.time() - start_time
+        switches_per_sec = 20 / elapsed
+
+        if error_count > 0:
+            print(f"    WARN: {error_count}/20 switches failed")
+            if error_count > 5:
+                all_passed = False
+        print(f"    Completed 20 rapid switches in {elapsed:.2f}s ({switches_per_sec:.1f} switches/s)")
+
+        # Verify system is still responsive
+        info_result = self.client.info(ch)
+        if info_result[0] < 200 or info_result[0] >= 300:
+            print("    FAIL: System unresponsive after rapid switching")
+            all_passed = False
+        else:
+            print("    OK: System responsive after rapid switching")
+
+        self.helper.wait(0.5)
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Test 2: Play with longer duration then switch (more realistic usage)
+        print("  Test 2: Normal playback with periodic switching (10 iterations, 1s each)...")
+        error_count = 0
+        start_time = time.time()
+
+        for i in range(10):
+            video = video_files[i % len(video_files)]
+
+            r = self.client.play(ch, 1, video)
+            if r[0] < 200 or r[0] >= 300:
+                error_count += 1
+                print(f"    FAIL iteration {i}: Play '{video}' failed: {r[1]}")
+                continue
+
+            # Let video play for 1 second
+            time.sleep(1.0)
+
+            # Stop before next iteration
+            self.client.stop(ch, 1)
+            time.sleep(0.1)
+
+        elapsed = time.time() - start_time
+
+        if error_count > 0:
+            print(f"    WARN: {error_count}/10 switches failed")
+            if error_count > 2:
+                all_passed = False
+        print(f"    Completed 10 normal switches in {elapsed:.2f}s")
+
+        # Verify system is still responsive
+        info_result = self.client.info(ch)
+        if info_result[0] < 200 or info_result[0] >= 300:
+            print("    FAIL: System unresponsive after normal switching")
+            all_passed = False
+        else:
+            print("    OK: System responsive after normal switching")
+
+        self.helper.wait(0.5)
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Test 3: Stress test - many rapid switches without stop
+        print("  Test 3: Burst switching without explicit stop (30 iterations)...")
+        error_count = 0
+        start_time = time.time()
+
+        for i in range(30):
+            video = video_files[i % len(video_files)]
+
+            # Play directly without stopping - tests implicit resource cleanup
+            r = self.client.play(ch, 1, video)
+            if r[0] < 200 or r[0] >= 300:
+                error_count += 1
+
+            # Minimal delay
+            time.sleep(0.02)
+
+        elapsed = time.time() - start_time
+        switches_per_sec = 30 / elapsed
+
+        if error_count > 0:
+            print(f"    WARN: {error_count}/30 switches failed")
+            if error_count > 5:
+                all_passed = False
+        print(f"    Completed 30 burst switches in {elapsed:.2f}s ({switches_per_sec:.1f} switches/s)")
+
+        # Give system time to stabilize
+        self.helper.wait(1.0)
+
+        # Final responsiveness check
+        info_result = self.client.info(ch)
+        if info_result[0] < 200 or info_result[0] >= 300:
+            print("    FAIL: System unresponsive after burst switching")
+            all_passed = False
+        else:
+            print("    OK: System responsive after burst switching")
+
+        # Clean up
+        self.client.clear(ch)
+
+        if all_passed:
+            print("  Video switching stress test passed!")
+        else:
+            print("  Video switching stress test FAILED!")
         return all_passed
 
     def test_performance_recording(self) -> bool:

@@ -80,6 +80,9 @@ class device final
     boost::property_tree::wptree info() const override;
     std::future<void>            gc() override;
 
+    // Resource usage logging (for diagnostics)
+    void log_resource_usage(const std::wstring& context) const;
+
     // Vulkan handle accessors (for internal use by buffer/texture)
     struct vulkan_handles
     {

@@ -36,6 +36,7 @@
 #include <vk_blend_vert_shader.h>
 #include <vk_blend_frag_shader.h>
 
+#include <atomic>
 #include <unordered_map>
 
 namespace caspar { namespace accelerator { namespace vk {
@@ -61,6 +62,12 @@ struct blend_pipeline::impl
     std::unordered_map<VkImageView, VkFramebuffer> framebuffer_cache_;
     int last_fb_width_  = 0;
     int last_fb_height_ = 0;
+
+    // Resource tracking for diagnostics
+    std::atomic<uint64_t> total_renders_{0};
+    std::atomic<uint64_t> descriptor_allocs_{0};
+    std::atomic<uint64_t> descriptor_frees_{0};
+    std::atomic<uint64_t> framebuffer_creates_{0};
 
     impl(void* device, void* physical_device, void* command_pool, void* queue)
         : device_(static_cast<VkDevice>(device))
@@ -368,6 +375,7 @@ struct blend_pipeline::impl
 
         VkFramebuffer framebuffer;
         VK(vkCreateFramebuffer(device_, &framebufferInfo, nullptr, &framebuffer));
+        framebuffer_creates_++;
 
         framebuffer_cache_[imageView] = framebuffer;
         return framebuffer;
@@ -489,6 +497,7 @@ struct blend_pipeline::impl
 
         VkDescriptorSet descriptorSet;
         VK(vkAllocateDescriptorSets(device_, &allocInfo, &descriptorSet));
+        descriptor_allocs_++;
 
         // Use plane0 as fallback for unused planes
         VkImageView fallback_view = plane0 ? static_cast<VkImageView>(plane0->image_view()) : VK_NULL_HANDLE;
@@ -606,6 +615,18 @@ struct blend_pipeline::impl
 
         // Free descriptor set
         vkFreeDescriptorSets(device_, descriptor_pool_, 1, &descriptorSet);
+        descriptor_frees_++;
+        total_renders_++;
+
+        // Log resource stats periodically (every 500 frames)
+        if (total_renders_ % 500 == 0) {
+            CASPAR_LOG(info) << L"[vk::blend_pipeline] Stats after " << total_renders_ << L" renders:"
+                              << L" desc_allocs=" << descriptor_allocs_.load()
+                              << L" desc_frees=" << descriptor_frees_.load()
+                              << L" desc_delta=" << (descriptor_allocs_.load() - descriptor_frees_.load())
+                              << L" fb_creates=" << framebuffer_creates_.load()
+                              << L" fb_cached=" << framebuffer_cache_.size();
+        }
     }
 };
 

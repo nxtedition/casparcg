@@ -87,10 +87,14 @@ class image_renderer
     std::future<array<const std::uint8_t>> operator()(std::vector<layer>             layers,
                                                       const core::video_format_desc& format_desc)
     {
-        // Debug: Log layer count
-        static int render_debug = 0;
-        if (render_debug++ < 30) {
-            CASPAR_LOG(info) << L"[vk::image_mixer] render: layers.size=" << layers.size();
+        // Debug: Log layer count and resource usage periodically
+        static int render_count = 0;
+        render_count++;
+
+        if (render_count < 30 || render_count % 500 == 0) {
+            CASPAR_LOG(info) << L"[vk::image_mixer] render #" << render_count
+                              << L": layers.size=" << layers.size();
+            device_->log_resource_usage(L"render #" + std::to_wstring(render_count));
         }
 
         if (layers.empty()) {

@@ -749,6 +749,70 @@ boost::property_tree::wptree device::info() const { return impl_->info(); }
 
 std::future<void> device::gc() { return impl_->gc(); }
 
+void device::log_resource_usage(const std::wstring& context) const
+{
+    // Count pooled textures
+    size_t total_pooled_textures = 0;
+    size_t total_pooled_texture_size = 0;
+
+    for (size_t depth_idx = 0; depth_idx < impl_->device_pools_.size(); ++depth_idx) {
+        auto& depth_pools = impl_->device_pools_.at(depth_idx);
+        for (size_t stride_idx = 0; stride_idx < depth_pools.size(); ++stride_idx) {
+            auto& pools = depth_pools.at(stride_idx);
+            auto stride = stride_idx + 1;
+
+            for (auto& pool : pools) {
+                auto width = pool.first >> 16;
+                auto height = pool.first & 0x0000FFFF;
+                auto size = width * height * stride;
+                auto count = pool.second.size();
+
+                total_pooled_textures += count;
+                total_pooled_texture_size += size * count;
+            }
+        }
+    }
+
+    // Count pooled buffers
+    size_t total_pooled_read_buffers = 0;
+    size_t total_pooled_write_buffers = 0;
+    size_t total_pooled_read_size = 0;
+    size_t total_pooled_write_size = 0;
+
+    for (size_t i = 0; i < impl_->host_pools_.size(); ++i) {
+        auto& pools = impl_->host_pools_.at(i);
+        bool is_write = (i == 1);
+
+        for (auto& pool : pools) {
+            auto size = pool.first;
+            auto count = pool.second.size();
+
+            if (is_write) {
+                total_pooled_write_buffers += count;
+                total_pooled_write_size += size * count;
+            } else {
+                total_pooled_read_buffers += count;
+                total_pooled_read_size += size * count;
+            }
+        }
+    }
+
+    // Get live buffer stats from buffer.cpp
+    auto buffer_info = buffer::info();
+
+    CASPAR_LOG(info) << L"[vk::device] Resource usage [" << context << L"]:"
+                      << L" pooled_textures=" << total_pooled_textures
+                      << L" (" << (total_pooled_texture_size / 1024 / 1024) << L"MB)"
+                      << L" pooled_read_bufs=" << total_pooled_read_buffers
+                      << L" (" << (total_pooled_read_size / 1024 / 1024) << L"MB)"
+                      << L" pooled_write_bufs=" << total_pooled_write_buffers
+                      << L" (" << (total_pooled_write_size / 1024 / 1024) << L"MB)"
+                      << L" live_read_bufs=" << buffer_info.get<int>(L"total_read_count", 0)
+                      << L" (" << (buffer_info.get<size_t>(L"total_read_size", 0) / 1024 / 1024) << L"MB)"
+                      << L" live_write_bufs=" << buffer_info.get<int>(L"total_write_count", 0)
+                      << L" (" << (buffer_info.get<size_t>(L"total_write_size", 0) / 1024 / 1024) << L"MB)";
+}
+
 device::vulkan_handles device::get_handles() const
 {
     vulkan_handles handles;

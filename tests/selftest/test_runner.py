@@ -110,6 +110,8 @@ class TestRunner:
                            "Test transitions (cut, mix, push, slide, wipe)")
         self.register_test("sting_producer", 8, self.test_sting_producer,
                            "Test sting/overlay transitions")
+        self.register_test("video_overlay_alpha", 8, self.test_video_overlay_alpha,
+                           "Test video with alpha over another video (mathilda + wipe)")
 
         # Phase 9: Screen Consumer
         self.register_test("screen_output", 9, self.test_screen_output,
@@ -1692,6 +1694,196 @@ class TestRunner:
 
         if all_passed:
             print("  Sting producer test passed!")
+        return all_passed
+
+    def test_video_overlay_alpha(self) -> bool:
+        """Test video with alpha channel overlay over another video.
+
+        Reproduces issue: when playing wipe (with alpha) over mathilda,
+        the screen goes black until wipe is stopped.
+
+        Uses actual media files: mathilda.mp4 and wipe.mov from build/shell/media/
+        Records output and analyzes frames to detect if screen goes black.
+        """
+        ch = self.config.playback_channel
+        all_passed = True
+        from video_analyzer import FrameColor, COLORS
+
+        print("  Testing video overlay with alpha channel...")
+        print("  This test uses mathilda.mp4 and wipe.mov from the media folder")
+
+        # Clear and start fresh
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Test 1: Verify mathilda plays correctly alone
+        print("\n  === Test 1: Play mathilda alone ===")
+        result = self.client.play(ch, 10, "mathilda")
+        code, msg = result
+
+        if code == 404:
+            print("  Media file 'mathilda' not found - skipping test")
+            print("  Add mathilda.mp4 to the media folder to enable this test")
+            return True  # Skip rather than fail
+
+        if not self.helper.assert_success(result, "Play mathilda on layer 10"):
+            return False
+
+        self.helper.wait(1.0)
+        print("  Mathilda playing - should see video content")
+
+        # Test 2: Record mathilda alone to verify it's not black
+        print("\n  === Test 2: Record mathilda alone (baseline) ===")
+        baseline_file = get_output_path(self.config, "test_overlay_baseline.mp4")
+        if os.path.exists(baseline_file):
+            os.remove(baseline_file)
+
+        consumer_args = f"{baseline_file} {self.config.ffmpeg_args}"
+        r1 = self.client.add_consumer(ch, "FILE", consumer_args)
+        if not self.helper.assert_success(r1, "Start baseline recording"):
+            return False
+
+        self.helper.wait(2.0)
+
+        r2 = self.client.remove_consumer(ch, "FILE", consumer_args)
+        self.helper.assert_success(r2, "Stop baseline recording")
+        self.helper.wait(0.5)
+
+        # Analyze baseline - should NOT be black
+        baseline_color = None
+        if os.path.exists(baseline_file):
+            info = self.analyzer.get_video_info(baseline_file)
+            if info and info.frame_count > 0:
+                baseline_color = self.analyzer.get_average_color(baseline_file, frame_number=10)
+                if baseline_color:
+                    print(f"  Baseline color (mathilda alone): R={baseline_color.r}, G={baseline_color.g}, B={baseline_color.b}")
+                    if baseline_color.r < 10 and baseline_color.g < 10 and baseline_color.b < 10:
+                        print("  WARNING: Baseline is BLACK - mathilda may not be rendering correctly")
+                    else:
+                        print("  OK: Baseline is not black - mathilda is rendering")
+        else:
+            print("  Could not create baseline recording")
+
+        # Test 3: Add wipe with alpha on top and record
+        print("\n  === Test 3: Add wipe overlay and record (bug reproduction) ===")
+        result = self.client.play(ch, 12, "wipe LOOP")
+        code, msg = result
+
+        if code == 404:
+            print("  Media file 'wipe' not found - skipping overlay test")
+            print("  Add wipe.mov to the media folder to enable this test")
+            return all_passed
+
+        if not self.helper.assert_success(result, "Play wipe on layer 12"):
+            all_passed = False
+        else:
+            print("  Wipe overlay added - should see wipe with alpha over mathilda")
+
+        self.helper.wait(0.5)
+
+        # Record the overlay composite
+        overlay_file = get_output_path(self.config, "test_overlay_composite.mp4")
+        if os.path.exists(overlay_file):
+            os.remove(overlay_file)
+
+        consumer_args = f"{overlay_file} {self.config.ffmpeg_args}"
+        r3 = self.client.add_consumer(ch, "FILE", consumer_args)
+        if not self.helper.assert_success(r3, "Start overlay recording"):
+            all_passed = False
+
+        self.helper.wait(3.0)
+
+        r4 = self.client.remove_consumer(ch, "FILE", consumer_args)
+        self.helper.assert_success(r4, "Stop overlay recording")
+        self.helper.wait(0.5)
+
+        # Test 4: Analyze overlay recording - check if it's black (the bug)
+        print("\n  === Test 4: Analyze overlay recording for black screen bug ===")
+        overlay_is_black = False
+        if os.path.exists(overlay_file):
+            info = self.analyzer.get_video_info(overlay_file)
+            if info and info.frame_count > 0:
+                # Sample multiple frames to check for black
+                black_frame_count = 0
+                test_frames = [10, 20, 30, 40, 50]
+                for frame_num in test_frames:
+                    if frame_num >= info.frame_count:
+                        continue
+                    color = self.analyzer.get_average_color(overlay_file, frame_number=frame_num)
+                    if color:
+                        is_black = color.r < 10 and color.g < 10 and color.b < 10
+                        if is_black:
+                            black_frame_count += 1
+                        print(f"  Frame {frame_num}: R={color.r}, G={color.g}, B={color.b} {'(BLACK!)' if is_black else '(OK)'}")
+
+                if black_frame_count > len(test_frames) / 2:
+                    overlay_is_black = True
+                    print(f"\n  BUG CONFIRMED: {black_frame_count}/{len(test_frames)} frames are BLACK")
+                    print("  The video overlay with alpha is causing black output!")
+                    all_passed = False
+                else:
+                    print(f"\n  OK: Only {black_frame_count}/{len(test_frames)} frames are black")
+                    print("  The overlay composite appears to be rendering correctly")
+            else:
+                print("  Could not analyze overlay recording")
+        else:
+            print("  Could not create overlay recording")
+
+        # Test 5: Stop wipe and verify mathilda is visible again
+        print("\n  === Test 5: Stop wipe - verify mathilda becomes visible ===")
+        result = self.client.stop(ch, 12)
+        if not self.helper.assert_success(result, "Stop wipe on layer 12"):
+            all_passed = False
+
+        self.helper.wait(0.5)
+
+        # Record after stopping wipe
+        after_file = get_output_path(self.config, "test_overlay_after.mp4")
+        if os.path.exists(after_file):
+            os.remove(after_file)
+
+        consumer_args = f"{after_file} {self.config.ffmpeg_args}"
+        self.client.add_consumer(ch, "FILE", consumer_args)
+        self.helper.wait(2.0)
+        self.client.remove_consumer(ch, "FILE", consumer_args)
+        self.helper.wait(0.5)
+
+        if os.path.exists(after_file):
+            info = self.analyzer.get_video_info(after_file)
+            if info and info.frame_count > 0:
+                after_color = self.analyzer.get_average_color(after_file, frame_number=10)
+                if after_color:
+                    print(f"  After stopping wipe: R={after_color.r}, G={after_color.g}, B={after_color.b}")
+                    if after_color.r < 10 and after_color.g < 10 and after_color.b < 10:
+                        print("  WARNING: Still BLACK after stopping wipe!")
+                    else:
+                        print("  OK: Video visible after stopping wipe")
+
+        # Cleanup
+        print("\n  === Cleanup ===")
+        self.client.clear(ch)
+        self.helper.wait(0.3)
+
+        # Verify system is stable
+        result = self.client.play_color(ch, 1, "GREEN")
+        if not self.helper.assert_success(result, "Verify system stable with color"):
+            print("  Warning: System unstable after video overlay test")
+            all_passed = False
+        else:
+            print("  System stable - green color displayed")
+
+        self.client.clear(ch)
+
+        # Summary
+        print("\n  === Summary ===")
+        if overlay_is_black:
+            print("  FAIL: Video overlay with alpha causes BLACK output")
+            print("  This confirms the bug: wipe over mathilda = black screen")
+        elif all_passed:
+            print("  PASS: Video overlay alpha test completed successfully")
+        else:
+            print("  PARTIAL: Some tests failed - check output above")
+
         return all_passed
 
     def test_screen_output(self) -> bool:

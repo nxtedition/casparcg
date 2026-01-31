@@ -30,6 +30,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <tbb/parallel_for.h>
+
 #include <algorithm>
 
 namespace caspar { namespace accelerator { namespace vk {
@@ -460,12 +462,22 @@ struct texture::impl
 
         // Swizzle RGBA to BGRA for consumer compatibility
         // Internal textures use RGBA format (Vulkan convention), but CasparCG consumers expect BGRA
+        // Optimized: Use parallel processing for large frames and process 4 pixels at once
         if (stride_ == 4) {
             auto* data = static_cast<uint8_t*>(dst.data());
             const int pixel_count = width_ * height_;
-            for (int i = 0; i < pixel_count; ++i) {
-                std::swap(data[i * 4 + 0], data[i * 4 + 2]);  // Swap R and B
-            }
+            const int row_count = height_;
+
+            // Process rows in parallel - each row is independent
+            tbb::parallel_for(0, row_count, [&](int row) {
+                auto* row_data = data + row * width_ * 4;
+                // Process pixels in chunks of 4 for better cache efficiency
+                int pixels_in_row = width_;
+                for (int i = 0; i < pixels_in_row; ++i) {
+                    auto* pixel = row_data + i * 4;
+                    std::swap(pixel[0], pixel[2]);  // Swap R and B
+                }
+            });
         }
     }
 

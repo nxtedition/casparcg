@@ -538,62 +538,16 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
     std::future<array<const uint8_t>> copy_async(const std::shared_ptr<texture>& source)
     {
-        return spawn_async([=, self = shared_from_this()](yield_context yield) {
-            // PRIORITY 1 FIX: Ensure all GPU work is complete before reading back.
-            // This is a workaround for potential MoltenVK synchronization issues.
-            // On MoltenVK, the implicit queue synchronization may not be sufficient
-            // for GPU->CPU readback. vkDeviceWaitIdle() guarantees all operations
-            // on all queues are complete before proceeding.
-            VK(vkDeviceWaitIdle(device_));
+        return spawn_async([=, self = shared_from_this()](yield_context /* yield */) {
+            // NOTE: Removed vkDeviceWaitIdle() which was blocking ALL GPU work every frame.
+            // The copy_to() function already synchronizes via vkQueueWaitIdle() after the
+            // transfer command, which is sufficient for GPU->CPU readback.
 
             auto buf = create_buffer(source->size(), false);
             source->copy_to(*buf);
 
-            // Create fence and wait for GPU completion
-            VkFenceCreateInfo fenceInfo{};
-            fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-
-            VkFence fence;
-            VK(vkCreateFence(device_, &fenceInfo, nullptr, &fence));
-
-            // Submit a command buffer that signals the fence
-            VkCommandBufferAllocateInfo allocInfo{};
-            allocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-            allocInfo.commandPool        = command_pool_;
-            allocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            allocInfo.commandBufferCount = 1;
-
-            VkCommandBuffer cmdBuffer;
-            VK(vkAllocateCommandBuffers(device_, &allocInfo, &cmdBuffer));
-
-            VkCommandBufferBeginInfo beginInfo{};
-            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-            VK(vkBeginCommandBuffer(cmdBuffer, &beginInfo));
-            VK(vkEndCommandBuffer(cmdBuffer));
-
-            VkSubmitInfo submitInfo{};
-            submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            submitInfo.commandBufferCount = 1;
-            submitInfo.pCommandBuffers    = &cmdBuffer;
-
-            VK(vkQueueSubmit(queue_, 1, &submitInfo, fence));
-
-            // Poll the fence with async timer (matching OGL pattern)
-            deadline_timer timer(io_context_);
-            for (;;) {
-                timer.expires_from_now(boost::posix_time::milliseconds(2));
-                timer.async_wait(yield);
-
-                VkResult result = vkWaitForFences(device_, 1, &fence, VK_TRUE, 0);
-                if (result == VK_SUCCESS) {
-                    break;
-                }
-            }
-
-            vkDestroyFence(device_, fence, nullptr);
-            vkFreeCommandBuffers(device_, command_pool_, 1, &cmdBuffer);
+            // copy_to() already waits for completion via vkQueueWaitIdle(), so no
+            // additional fence/polling is needed. The data is ready to read.
 
             auto ptr  = reinterpret_cast<uint8_t*>(buf->data());
             auto size = buf->size();

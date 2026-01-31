@@ -26,6 +26,7 @@ if (MSVC)
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 	list(APPEND SOURCES
 			macos_specific.cpp
+			macos_main_loop.mm
 	)
 else ()
 	list(APPEND SOURCES

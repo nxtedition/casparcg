@@ -479,6 +479,7 @@ struct screen_consumer_vk
             glfwPollEvents();
             if (glfwWindowShouldClose(win)) {
                 should_close = true;
+                CASPAR_LOG(warning) << L"[vk::screen] glfwWindowShouldClose returned true!";
             }
             dispatch_semaphore_signal(poll_done);
         });
@@ -487,11 +488,13 @@ struct screen_consumer_vk
         dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC);
         if (dispatch_semaphore_wait(poll_done, timeout) != 0) {
             // Timeout - main thread may be blocked, exit gracefully
+            CASPAR_LOG(warning) << L"[vk::screen] poll() timed out waiting for main thread";
             is_running_ = false;
             return true;
         }
 
         if (should_close) {
+            CASPAR_LOG(warning) << L"[vk::screen] poll() detected window should close, stopping consumer";
             is_running_ = false;
             return true;
         }

@@ -479,7 +479,6 @@ struct screen_consumer_vk
             glfwPollEvents();
             if (glfwWindowShouldClose(win)) {
                 should_close = true;
-                CASPAR_LOG(warning) << L"[vk::screen] glfwWindowShouldClose returned true!";
             }
             dispatch_semaphore_signal(poll_done);
         });
@@ -494,7 +493,7 @@ struct screen_consumer_vk
         }
 
         if (should_close) {
-            CASPAR_LOG(warning) << L"[vk::screen] poll() detected window should close, stopping consumer";
+            CASPAR_LOG(info) << L"[vk::screen] Window close requested, stopping consumer";
             is_running_ = false;
             return true;
         }

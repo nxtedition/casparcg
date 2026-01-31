@@ -392,12 +392,6 @@ struct swapchain::impl
 
         VkResult result = vkQueuePresentKHR(queue_, &presentInfo);
 
-        static int present_debug_count = 0;
-        if (present_debug_count++ < 10) {
-            CASPAR_LOG(info) << L"[vk::swapchain] present: imageIndex=" << imageIndex
-                              << L" result=" << result << L" (0=SUCCESS)";
-        }
-
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             return false;
         } else if (result != VK_SUCCESS) {

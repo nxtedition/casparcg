@@ -415,42 +415,6 @@ struct screen_consumer_vk
 
         // Clear texture to black on initialization to avoid showing uninitialized memory
         frame_texture_->clear();
-        CASPAR_LOG(info) << print() << L" Texture format: " << frame_texture_->format()
-                         << L" size: " << frame_texture_->width() << L"x" << frame_texture_->height();
-
-#ifdef __APPLE__
-        // Configure Metal layer drawable size to match swapchain
-        dispatch_sync(dispatch_get_main_queue(), ^{
-            NSWindow* nsWindow = glfwGetCocoaWindow(window_);
-            NSView* contentView = [nsWindow contentView];
-            CALayer* layer = [contentView layer];
-
-            if ([layer isKindOfClass:[CAMetalLayer class]]) {
-                CAMetalLayer* metalLayer = (CAMetalLayer*)layer;
-
-                // Get swapchain extent
-                uint32_t swapWidth, swapHeight;
-                swapchain_->get_extent(swapWidth, swapHeight);
-
-                // Set drawable size to match swapchain (pixel resolution)
-                metalLayer.drawableSize = CGSizeMake(swapWidth, swapHeight);
-
-                // Ensure layer fills the view
-                metalLayer.frame = contentView.bounds;
-
-                // Set content scale for Retina
-                metalLayer.contentsScale = [nsWindow backingScaleFactor];
-
-                CASPAR_LOG(info) << print() << L" macOS Metal layer configured:"
-                                  << L" drawableSize=" << metalLayer.drawableSize.width << L"x" << metalLayer.drawableSize.height
-                                  << L" frame=" << metalLayer.frame.size.width << L"x" << metalLayer.frame.size.height
-                                  << L" contentsScale=" << metalLayer.contentsScale
-                                  << L" swapchain=" << swapWidth << L"x" << swapHeight;
-            } else {
-                CASPAR_LOG(warning) << print() << L" Layer is not CAMetalLayer!";
-            }
-        });
-#endif
 
         if (config_.vsync) {
             CASPAR_LOG(info) << print() << " Enabled vsync.";
@@ -571,21 +535,6 @@ struct screen_consumer_vk
         auto size_multiplier = config_.high_bitdepth ? 2 : 1;
         auto frame_data = in_frame.image_data(0);
         auto expected_size = static_cast<size_t>(format_desc_.size * size_multiplier);
-
-        // Debug: Log pixel data when content changes
-        static int debug_counter = 0;
-        static uint8_t last_r = 0, last_g = 0, last_b = 0, last_a = 0;
-        if (frame_data.size() >= 4) {
-            auto* data = frame_data.begin();
-            // Log first 30 frames, or when color changes
-            bool color_changed = (data[0] != last_b || data[1] != last_g || data[2] != last_r || data[3] != last_a);
-            if (debug_counter++ < 30 || color_changed) {
-                CASPAR_LOG(info) << print() << L" Frame data (BGRA): "
-                                  << L"[" << (int)data[0] << L"," << (int)data[1] << L"," << (int)data[2] << L"," << (int)data[3] << L"]"
-                                  << (color_changed ? L" (color changed)" : L"");
-                last_b = data[0]; last_g = data[1]; last_r = data[2]; last_a = data[3];
-            }
-        }
 
         // Validate frame data size
         if (frame_data.size() < expected_size) {

@@ -271,6 +271,22 @@ struct image_mixer::impl
         CASPAR_LOG(info) << L"[vk::image_mixer] Vulkan Image Mixer initialized for channel " << channel_id_;
     }
 
+    ~impl()
+    {
+        // CRITICAL: Wait for all pending Vulkan operations to complete before destruction.
+        // The image_renderer captures 'this' in lambdas dispatched to the Vulkan thread.
+        // If we destroy without synchronizing, those lambdas will execute with a dangling pointer.
+        try {
+            CASPAR_LOG(debug) << L"[vk::image_mixer] Channel " << channel_id_ << L" - waiting for pending GPU operations...";
+            device_->dispatch_sync([] {
+                // Empty lambda - just wait for all prior dispatched work to complete
+            });
+            CASPAR_LOG(debug) << L"[vk::image_mixer] Channel " << channel_id_ << L" - GPU sync complete, destroying.";
+        } catch (...) {
+            CASPAR_LOG(warning) << L"[vk::image_mixer] Channel " << channel_id_ << L" - exception during GPU sync on destruction.";
+        }
+    }
+
     void update_aspect_ratio(double aspect_ratio) { aspect_ratio_ = aspect_ratio; }
 
     void push(const core::frame_transform& transform)

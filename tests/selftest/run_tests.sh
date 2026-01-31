@@ -62,15 +62,62 @@ fi
 # Create output directory
 mkdir -p test_output
 
-# Function to cleanup on exit
+# Function to test clean shutdown (returns 0 if clean, 1 if had to force kill)
+test_clean_shutdown() {
+    local pid=$1
+    local timeout_seconds=5
+
+    echo ""
+    echo "============================================================"
+    echo "Testing clean shutdown..."
+    echo "============================================================"
+
+    # Send KILL command via AMCP
+    echo "Sending KILL command via AMCP..."
+    if ! python3 -c "
+import socket
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(3)
+    s.connect(('localhost', $CASPARCG_PORT))
+    s.sendall(b'KILL\r\n')
+    response = s.recv(1024).decode()
+    s.close()
+    exit(0 if '202' in response else 1)
+except Exception as e:
+    print(f'Failed to send KILL: {e}')
+    exit(1)
+" 2>/dev/null; then
+        echo "  WARNING: Could not send KILL command, falling back to SIGTERM"
+        kill "$pid" 2>/dev/null || true
+    fi
+
+    # Wait for clean exit
+    echo "Waiting for clean shutdown (max ${timeout_seconds}s)..."
+    local elapsed=0
+    while [[ $elapsed -lt $timeout_seconds ]]; do
+        if ! ps -p "$pid" > /dev/null 2>&1; then
+            echo "  OK: CasparCG exited cleanly after ${elapsed}s"
+            return 0
+        fi
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+    done
+
+    # Process still running - this is the bug we're testing for
+    echo "  FAIL: CasparCG did not exit within ${timeout_seconds}s - shutdown is frozen!"
+    echo "  Force killing process..."
+    kill -9 "$pid" 2>/dev/null || true
+    return 1
+}
+
+# Function to cleanup on exit (fallback if test_clean_shutdown wasn't called)
 cleanup() {
     if [[ -n "$CASPARCG_PID" ]] && ps -p "$CASPARCG_PID" > /dev/null 2>&1; then
         echo ""
         echo "Stopping CasparCG (PID: $CASPARCG_PID)..."
         kill "$CASPARCG_PID" 2>/dev/null || true
-        # Give it a moment to shut down gracefully
         sleep 1
-        # Force kill if still running
         if ps -p "$CASPARCG_PID" > /dev/null 2>&1; then
             kill -9 "$CASPARCG_PID" 2>/dev/null || true
         fi
@@ -191,4 +238,22 @@ echo "Running tests..."
 python3 test_runner.py "${PYTHON_ARGS[@]}"
 TEST_RESULT=$?
 
-exit $TEST_RESULT
+# Test clean shutdown if we started the server
+SHUTDOWN_RESULT=0
+if [[ $START_SERVER -eq 1 ]] && [[ -n "$CASPARCG_PID" ]]; then
+    if ! test_clean_shutdown "$CASPARCG_PID"; then
+        SHUTDOWN_RESULT=1
+        echo ""
+        echo "============================================================"
+        echo "SHUTDOWN TEST FAILED - CasparCG froze during exit!"
+        echo "============================================================"
+    fi
+    # Clear PID so cleanup trap doesn't try to kill again
+    CASPARCG_PID=""
+fi
+
+# Report final result
+if [[ $TEST_RESULT -ne 0 ]] || [[ $SHUTDOWN_RESULT -ne 0 ]]; then
+    exit 1
+fi
+exit 0

@@ -442,27 +442,54 @@ struct screen_consumer_vk
         vk_device_.reset();
 
         // Cleanup GLFW on main thread
-        dispatch_sync(dispatch_get_main_queue(), ^{
-            if (window_) {
-                glfwDestroyWindow(window_);
-                window_ = nullptr;
+        // Use dispatch_async with semaphore to avoid deadlock during shutdown
+        // (if main thread is blocked, dispatch_sync would hang forever)
+        dispatch_semaphore_t cleanup_done = dispatch_semaphore_create(0);
+        GLFWwindow* win_to_destroy = window_;
+        window_ = nullptr;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (win_to_destroy) {
+                glfwDestroyWindow(win_to_destroy);
             }
             glfwTerminate();
+            dispatch_semaphore_signal(cleanup_done);
         });
+
+        // Wait up to 1 second for cleanup, then proceed anyway to avoid hang
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC);
+        if (dispatch_semaphore_wait(cleanup_done, timeout) != 0) {
+            CASPAR_LOG(warning) << print() << L" GLFW cleanup timed out - main thread may be blocked";
+        }
     }
 
     bool poll()
     {
         // macOS: Poll events on main thread via GCD
+        // Use dispatch_async with timeout to avoid deadlock during shutdown
+        if (!is_running_) {
+            return true;
+        }
+
         __block bool should_close = false;
         GLFWwindow* win = window_;
+        dispatch_semaphore_t poll_done = dispatch_semaphore_create(0);
 
-        dispatch_sync(dispatch_get_main_queue(), ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
             glfwPollEvents();
             if (glfwWindowShouldClose(win)) {
                 should_close = true;
             }
+            dispatch_semaphore_signal(poll_done);
         });
+
+        // Wait up to 100ms for poll to complete (short timeout since this is called frequently)
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC);
+        if (dispatch_semaphore_wait(poll_done, timeout) != 0) {
+            // Timeout - main thread may be blocked, exit gracefully
+            is_running_ = false;
+            return true;
+        }
 
         if (should_close) {
             is_running_ = false;
@@ -474,19 +501,27 @@ struct screen_consumer_vk
 
     void handle_resize()
     {
-        if (!needs_resize_) {
+        if (!needs_resize_ || !is_running_) {
             return;
         }
         needs_resize_ = false;
 
-        // Get framebuffer size on main thread
+        // Get framebuffer size on main thread with timeout to avoid shutdown deadlock
         __block int width = 0;
         __block int height = 0;
         GLFWwindow* win = window_;
+        dispatch_semaphore_t resize_done = dispatch_semaphore_create(0);
 
-        dispatch_sync(dispatch_get_main_queue(), ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
             glfwGetFramebufferSize(win, &width, &height);
+            dispatch_semaphore_signal(resize_done);
         });
+
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC);
+        if (dispatch_semaphore_wait(resize_done, timeout) != 0) {
+            // Timeout - main thread may be blocked
+            return;
+        }
 
         if (width == 0 || height == 0) {
             return;

@@ -188,6 +188,12 @@ class image_renderer
 
         if (params.transform.is_key) {
             // Key: use as mask for next non-key item
+            static int key_debug = 0;
+            if (key_debug++ < 50) {
+                CASPAR_LOG(info) << L"[vk::image_mixer] Drawing KEY item #" << key_debug
+                                 << L" textures=" << params.textures.size();
+            }
+
             if (!local_key_texture) {
                 local_key_texture = device_->create_texture(target_texture->width(), target_texture->height(), 1, depth_);
                 local_key_texture->clear();
@@ -213,6 +219,14 @@ class image_renderer
             kernel_.draw(params);
         } else {
             // Normal: draw directly to target
+            static int normal_debug = 0;
+            if (normal_debug++ < 50) {
+                CASPAR_LOG(info) << L"[vk::image_mixer] Drawing NORMAL item #" << normal_debug
+                                 << L" textures=" << params.textures.size()
+                                 << L" has_local_key=" << (local_key_texture ? 1 : 0)
+                                 << L" has_layer_key=" << (layer_key_texture ? 1 : 0);
+            }
+
             draw(target_texture, std::move(local_mix_texture), format_desc, core::blend_mode::normal);
 
             params.background = target_texture;
@@ -311,8 +325,9 @@ struct image_mixer::impl
         // Copy other properties
         combined.blend_mode  = transform.image_transform.blend_mode;
         combined.layer_depth = transform.image_transform.layer_depth;
-        combined.is_key      = transform.image_transform.is_key;
-        combined.is_mix      = transform.image_transform.is_mix;
+        // is_key and is_mix should be OR'd, not replaced - if any parent has is_key=true, keep it
+        combined.is_key      = combined.is_key || transform.image_transform.is_key;
+        combined.is_mix      = combined.is_mix || transform.image_transform.is_mix;
         combined.invert      = transform.image_transform.invert;
         combined.levels      = transform.image_transform.levels;
         combined.chroma      = transform.image_transform.chroma;
@@ -320,6 +335,19 @@ struct image_mixer::impl
         transform_stack_.push_back(combined);
 
         auto new_layer_depth = transform_stack_.back().layer_depth;
+
+        // Debug: Log push operations
+        static int push_debug = 0;
+        if (push_debug++ < 100 || push_debug % 500 == 0) {
+            CASPAR_LOG(debug) << L"[vk::image_mixer] push #" << push_debug
+                              << L" prev_depth=" << previous_layer_depth
+                              << L" new_depth=" << new_layer_depth
+                              << L" is_key=" << combined.is_key
+                              << L" is_mix=" << combined.is_mix
+                              << L" opacity=" << combined.opacity
+                              << L" layers_.size=" << layers_.size()
+                              << L" layer_stack_.size=" << layer_stack_.size();
+        }
 
         if (previous_layer_depth < new_layer_depth) {
             layer new_layer(transform_stack_.back().blend_mode);
@@ -330,6 +358,11 @@ struct image_mixer::impl
             } else {
                 layer_stack_.back()->sublayers.push_back(std::move(new_layer));
                 layer_stack_.push_back(&layer_stack_.back()->sublayers.back());
+            }
+
+            // Debug: Log layer creation
+            if (push_debug < 100) {
+                CASPAR_LOG(info) << L"[vk::image_mixer] Created layer, total layers=" << layers_.size();
             }
         }
     }
@@ -378,6 +411,16 @@ struct image_mixer::impl
         }
 
         layer_stack_.back()->items.push_back(item);
+
+        // Debug: Log visit operations
+        static int visit_debug = 0;
+        if (visit_debug++ < 100 || visit_debug % 500 == 0) {
+            CASPAR_LOG(info) << L"[vk::image_mixer] visit #" << visit_debug
+                             << L" format=" << static_cast<int>(item.pix_desc.format)
+                             << L" is_key=" << item.transform.is_key
+                             << L" layer_items=" << layer_stack_.back()->items.size()
+                             << L" total_layers=" << layers_.size();
+        }
     }
 
     void pop()

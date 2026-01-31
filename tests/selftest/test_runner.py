@@ -66,6 +66,8 @@ class TestRunner:
                            "Test multiple layer compositing")
         self.register_test("alpha_blend", 3, self.test_alpha_blend,
                            "Test alpha blending between layers")
+        self.register_test("keyer_compositing", 3, self.test_keyer_compositing,
+                           "Test MIXER KEYER key-fill compositing")
 
         # Phase 4: Blend Modes
         self.register_test("blend_modes", 4, self.test_blend_modes,
@@ -424,6 +426,105 @@ class TestRunner:
         self.helper.wait(1.0)
 
         # Result should be pink-ish (white + 50% red)
+        return True
+
+    def test_keyer_compositing(self) -> bool:
+        """Test MIXER KEYER key-fill compositing.
+
+        This tests the external keyer functionality where one layer's
+        luminance/alpha is used as a mask for the layer ABOVE it.
+
+        Layer order: Key layer (lower number) -> Fill layer (higher number)
+        When MIXER 1-1 KEYER 1 is set, layer 1 becomes the key for layer 2 (above).
+        The layer_key_texture from layer N is used by layer N+1.
+        """
+        ch = self.config.playback_channel
+
+        print("  === Test 1: Basic KEYER with WHITE key (should show RED) ===")
+
+        # Layer 1: White key (white = fully visible) - KEY LAYER MUST BE BELOW FILL
+        r1 = self.client.play_color(ch, 1, "WHITE")
+        if not self.helper.assert_success(r1, "Play WHITE on layer 1 (key)"):
+            return False
+
+        # Enable keyer on layer 1 - makes it act as key for layer above (layer 2)
+        r2 = self.client.send(f"MIXER {ch}-1 KEYER 1")
+        if not self.helper.assert_success(r2, "Enable KEYER on layer 1"):
+            return False
+
+        # Layer 2: Red fill (this is what we want to show, masked by layer 1's key)
+        r3 = self.client.play_color(ch, 2, "RED")
+        if not self.helper.assert_success(r3, "Play RED on layer 2 (fill)"):
+            return False
+
+        self.helper.wait(2.0)
+        print("  With WHITE key on layer 1, RED fill on layer 2 should be fully visible")
+
+        # Verify keyer is set
+        r4 = self.client.send(f"MIXER {ch}-1 KEYER")
+        print(f"  KEYER state: {r4}")
+
+        print("  === Test 2: KEYER with BLACK key (should show nothing/black) ===")
+
+        # Change key to black (black = fully transparent)
+        r5 = self.client.play_color(ch, 1, "BLACK")
+        if not self.helper.assert_success(r5, "Play BLACK on layer 1 (key)"):
+            return False
+
+        # Re-enable keyer (play command might have reset it)
+        r6 = self.client.send(f"MIXER {ch}-1 KEYER 1")
+        if not self.helper.assert_success(r6, "Re-enable KEYER on layer 1"):
+            return False
+
+        self.helper.wait(2.0)
+        print("  With BLACK key, RED fill should be invisible (black output)")
+
+        print("  === Test 3: KEYER with GRAY key (should show 50% RED) ===")
+
+        # Change key to gray (50% visible)
+        r7 = self.client.play_color(ch, 1, "#808080")
+        if not self.helper.assert_success(r7, "Play GRAY on layer 1 (key)"):
+            return False
+
+        r8 = self.client.send(f"MIXER {ch}-1 KEYER 1")
+        if not self.helper.assert_success(r8, "Re-enable KEYER on layer 1"):
+            return False
+
+        self.helper.wait(2.0)
+        print("  With GRAY key, RED fill should be 50% visible")
+
+        print("  === Test 4: Multiple layers with keyer ===")
+
+        # Clear and set up: background + key + fill
+        self.client.clear(ch)
+        self.helper.wait(0.5)
+
+        # Layer 1: Blue background (not keyed)
+        r9 = self.client.play_color(ch, 1, "BLUE")
+        if not self.helper.assert_success(r9, "Play BLUE on layer 1 (background)"):
+            return False
+
+        # Layer 10: White key for layer 11
+        r10 = self.client.play_color(ch, 10, "WHITE")
+        if not self.helper.assert_success(r10, "Play WHITE on layer 10 (key)"):
+            return False
+
+        r11 = self.client.send(f"MIXER {ch}-10 KEYER 1")
+        if not self.helper.assert_success(r11, "Enable KEYER on layer 10"):
+            return False
+
+        # Layer 11: Green fill (will be masked by layer 10's key)
+        r12 = self.client.play_color(ch, 11, "GREEN")
+        if not self.helper.assert_success(r12, "Play GREEN on layer 11 (fill)"):
+            return False
+
+        self.helper.wait(2.0)
+        print("  Should see GREEN on top of BLUE (white key = fully visible)")
+
+        # Get info to verify layers
+        code, info = self.client.info(ch)
+        print(f"  Channel info: {info[:200]}...")
+
         return True
 
     def test_blend_modes(self) -> bool:

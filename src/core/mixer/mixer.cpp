@@ -66,6 +66,12 @@ struct mixer::impl
         image_mixer_->update_aspect_ratio(static_cast<double>(format_desc.square_width) /
                                           static_cast<double>(format_desc.square_height));
 
+        // Debug: Log how many frames we're processing
+        static int mixer_frame_count = 0;
+        if (mixer_frame_count++ < 30 || mixer_frame_count % 500 == 0) {
+            CASPAR_LOG(info) << L"[mixer] Processing " << frames.size() << L" frames for channel " << channel_index_;
+        }
+
         for (auto& frame : frames) {
             frame.accept(audio_mixer_);
             frame.transform().image_transform.layer_depth = 1;

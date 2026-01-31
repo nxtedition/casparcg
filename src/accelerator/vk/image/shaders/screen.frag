@@ -39,12 +39,13 @@ const mat3 rgb2yuv_709 = mat3(
     0.062,   0.439, -0.040
 );
 
-// Sample texture with BGRA to RGBA swizzle
-// Input frame data is BGRA, stored in RGBA texture, so R=B and B=R
-vec4 sample_bgra(vec2 coord)
+// Sample texture and convert BGRA to RGBA
+// Frame data is in BGRA format (CasparCG standard) but stored in R8G8B8A8 texture,
+// so when sampled we get (B, G, R, A) - need to swizzle to (R, G, B, A)
+vec4 sample_texture(vec2 coord)
 {
-    vec4 c = texture(tex_background, coord);
-    return vec4(c.b, c.g, c.r, c.a);
+    vec4 texel = texture(tex_background, coord);
+    return texel.bgra;  // Swizzle BGRA -> RGBA
 }
 
 vec4 dtv_color(vec4 color)
@@ -55,7 +56,7 @@ vec4 dtv_color(vec4 color)
 
 void main()
 {
-    vec4 color = sample_bgra(in_tex_coord);
+    vec4 color = sample_texture(in_tex_coord);
 
     if (pc.key_only == 1) {
         // Show alpha channel as grayscale
@@ -67,7 +68,7 @@ void main()
         float x_coord = in_tex_coord.x * float(pc.window_width) * 0.5;
         bool isEvenPixel = round(x_coord) - x_coord < 0.0;
         vec2 offset = isEvenPixel ? vec2(1.0 / float(pc.window_width), 0.0) : vec2(-1.0 / float(pc.window_width), 0.0);
-        vec4 color2 = dtv_color(sample_bgra(in_tex_coord + offset));
+        vec4 color2 = dtv_color(sample_texture(in_tex_coord + offset));
         color.s = clamp((color.s * RANGE_LIMITED) + RANGE_16 + RANGE_HALF, RANGE_16, RANGE_235);
         color.t = clamp(((isEvenPixel ? color.t + color2.t : color.p + color2.p) * RANGE_LIMITED * 0.5) + RANGE_HALF + 0.5, RANGE_16, RANGE_235);
         color.p = clamp((color.w * RANGE_LIMITED) + RANGE_16 + RANGE_HALF, RANGE_16, RANGE_235);
@@ -78,7 +79,7 @@ void main()
         float x_coord = in_tex_coord.x * float(pc.window_width) * 0.5;
         bool isEvenPixel = round(x_coord) - x_coord < 0.0;
         vec2 offset = isEvenPixel ? vec2(1.0 / float(pc.window_width), 0.0) : vec2(-1.0 / float(pc.window_width), 0.0);
-        vec4 color2 = dtv_color(sample_bgra(in_tex_coord + offset));
+        vec4 color2 = dtv_color(sample_texture(in_tex_coord + offset));
         color.s = clamp(color.s + RANGE_HALF, 0.0, 1.0);
         color.t = clamp(((isEvenPixel ? color.t + color2.t : color.p + color2.p) * 0.5) + RANGE_HALF + 0.5, 0.0, 1.0);
         color.p = clamp(color.w + RANGE_HALF, 0.0, 1.0);

@@ -15,24 +15,26 @@ layout(push_constant) uniform PushConstants {
 // Vertex output
 layout(location = 0) out vec2 out_tex_coord;
 
-// Full-screen triangle vertices (generates a quad with one triangle)
-// Using 3 vertices to cover entire screen without vertex buffer
+// Full-screen quad vertices (two triangles)
+// Vulkan clip space: Y=-1 is TOP, Y=+1 is BOTTOM
 vec2 positions[6] = vec2[](
-    vec2(-1.0, -1.0),   // bottom-left
-    vec2( 1.0, -1.0),   // bottom-right
-    vec2( 1.0,  1.0),   // top-right
-    vec2(-1.0, -1.0),   // bottom-left
-    vec2( 1.0,  1.0),   // top-right
-    vec2(-1.0,  1.0)    // top-left
+    vec2(-1.0, -1.0),   // top-left
+    vec2( 1.0, -1.0),   // top-right
+    vec2( 1.0,  1.0),   // bottom-right
+    vec2(-1.0, -1.0),   // top-left
+    vec2( 1.0,  1.0),   // bottom-right
+    vec2(-1.0,  1.0)    // bottom-left
 );
 
+// Texture coordinates: match screen positions directly (no flip)
+// Frame data is already in correct top-to-bottom orientation
 vec2 tex_coords[6] = vec2[](
-    vec2(0.0, 1.0),     // bottom-left
+    vec2(0.0, 0.0),     // top-left
+    vec2(1.0, 0.0),     // top-right
     vec2(1.0, 1.0),     // bottom-right
-    vec2(1.0, 0.0),     // top-right
-    vec2(0.0, 1.0),     // bottom-left
-    vec2(1.0, 0.0),     // top-right
-    vec2(0.0, 0.0)      // top-left
+    vec2(0.0, 0.0),     // top-left
+    vec2(1.0, 1.0),     // bottom-right
+    vec2(0.0, 1.0)      // bottom-left
 );
 
 void main()

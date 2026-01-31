@@ -95,3 +95,12 @@ brew install boost ffmpeg tbb simde
 - Screen consumer uses GLFW + Vulkan (Phase 9 complete)
 - CEF/HTML module disabled (Phase 14)
 - OSD diagnostics disabled (uses stub)
+
+## Vulkan-First Development Policy
+
+**IMPORTANT**: The goal is to completely replace OpenGL with Vulkan on all platforms. When implementing graphics/rendering features:
+
+1. **Always prioritize Vulkan solutions** - even if it means breaking OpenGL compatibility
+2. **Start with macOS** as the primary development platform for Vulkan support
+3. **Do not maintain OpenGL fallbacks** unless explicitly required for a specific platform
+4. Windows and Linux Vulkan support will follow after macOS is complete

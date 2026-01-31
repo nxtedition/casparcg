@@ -107,9 +107,16 @@ struct mixer::impl
             return const_frame{};
         }
 
-        auto frame = std::move(buffer_.front().get());
-        buffer_.pop();
-        return frame;
+        // Use RAII to ensure we always pop the front, even if get() throws.
+        // After calling get() on a future, it becomes invalid. If we don't pop
+        // and an exception occurs, the next call would try to get() the same
+        // invalid future, causing a crash.
+        struct scope_guard {
+            std::queue<std::future<const_frame>>& q;
+            ~scope_guard() { q.pop(); }
+        } guard{buffer_};
+
+        return std::move(buffer_.front().get());
     }
 
     void set_master_volume(float volume) { audio_mixer_.set_master_volume(volume); }

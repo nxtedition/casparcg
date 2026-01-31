@@ -205,6 +205,11 @@ class renderer_application
         command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
         command_line->AppendSwitchWithValue("remote-allow-origins", "*");
 
+#ifdef __APPLE__
+        // macOS: Use mock keychain to prevent "Chromium Safe Storage" keychain permission dialog
+        command_line->AppendSwitch("use-mock-keychain");
+#endif
+
         if (process_type.empty() && !enable_gpu_) {
             // This gives more performance, but disabled gpu effects. Without it a single 1080p producer cannot be run
             // smoothly
@@ -264,6 +269,20 @@ void init(const core::module_dependencies& dependencies)
         // CEF framework's install_name is @executable_path/../Frameworks/
         auto exe_path = boost::dll::program_location();
         auto exe_dir = exe_path.parent_path();
+
+        // Set root_cache_path to prevent CEF from using shared keychain storage
+        // This avoids the "Chromium Safe Storage" keychain permission dialog on macOS
+        // Must be an absolute path
+        auto cef_cache_path = exe_dir / "data" / "cef_cache";
+        CefString(&settings.root_cache_path).FromString(cef_cache_path.string());
+#else
+        // Set root_cache_path to prevent CEF from using shared keychain storage
+        auto data_path = env::data_folder();
+        auto cef_cache_path = data_path + L"cef_cache";
+        CefString(&settings.root_cache_path).FromWString(cef_cache_path);
+#endif
+
+#ifdef __APPLE__
         auto frameworks_path = exe_dir.parent_path() / "Frameworks";
 
         // Framework: <build>/Frameworks/Chromium Embedded Framework.framework

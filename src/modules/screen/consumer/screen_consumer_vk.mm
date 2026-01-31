@@ -27,6 +27,12 @@
 // macOS: Use Grand Central Dispatch to marshal GLFW operations to main thread
 #ifdef __APPLE__
 #include <dispatch/dispatch.h>
+#import <Cocoa/Cocoa.h>
+#import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
+#define GLFW_EXPOSE_NATIVE_COCOA
+#include <GLFW/glfw3native.h>
+#include <vulkan/vulkan_metal.h>
 #endif
 
 #include <common/array.h>
@@ -139,6 +145,7 @@ struct screen_consumer_vk
 
     std::atomic<bool> is_running_{true};
     std::atomic<bool> needs_resize_{false};
+    std::atomic<bool> first_frame_presented_{false};
     std::thread       thread_;
 
     screen_consumer_vk(const screen_consumer_vk&)            = delete;
@@ -298,19 +305,95 @@ struct screen_consumer_vk
         screen_width_ = final_width;
         screen_height_ = final_height;
 
-        // Set resize callback - must be done on main thread
+        // Set resize callback and show window - must be done on main thread
         dispatch_sync(dispatch_get_main_queue(), ^{
             glfwSetWindowUserPointer(window_, this);
             glfwSetFramebufferSizeCallback(window_, [](GLFWwindow* win, int width, int height) {
                 auto* self = static_cast<screen_consumer_vk*>(glfwGetWindowUserPointer(win));
                 self->needs_resize_ = true;
             });
+
+            // Make window visible and key BEFORE creating Vulkan surface
+            // This ensures the layer hierarchy is fully initialized on macOS
+            glfwShowWindow(window_);
+            NSWindow* nsWindow = glfwGetCocoaWindow(window_);
+            [nsWindow makeKeyAndOrderFront:nil];
+
+            // Ensure the window is fully laid out
+            [[nsWindow contentView] setNeedsDisplay:YES];
+            [[nsWindow contentView] displayIfNeeded];
         });
+
+        // Small delay to ensure window is fully visible
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
         // Initialize Vulkan
         vk_device_ = std::make_shared<vk::device>();
-
         auto handles = vk_device_->get_handles();
+
+#ifdef __APPLE__
+        // macOS: Manually create CAMetalLayer and Vulkan surface
+        // This ensures we control exactly which layer MoltenVK renders to
+        __block void* created_surface = nullptr;
+
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            NSWindow* nsWindow = glfwGetCocoaWindow(window_);
+            NSView* contentView = [nsWindow contentView];
+
+            // Ensure view wants to be layer-backed
+            [contentView setWantsLayer:YES];
+
+            // Create and configure CAMetalLayer
+            CAMetalLayer* metalLayer = [CAMetalLayer layer];
+            metalLayer.device = MTLCreateSystemDefaultDevice();
+            metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+            metalLayer.framebufferOnly = NO;
+            metalLayer.contentsScale = [nsWindow backingScaleFactor];
+
+            // Set the layer on the view - this makes the view the layer's delegate
+            [contentView setLayer:metalLayer];
+
+            // Set drawable size to match window backing size (Retina-aware)
+            NSRect backingBounds = [contentView convertRectToBacking:contentView.bounds];
+            metalLayer.drawableSize = CGSizeMake(backingBounds.size.width, backingBounds.size.height);
+
+            CASPAR_LOG(info) << L"[vk::screen] Configured CAMetalLayer:"
+                              << L" drawableSize=" << metalLayer.drawableSize.width << L"x" << metalLayer.drawableSize.height
+                              << L" contentsScale=" << metalLayer.contentsScale
+                              << L" device=" << (metalLayer.device ? L"set" : L"none");
+
+            // Create Vulkan surface using VK_EXT_metal_surface
+            VkMetalSurfaceCreateInfoEXT surfaceCreateInfo{};
+            surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+            surfaceCreateInfo.pLayer = (__bridge const CAMetalLayer*)metalLayer;
+
+            auto vkCreateMetalSurfaceEXT = (PFN_vkCreateMetalSurfaceEXT)vkGetInstanceProcAddr(
+                static_cast<VkInstance>(handles.instance), "vkCreateMetalSurfaceEXT");
+
+            if (vkCreateMetalSurfaceEXT) {
+                VkSurfaceKHR surface = VK_NULL_HANDLE;
+                VkResult result = vkCreateMetalSurfaceEXT(static_cast<VkInstance>(handles.instance),
+                                                          &surfaceCreateInfo, nullptr, &surface);
+                if (result == VK_SUCCESS) {
+                    created_surface = surface;
+                    CASPAR_LOG(info) << L"[vk::screen] Created Vulkan surface via VK_EXT_metal_surface";
+                } else {
+                    CASPAR_LOG(error) << L"[vk::screen] vkCreateMetalSurfaceEXT failed: " << result;
+                }
+            } else {
+                CASPAR_LOG(warning) << L"[vk::screen] vkCreateMetalSurfaceEXT not available, falling back to GLFW";
+            }
+        });
+
+        swapchain_ = std::make_unique<vk::swapchain>(handles.instance,
+                                                      handles.physical_device,
+                                                      handles.device,
+                                                      handles.queue,
+                                                      handles.queue_family_index,
+                                                      window_,
+                                                      config_.vsync,
+                                                      created_surface);
+#else
         swapchain_ = std::make_unique<vk::swapchain>(handles.instance,
                                                       handles.physical_device,
                                                       handles.device,
@@ -318,6 +401,7 @@ struct screen_consumer_vk
                                                       handles.queue_family_index,
                                                       window_,
                                                       config_.vsync);
+#endif
 
         render_pipeline_ = std::make_unique<vk::render_pipeline>(
             handles.device, handles.physical_device, handles.command_pool, handles.queue, *swapchain_);
@@ -333,6 +417,40 @@ struct screen_consumer_vk
         frame_texture_->clear();
         CASPAR_LOG(info) << print() << L" Texture format: " << frame_texture_->format()
                          << L" size: " << frame_texture_->width() << L"x" << frame_texture_->height();
+
+#ifdef __APPLE__
+        // Configure Metal layer drawable size to match swapchain
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            NSWindow* nsWindow = glfwGetCocoaWindow(window_);
+            NSView* contentView = [nsWindow contentView];
+            CALayer* layer = [contentView layer];
+
+            if ([layer isKindOfClass:[CAMetalLayer class]]) {
+                CAMetalLayer* metalLayer = (CAMetalLayer*)layer;
+
+                // Get swapchain extent
+                uint32_t swapWidth, swapHeight;
+                swapchain_->get_extent(swapWidth, swapHeight);
+
+                // Set drawable size to match swapchain (pixel resolution)
+                metalLayer.drawableSize = CGSizeMake(swapWidth, swapHeight);
+
+                // Ensure layer fills the view
+                metalLayer.frame = contentView.bounds;
+
+                // Set content scale for Retina
+                metalLayer.contentsScale = [nsWindow backingScaleFactor];
+
+                CASPAR_LOG(info) << print() << L" macOS Metal layer configured:"
+                                  << L" drawableSize=" << metalLayer.drawableSize.width << L"x" << metalLayer.drawableSize.height
+                                  << L" frame=" << metalLayer.frame.size.width << L"x" << metalLayer.frame.size.height
+                                  << L" contentsScale=" << metalLayer.contentsScale
+                                  << L" swapchain=" << swapWidth << L"x" << swapHeight;
+            } else {
+                CASPAR_LOG(warning) << print() << L" Layer is not CAMetalLayer!";
+            }
+        });
+#endif
 
         if (config_.vsync) {
             CASPAR_LOG(info) << print() << " Enabled vsync.";
@@ -498,6 +616,22 @@ struct screen_consumer_vk
         }
 
         swapchain_->next_frame();
+
+#ifdef __APPLE__
+        // macOS workaround: First frame may not display until window is moved/resized
+        // (GLFW bug on macOS 10.14+). Trigger a window position change to force content display.
+        if (!first_frame_presented_.exchange(true)) {
+            GLFWwindow* win = window_;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                int x, y;
+                glfwGetWindowPos(win, &x, &y);
+                // Move window by 1 pixel and back to trigger redraw
+                glfwSetWindowPos(win, x + 1, y);
+                glfwSetWindowPos(win, x, y);
+                CASPAR_LOG(info) << L"[vk::screen] Triggered window position change to force initial content display";
+            });
+        }
+#endif
 
         graph_->set_value("tick-time", tick_timer_.elapsed() * format_desc_.fps * 0.5);
         tick_timer_.restart();

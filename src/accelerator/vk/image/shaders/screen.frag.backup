@@ -39,14 +39,6 @@ const mat3 rgb2yuv_709 = mat3(
     0.062,   0.439, -0.040
 );
 
-// Sample texture with BGRA to RGBA swizzle
-// Input frame data is BGRA, stored in RGBA texture, so R=B and B=R
-vec4 sample_bgra(vec2 coord)
-{
-    vec4 c = texture(tex_background, coord);
-    return vec4(c.b, c.g, c.r, c.a);
-}
-
 vec4 dtv_color(vec4 color)
 {
     color.stp = rgb2yuv_709 * clamp(color.rgb / (color.a + 0.0000001), 0.0, 1.0);
@@ -55,7 +47,7 @@ vec4 dtv_color(vec4 color)
 
 void main()
 {
-    vec4 color = sample_bgra(in_tex_coord);
+    vec4 color = texture(tex_background, in_tex_coord);
 
     if (pc.key_only == 1) {
         // Show alpha channel as grayscale
@@ -67,7 +59,7 @@ void main()
         float x_coord = in_tex_coord.x * float(pc.window_width) * 0.5;
         bool isEvenPixel = round(x_coord) - x_coord < 0.0;
         vec2 offset = isEvenPixel ? vec2(1.0 / float(pc.window_width), 0.0) : vec2(-1.0 / float(pc.window_width), 0.0);
-        vec4 color2 = dtv_color(sample_bgra(in_tex_coord + offset));
+        vec4 color2 = dtv_color(texture(tex_background, in_tex_coord + offset));
         color.s = clamp((color.s * RANGE_LIMITED) + RANGE_16 + RANGE_HALF, RANGE_16, RANGE_235);
         color.t = clamp(((isEvenPixel ? color.t + color2.t : color.p + color2.p) * RANGE_LIMITED * 0.5) + RANGE_HALF + 0.5, RANGE_16, RANGE_235);
         color.p = clamp((color.w * RANGE_LIMITED) + RANGE_16 + RANGE_HALF, RANGE_16, RANGE_235);
@@ -78,12 +70,15 @@ void main()
         float x_coord = in_tex_coord.x * float(pc.window_width) * 0.5;
         bool isEvenPixel = round(x_coord) - x_coord < 0.0;
         vec2 offset = isEvenPixel ? vec2(1.0 / float(pc.window_width), 0.0) : vec2(-1.0 / float(pc.window_width), 0.0);
-        vec4 color2 = dtv_color(sample_bgra(in_tex_coord + offset));
+        vec4 color2 = dtv_color(texture(tex_background, in_tex_coord + offset));
         color.s = clamp(color.s + RANGE_HALF, 0.0, 1.0);
         color.t = clamp(((isEvenPixel ? color.t + color2.t : color.p + color2.p) * 0.5) + RANGE_HALF + 0.5, 0.0, 1.0);
         color.p = clamp(color.w + RANGE_HALF, 0.0, 1.0);
     }
 
-    // Output to swapchain - Vulkan handles B8G8R8A8 format conversion automatically
+    // Always output opaque (alpha=1.0) to prevent window transparency
+    // Note: Frame texture data is BGRA (swizzled in copy_to for consumer compatibility)
+    // The RGBA texture format means the BGRA data is stored as R=B, G=G, B=R
+    // Output directly without swizzle since swapchain is also BGRA format
     out_color = vec4(color.rgb, 1.0);
 }

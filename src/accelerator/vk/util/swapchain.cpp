@@ -69,7 +69,8 @@ struct swapchain::impl
          void*       queue,
          uint32_t    queue_family_index,
          GLFWwindow* window,
-         bool        vsync)
+         bool        vsync,
+         void*       pre_created_surface = nullptr)
         : instance_(static_cast<VkInstance>(instance))
         , physical_device_(static_cast<VkPhysicalDevice>(physical_device))
         , device_(static_cast<VkDevice>(device))
@@ -78,7 +79,12 @@ struct swapchain::impl
         , window_(window)
         , vsync_(vsync)
     {
-        create_surface();
+        if (pre_created_surface) {
+            set_surface(static_cast<VkSurfaceKHR>(pre_created_surface));
+            CASPAR_LOG(info) << L"[vk::swapchain] Using pre-created Vulkan surface";
+        } else {
+            create_surface();
+        }
         create_swapchain();
         create_image_views();
         create_sync_objects();
@@ -106,6 +112,18 @@ struct swapchain::impl
         if (result != VK_SUCCESS) {
             CASPAR_THROW_EXCEPTION(caspar::vk::vk_exception() << msg_info("Failed to create Vulkan window surface"));
         }
+
+        // Verify the queue family supports presentation
+        VkBool32 presentSupport = VK_FALSE;
+        vkGetPhysicalDeviceSurfaceSupportKHR(physical_device_, queue_family_index_, surface_, &presentSupport);
+        if (!presentSupport) {
+            CASPAR_THROW_EXCEPTION(caspar::vk::vk_exception() << msg_info("Queue family does not support presentation to surface"));
+        }
+    }
+
+    void set_surface(VkSurfaceKHR surface)
+    {
+        surface_ = surface;
 
         // Verify the queue family supports presentation
         VkBool32 presentSupport = VK_FALSE;
@@ -374,6 +392,12 @@ struct swapchain::impl
 
         VkResult result = vkQueuePresentKHR(queue_, &presentInfo);
 
+        static int present_debug_count = 0;
+        if (present_debug_count++ < 10) {
+            CASPAR_LOG(info) << L"[vk::swapchain] present: imageIndex=" << imageIndex
+                              << L" result=" << result << L" (0=SUCCESS)";
+        }
+
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             return false;
         } else if (result != VK_SUCCESS) {
@@ -399,8 +423,9 @@ swapchain::swapchain(void*       instance,
                      void*       queue,
                      uint32_t    queue_family_index,
                      GLFWwindow* window,
-                     bool        vsync)
-    : impl_(std::make_unique<impl>(instance, physical_device, device, queue, queue_family_index, window, vsync))
+                     bool        vsync,
+                     void*       pre_created_surface)
+    : impl_(std::make_unique<impl>(instance, physical_device, device, queue, queue_family_index, window, vsync, pre_created_surface))
 {
 }
 

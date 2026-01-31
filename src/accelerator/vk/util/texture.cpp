@@ -470,11 +470,21 @@ struct texture::impl
 
         end_single_time_commands(cmdBuffer);
 
-        // Debug: Check what was copied
+        // Swizzle RGBA to BGRA for consumer compatibility
+        // Internal textures use RGBA format (Vulkan convention), but CasparCG consumers expect BGRA
+        if (stride_ == 4) {
+            auto* data = static_cast<uint8_t*>(dst.data());
+            const int pixel_count = width_ * height_;
+            for (int i = 0; i < pixel_count; ++i) {
+                std::swap(data[i * 4 + 0], data[i * 4 + 2]);  // Swap R and B
+            }
+        }
+
+        // Debug: Check what was copied (now in BGRA format)
         static int copy_to_verify = 0;
         if (copy_to_verify++ < 30) {
             auto* data = static_cast<uint8_t*>(dst.data());
-            CASPAR_LOG(info) << L"[vk::texture] copy_to result: ["
+            CASPAR_LOG(info) << L"[vk::texture] copy_to result (BGRA): ["
                               << (int)data[0] << L"," << (int)data[1] << L","
                               << (int)data[2] << L"," << (int)data[3] << L"]";
         }

@@ -12,9 +12,8 @@ if(POLICY CMP0167)
 endif()
 
 # macOS-specific cache options
-# CEF/HTML disabled on macOS - requires helper applications that aren't included in minimal distribution
-# Full CEF support requires building helper apps and proper app bundle structure
-set(ENABLE_HTML OFF CACHE BOOL "Enable CEF and HTML producer")
+# CEF/HTML enabled on macOS - uses runtime path configuration for non-bundle deployment
+set(ENABLE_HTML ON CACHE BOOL "Enable CEF and HTML producer")
 set(USE_STATIC_BOOST OFF CACHE BOOL "Use shared library version of Boost")
 set(CASPARCG_BINARY_NAME "casparcg" CACHE STRING "Custom name of the binary to build")
 set(ENABLE_AVX2 ON CACHE BOOL "Enable the AVX2 instruction set (requires a CPU that supports it)")
@@ -174,8 +173,9 @@ if (ENABLE_HTML)
     )
 
     # macOS CEF uses a framework structure
-    set(CEF_FRAMEWORK_PATH "${SOURCE_DIR}/Release/Chromium Embedded Framework.framework")
-    set(CEF_RESOURCE_PATH "${SOURCE_DIR}/Resources")
+    # Resources are inside the framework bundle at .framework/Resources/
+    set(CEF_FRAMEWORK_PATH "${SOURCE_DIR}/Release/Chromium Embedded Framework.framework" CACHE PATH "CEF Framework path")
+    set(CEF_RESOURCE_PATH "${CEF_FRAMEWORK_PATH}/Resources" CACHE PATH "CEF Resources path")
 
     target_link_libraries(CEF::CEF INTERFACE
         "${CEF_FRAMEWORK_PATH}/Chromium Embedded Framework"
@@ -187,15 +187,16 @@ if (ENABLE_HTML)
         "-F${SOURCE_DIR}/Release"
     )
 
-    # Install CEF framework and resources
-    # Note: The framework needs to be in the app bundle's Frameworks directory
-    install(DIRECTORY "${CEF_FRAMEWORK_PATH}" DESTINATION lib
+    # Install CEF framework (includes all resources in the bundle)
+    # CEF framework's install_name is @executable_path/../Frameworks/
+    # So we install to Frameworks/ directory alongside the shell/ directory
+    install(DIRECTORY "${CEF_FRAMEWORK_PATH}" DESTINATION Frameworks
         USE_SOURCE_PERMISSIONS)
-    install(DIRECTORY ${CEF_RESOURCE_PATH}/locales TYPE LIB)
-    install(FILES ${CEF_RESOURCE_PATH}/chrome_100_percent.pak TYPE LIB)
-    install(FILES ${CEF_RESOURCE_PATH}/chrome_200_percent.pak TYPE LIB)
-    install(FILES ${CEF_RESOURCE_PATH}/icudtl.dat TYPE LIB)
-    install(FILES ${CEF_RESOURCE_PATH}/resources.pak TYPE LIB)
+
+    # Set rpath for CEF framework discovery at runtime
+    # CEF framework's install_name is @executable_path/../Frameworks/
+    set(CMAKE_INSTALL_RPATH "@executable_path/../Frameworks" CACHE STRING "Install RPATH" FORCE)
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE CACHE BOOL "Build with install RPATH" FORCE)
 
     message(STATUS "CEF enabled for macOS (${CEF_PLATFORM})")
 endif()

@@ -42,6 +42,7 @@
 #ifdef __APPLE__
 #include <pthread.h>
 #include <sched.h>
+#include <boost/dll/runtime_symbol_info.hpp>
 #endif
 
 #pragma warning(push)
@@ -256,6 +257,38 @@ void init(const core::module_dependencies& dependencies)
         if (!cache_path.empty()) {
             CefString(&settings.cache_path).FromWString(cache_path);
         }
+
+#ifdef __APPLE__
+        // macOS: Configure paths for non-bundle deployment
+        // Get executable path and derive framework/resource locations
+        // CEF framework's install_name is @executable_path/../Frameworks/
+        auto exe_path = boost::dll::program_location();
+        auto exe_dir = exe_path.parent_path();
+        auto frameworks_path = exe_dir.parent_path() / "Frameworks";
+
+        // Framework: <build>/Frameworks/Chromium Embedded Framework.framework
+        auto framework_path = frameworks_path / "Chromium Embedded Framework.framework";
+        CefString(&settings.framework_dir_path).FromString(framework_path.string());
+
+        // Resources are inside the framework bundle on macOS
+        auto resources_path = framework_path / "Resources";
+        CefString(&settings.resources_dir_path).FromString(resources_path.string());
+        // Locales are in .lproj directories inside Resources (CEF handles this automatically)
+        // But we also need to set locales_dir_path for .pak files
+        CefString(&settings.locales_dir_path).FromString(resources_path.string());
+
+        // Set the subprocess path to the main executable (handles renderer, GPU processes)
+        // CEF will re-invoke this binary with --type=renderer, etc.
+        CefString(&settings.browser_subprocess_path).FromString(exe_path.string());
+
+        // Set main_bundle_path to the executable directory (not an app bundle)
+        CefString(&settings.main_bundle_path).FromString(exe_dir.string());
+
+        CASPAR_LOG(info) << "[html] macOS CEF paths configured:";
+        CASPAR_LOG(info) << "[html]   Framework: " << framework_path.string();
+        CASPAR_LOG(info) << "[html]   Resources: " << resources_path.string();
+        CASPAR_LOG(info) << "[html]   Subprocess: " << exe_path.string();
+#endif
 
         return CefInitialize(main_args, settings, CefRefPtr<CefApp>(new renderer_application(enable_gpu)), nullptr);
     });

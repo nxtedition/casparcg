@@ -7,6 +7,7 @@ This document describes the macOS support implementation using Vulkan (via Molte
 All core phases are complete. CasparCG runs on macOS with Vulkan rendering.
 
 **Test Results:** 43 passed, 1 failed (ProRes encoding - depends on FFmpeg build)
+- Includes HTML/CEF tests (Phase 14)
 
 ## Architecture
 
@@ -87,7 +88,7 @@ cd build/shell
 | 11 | Audio (Core Audio) | Complete |
 | 12 | Hardware I/O (DeckLink) | Complete (requires hardware) |
 | 13 | Network I/O (NDI) | Complete |
-| 14 | HTML/CEF Templates | Disabled (see below) |
+| 14 | HTML/CEF Templates | Complete |
 | 15 | Integration & Testing | Complete |
 
 ---
@@ -149,7 +150,7 @@ GLFW window with Vulkan swapchain, separate from OpenGL implementation:
 | system-audio | Working | Core Audio |
 | decklink | Working | Requires Desktop Video |
 | ndi | Working | Requires NDI SDK |
-| html | Disabled | CEF requires helper apps |
+| html | Working | CEF 131 with Metal backend |
 | flash | N/A | Discontinued |
 | bluefish | N/A | Windows-only |
 
@@ -157,25 +158,38 @@ GLFW window with Vulkan swapchain, separate from OpenGL implementation:
 
 ---
 
-## HTML/CEF (Phase 14) - Not Currently Supported
+## HTML/CEF (Phase 14)
 
-CEF on macOS requires:
-1. Helper applications for subprocess handling
-2. Proper app bundle structure with `Contents/Frameworks/`
-3. Code signing and notarization
+CEF (Chromium Embedded Framework) 131 is enabled on macOS using a non-bundle deployment:
 
-### Workarounds
+### Implementation Details
 
-- Use external HTML renderer + NDI input
-- Pre-render HTML to video files
-- Export HTML animations as image sequences
+- **CEF Version:** 131.4.1 (Chromium 131)
+- **Rendering Backend:** Metal via ANGLE
+- **Framework Location:** `Frameworks/Chromium Embedded Framework.framework`
+- **Subprocess Handling:** Main binary handles all subprocess types via `CefExecuteProcess()`
 
-### Future Implementation Path
+### Key Configuration (html.cpp)
 
-1. Use CEF "standard" distribution (not minimal)
-2. Build helper applications
-3. Create macOS app bundle packaging
-4. Implement code signing workflow
+```cpp
+// Framework and resources inside the bundle
+settings.framework_dir_path = "<exe>/../Frameworks/Chromium Embedded Framework.framework"
+settings.resources_dir_path = "<framework>/Resources"
+settings.browser_subprocess_path = "<exe>"  // Main binary handles subprocesses
+```
+
+### Build Options
+
+```bash
+./build_macos.sh              # Build with HTML/CEF (default)
+./build_macos.sh --no-html    # Build without HTML/CEF
+```
+
+### Notes
+
+- For distribution, code signing may be required
+- GPU rendering can be enabled via `configuration.html.enable-gpu`
+- Remote debugging available via `configuration.html.remote-debugging-port`
 
 ---
 
@@ -236,10 +250,10 @@ Total: 43 passed, 1 failed
 
 ## Known Limitations
 
-1. **HTML/CEF disabled** - Requires helper app bundling
-2. **ProRes encoding** - Depends on FFmpeg build configuration
-3. **Edge anti-aliasing** - Not implemented (deferred)
-4. **Keyer modes** - Internal/external key deferred
+1. **ProRes encoding** - Depends on FFmpeg build configuration
+2. **Edge anti-aliasing** - Not implemented (deferred)
+3. **Keyer modes** - Internal/external key deferred
+4. **HTML/CEF code signing** - May be required for Gatekeeper on distributed builds
 
 ---
 

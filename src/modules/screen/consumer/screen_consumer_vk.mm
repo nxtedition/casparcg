@@ -579,6 +579,31 @@ struct screen_consumer_vk
             return;
         }
 
+        // Debug: Log received frame data to verify what the screen consumer gets
+        static int screen_frame_debug = 0;
+        if (screen_frame_debug++ < 200) {
+            auto* data = frame_data.begin();
+            int non_zero = 0;
+            for (size_t i = 0; i < std::min(size_t(400), frame_data.size()); i += 4) {
+                if (data[i] != 0 || data[i+1] != 0 || data[i+2] != 0 || data[i+3] != 0) {
+                    non_zero++;
+                }
+            }
+            // Sample center pixel
+            size_t center_offset = (format_desc_.width / 2 + (format_desc_.height / 2) * format_desc_.width) * 4;
+            center_offset = std::min(center_offset, frame_data.size() - 4);
+
+            CASPAR_LOG(info) << L"[vk::screen] Received frame #" << screen_frame_debug
+                              << L" size=" << frame_data.size()
+                              << L" first_pixel=[" << (int)data[0] << L"," << (int)data[1]
+                              << L"," << (int)data[2] << L"," << (int)data[3] << L"]"
+                              << L" center_pixel=[" << (int)data[center_offset]
+                              << L"," << (int)data[center_offset+1]
+                              << L"," << (int)data[center_offset+2]
+                              << L"," << (int)data[center_offset+3] << L"]"
+                              << L" non_zero_first100=" << non_zero;
+        }
+
         std::memcpy(staging_buffer_->data(), frame_data.begin(), expected_size);
 
 

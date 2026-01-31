@@ -2548,16 +2548,7 @@ class TestRunner:
         Tests the HTML producer which renders HTML5 content via CEF
         (Chromium Embedded Framework). Tests both URL loading and
         local HTML template loading.
-
-        Note: On macOS, CEF/HTML support is disabled due to the complexity
-        of CEF helper application requirements. This test will skip on macOS.
         """
-        # Skip on macOS where CEF is not available
-        if platform.system() == "Darwin":
-            print("  HTML producer test SKIPPED on macOS")
-            print("  (CEF/HTML support not available - requires helper applications)")
-            return True  # Skip counts as pass
-
         ch = self.config.playback_channel
         all_passed = True
 
@@ -2644,15 +2635,7 @@ class TestRunner:
 
         Tests that JavaScript can be executed in the HTML producer
         using the CALL command.
-
-        Note: On macOS, CEF/HTML support is disabled.
         """
-        # Skip on macOS where CEF is not available
-        if platform.system() == "Darwin":
-            print("  HTML JavaScript test SKIPPED on macOS")
-            print("  (CEF/HTML support not available)")
-            return True  # Skip counts as pass
-
         ch = self.config.playback_channel
         all_passed = True
 
@@ -2738,15 +2721,7 @@ class TestRunner:
         Tests the CG (Character Generator) commands which provide
         a standardized interface for controlling HTML templates.
         Commands: ADD, PLAY, STOP, NEXT, UPDATE, INVOKE, REMOVE
-
-        Note: On macOS, CEF/HTML support is disabled.
         """
-        # Skip on macOS where CEF is not available
-        if platform.system() == "Darwin":
-            print("  HTML CG commands test SKIPPED on macOS")
-            print("  (CEF/HTML support not available)")
-            return True  # Skip counts as pass
-
         ch = self.config.playback_channel
         all_passed = True
 

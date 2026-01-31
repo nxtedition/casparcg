@@ -11,6 +11,7 @@ SRC_DIR="${SCRIPT_DIR}/src"
 # Parse arguments
 CLEAN_BUILD=0
 VERBOSE=0
+ENABLE_HTML=ON
 JOBS=$(sysctl -n hw.ncpu)
 
 while [[ $# -gt 0 ]]; do
@@ -23,13 +24,21 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=1
             shift
             ;;
+        --with-html)
+            ENABLE_HTML=ON
+            shift
+            ;;
+        --no-html)
+            ENABLE_HTML=OFF
+            shift
+            ;;
         --jobs|-j)
             JOBS="$2"
             shift 2
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--clean|-c] [--verbose|-v] [--jobs|-j N]"
+            echo "Usage: $0 [--clean|-c] [--verbose|-v] [--jobs|-j N] [--with-html] [--no-html]"
             exit 1
             ;;
     esac
@@ -52,12 +61,11 @@ mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
 # Configure with CMake
-# Disable HTML/CEF module (not fully supported on macOS yet)
-echo "Configuring with CMake..."
+echo "Configuring with CMake (HTML/CEF: ${ENABLE_HTML})..."
 if [[ $VERBOSE -eq 1 ]]; then
-    cmake "${SRC_DIR}" -DENABLE_HTML=OFF
+    cmake "${SRC_DIR}" -DENABLE_HTML=${ENABLE_HTML}
 else
-    cmake "${SRC_DIR}" -DENABLE_HTML=OFF 2>&1 | grep -E "^--|Found|Error|Warning|==="
+    cmake "${SRC_DIR}" -DENABLE_HTML=${ENABLE_HTML} 2>&1 | grep -E "^--|Found|Error|Warning|===|CEF"
 fi
 
 # Build

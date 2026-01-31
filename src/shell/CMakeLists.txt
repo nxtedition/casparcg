@@ -90,6 +90,22 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 		z
 		pthread
 	)
+	# Add rpath for CEF framework discovery
+	# CEF framework's install_name is @executable_path/../Frameworks/
+	set_target_properties(casparcg PROPERTIES
+		INSTALL_RPATH "@executable_path/../Frameworks"
+		BUILD_WITH_INSTALL_RPATH TRUE
+	)
+	# Copy CEF framework to Frameworks directory during build
+	# The framework bundle includes all resources
+	if (ENABLE_HTML AND DEFINED CEF_FRAMEWORK_PATH)
+		set(CEF_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/../Frameworks")
+		add_custom_command(TARGET casparcg POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${CEF_OUTPUT_DIR}"
+			COMMAND ${CMAKE_COMMAND} -E copy_directory "${CEF_FRAMEWORK_PATH}" "${CEF_OUTPUT_DIR}/Chromium Embedded Framework.framework"
+			COMMENT "Copying CEF framework to Frameworks directory"
+		)
+	endif()
 else ()
 	# Linux: OpenGL backend
 	target_link_libraries(casparcg

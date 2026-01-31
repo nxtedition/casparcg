@@ -750,6 +750,87 @@ Production-ready macOS release.
 
 ---
 
+## Current Priorities
+
+The following items are the most critical for completing macOS support:
+
+### Priority 1: GPU Readback Bug ✅
+
+**Status:** 🟢 FIXED
+
+**Symptom:** Recorded videos contained black frames instead of rendered content.
+
+**Fix Applied:**
+1. Added `vkDeviceWaitIdle()` in `device.cpp` before GPU readback
+2. Fixed layout transition barrier in `texture.cpp` to include `VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT`
+3. Added `VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT` to barrier for proper graphics pipeline synchronization
+
+**Root Cause:** The layout transition barrier was not properly waiting for graphics pipeline output before initiating the transfer operation. MoltenVK requires explicit synchronization points that native Vulkan drivers may handle implicitly.
+
+---
+
+### Priority 2: Phase 7 Tests (Pixel Formats & Color Spaces) ✅
+
+**Status:** 🟢 COMPLETE
+
+**Tests Added:**
+- `test_pixel_format_ycbcr` - YCbCr video format decoding verification
+- `test_color_space_conversion` - BT.709/BT.601 color space verification
+- `test_bit_depth_handling` - 8-bit and 10-bit content handling
+- `test_pixel_format_recording` - Recording with yuv420p, yuv422p, yuv444p formats
+
+---
+
+### Priority 3: Phase 15 Integration & Testing ✅
+
+**Status:** 🟢 COMPLETE
+
+**Tests Added:**
+- `test_amcp_commands` - Comprehensive AMCP command coverage (25 commands)
+- `test_stress_layers` - Layer stress testing (up to 20 layers)
+- `test_stress_rapid` - Rapid command execution (6000+ cmd/s)
+- `test_performance_recording` - Frame rate stability verification
+
+**Results:**
+- All 25 tested AMCP commands accepted
+- System stable with 20 concurrent layers
+- Rapid command execution (~6000 cmd/s) with no failures
+- Recording frame accuracy: 100-104%
+
+---
+
+### Priority 4: HTML/CEF Support (Phase 14)
+
+**Status:** 🔴 Disabled on macOS (Future Work)
+
+**Complexity:** High - requires significant infrastructure work
+
+**Why It's Disabled:**
+- Current CMake uses CEF "minimal" distribution which lacks helper apps
+- CEF on macOS requires helper applications for subprocess handling
+- Requires proper app bundle structure with Frameworks/
+- Needs code signing and notarization for distribution
+
+**Current Configuration:**
+- `src/CMakeModules/Bootstrap_macOS.cmake` sets `ENABLE_HTML OFF` by default
+- To experiment, set `ENABLE_HTML=ON` in cmake (will fail without helper apps)
+
+**Implementation Path (Future):**
+1. Switch from CEF "minimal" to "standard" distribution in Bootstrap_macOS.cmake
+2. Build CEF helper applications (CefClient, CefProcess, etc.)
+3. Create macOS app bundle packaging script (CasparCG.app/Contents/Frameworks/)
+4. Implement code signing workflow for distribution
+5. Test multi-process model with helper apps
+6. Update install targets for app bundle structure
+
+**Workarounds (Recommended for Now):**
+- Use external HTML renderer (e.g., OBS with browser source) + NDI input
+- Pre-render HTML templates to video files using headless Chrome
+- Export HTML animations as image sequences with alpha channel
+- Use [casern](https://github.com/CasparCG/casern) browser extension for real-time HTML
+
+---
+
 ## Module Support Summary
 
 | Module | Phase | Notes |

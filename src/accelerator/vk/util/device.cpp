@@ -539,6 +539,13 @@ struct device::impl : public std::enable_shared_from_this<impl>
     std::future<array<const uint8_t>> copy_async(const std::shared_ptr<texture>& source)
     {
         return spawn_async([=, self = shared_from_this()](yield_context yield) {
+            // PRIORITY 1 FIX: Ensure all GPU work is complete before reading back.
+            // This is a workaround for potential MoltenVK synchronization issues.
+            // On MoltenVK, the implicit queue synchronization may not be sufficient
+            // for GPU->CPU readback. vkDeviceWaitIdle() guarantees all operations
+            // on all queues are complete before proceeding.
+            VK(vkDeviceWaitIdle(device_));
+
             auto buf = create_buffer(source->size(), false);
             source->copy_to(*buf);
 

@@ -30,6 +30,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
+
 namespace caspar { namespace accelerator { namespace vk {
 
 // Format tables matching OGL pattern
@@ -317,13 +319,18 @@ struct texture::impl
             destinationStage      = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
                    newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
-            // Wait for any shader operations (both compute and fragment) to complete.
-            // This is critical for GPU readback: data written by compute shaders and
-            // transitioned to SHADER_READ_ONLY_OPTIMAL must be visible to transfer reads.
-            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            sourceStage           = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            destinationStage      = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            // PRIORITY 1 FIX: Wait for ALL possible write operations that could have
+            // written to this image. With graphics pipelines, data is written via
+            // color attachment output, not shader writes. Include all relevant stages
+            // and access masks to ensure proper synchronization for GPU readback.
+            barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                    VK_ACCESS_MEMORY_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_HOST_READ_BIT;
+            sourceStage           = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            destinationStage      = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT;
         } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
                    newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
             // Transition from shader read to transfer destination (for copy_from on subsequent frames)
@@ -416,10 +423,22 @@ struct texture::impl
     {
         static int copy_to_debug = 0;
         if (copy_to_debug++ < 30) {
-            CASPAR_LOG(info) << L"[vk::texture] copy_to: current_layout=" << current_layout_
+            // PRIORITY 1 DEBUG: Enhanced logging for GPU readback investigation
+            const wchar_t* layout_name = L"UNKNOWN";
+            switch (current_layout_) {
+                case VK_IMAGE_LAYOUT_UNDEFINED: layout_name = L"UNDEFINED"; break;
+                case VK_IMAGE_LAYOUT_GENERAL: layout_name = L"GENERAL"; break;
+                case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: layout_name = L"COLOR_ATTACHMENT"; break;
+                case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: layout_name = L"SHADER_READ_ONLY"; break;
+                case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: layout_name = L"TRANSFER_SRC"; break;
+                case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: layout_name = L"TRANSFER_DST"; break;
+                default: break;
+            }
+            CASPAR_LOG(info) << L"[vk::texture] copy_to: layout=" << layout_name
+                              << L" (" << current_layout_ << L")"
                               << L" size=" << size_ << L" dst_size=" << dst.size()
-                              << L" width=" << width_ << L" height=" << height_
-                              << L" image=" << (void*)image_ << L" image_view=" << (void*)image_view_;
+                              << L" dims=" << width_ << L"x" << height_
+                              << L" image=" << (void*)image_ << L" view=" << (void*)image_view_;
         }
 
         auto cmdBuffer = begin_single_time_commands();
@@ -484,9 +503,29 @@ struct texture::impl
         static int copy_to_verify = 0;
         if (copy_to_verify++ < 30) {
             auto* data = static_cast<uint8_t*>(dst.data());
-            CASPAR_LOG(info) << L"[vk::texture] copy_to result (BGRA): ["
+            const int pixel_count = width_ * height_;
+
+            // Check multiple sample points for better diagnosis
+            int non_zero_pixels = 0;
+            for (int i = 0; i < std::min(100, pixel_count); ++i) {
+                if (data[i * 4] != 0 || data[i * 4 + 1] != 0 ||
+                    data[i * 4 + 2] != 0 || data[i * 4 + 3] != 0) {
+                    non_zero_pixels++;
+                }
+            }
+
+            // Sample center pixel
+            int center = (width_ / 2) + (height_ / 2) * width_;
+            center = std::min(center, pixel_count - 1);
+
+            CASPAR_LOG(info) << L"[vk::texture] copy_to result (BGRA): first=["
                               << (int)data[0] << L"," << (int)data[1] << L","
-                              << (int)data[2] << L"," << (int)data[3] << L"]";
+                              << (int)data[2] << L"," << (int)data[3] << L"]"
+                              << L" center=[" << (int)data[center * 4]
+                              << L"," << (int)data[center * 4 + 1]
+                              << L"," << (int)data[center * 4 + 2]
+                              << L"," << (int)data[center * 4 + 3] << L"]"
+                              << L" non_zero_first100=" << non_zero_pixels;
         }
     }
 

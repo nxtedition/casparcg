@@ -386,16 +386,6 @@ struct render_pipeline::impl
                 void*                        signal_semaphore,
                 void*                        fence)
     {
-        // Debug: Log render call details
-        static int render_debug_count = 0;
-        if (render_debug_count++ < 10) {
-            CASPAR_LOG(info) << L"[vk::render_pipeline] render() called: src_format=" << src.format()
-                              << L" src_size=" << src.width() << L"x" << src.height()
-                              << L" image_index=" << image_index
-                              << L" pos_scale=[" << params.pos_scale[0] << L"," << params.pos_scale[1] << L"]"
-                              << L" key_only=" << params.key_only;
-        }
-
         // Transition source texture to shader read optimal
         src.transition_to_shader_read();
 

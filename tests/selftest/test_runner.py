@@ -111,7 +111,7 @@ class TestRunner:
         self.register_test("sting_producer", 8, self.test_sting_producer,
                            "Test sting/overlay transitions")
         self.register_test("video_overlay_alpha", 8, self.test_video_overlay_alpha,
-                           "Test video with alpha over another video (mathilda + wipe)")
+                           "Test video with alpha over another video (test1 + wipe)")
 
         # Phase 9: Screen Consumer
         self.register_test("screen_output", 9, self.test_screen_output,
@@ -1699,10 +1699,10 @@ class TestRunner:
     def test_video_overlay_alpha(self) -> bool:
         """Test video with alpha channel overlay over another video.
 
-        Reproduces issue: when playing wipe (with alpha) over mathilda,
+        Reproduces issue: when playing wipe (with alpha) over test1,
         the screen goes black until wipe is stopped.
 
-        Uses actual media files: mathilda.mp4 and wipe.mov from build/shell/media/
+        Uses actual media files: test1.mov and wipe.mov from build/shell/media/
         Records output and analyzes frames to detect if screen goes black.
         """
         ch = self.config.playback_channel
@@ -1710,7 +1710,7 @@ class TestRunner:
         from video_analyzer import FrameColor, COLORS
 
         print("  Testing video overlay with alpha channel...")
-        print("  This test uses mathilda.mp4 and wipe.mov from the media folder")
+        print("  This test uses test1.mov and wipe.mov from the media folder")
 
         # First, analyze the source wipe video to understand its alpha channel
         print("\n  === Pre-test: Analyze source wipe video ===")
@@ -1735,24 +1735,24 @@ class TestRunner:
         self.client.clear(ch)
         self.helper.wait(0.3)
 
-        # Test 1: Verify mathilda plays correctly alone
-        print("\n  === Test 1: Play mathilda alone ===")
-        result = self.client.play(ch, 10, "mathilda")
+        # Test 1: Verify test1 plays correctly alone
+        print("\n  === Test 1: Play test1 alone ===")
+        result = self.client.play(ch, 10, "test1")
         code, msg = result
 
         if code == 404:
-            print("  Media file 'mathilda' not found - skipping test")
-            print("  Add mathilda.mp4 to the media folder to enable this test")
+            print("  Media file 'test1' not found - skipping test")
+            print("  Add test1.mov to the media folder to enable this test")
             return True  # Skip rather than fail
 
-        if not self.helper.assert_success(result, "Play mathilda on layer 10"):
+        if not self.helper.assert_success(result, "Play test1 on layer 10"):
             return False
 
         self.helper.wait(1.0)
-        print("  Mathilda playing - should see video content")
+        print("  Test1 playing - should see video content")
 
-        # Test 2: Record mathilda alone to verify it's not black
-        print("\n  === Test 2: Record mathilda alone (baseline) ===")
+        # Test 2: Record test1 alone to verify it's not black
+        print("\n  === Test 2: Record test1 alone (baseline) ===")
         baseline_file = get_output_path(self.config, "test_overlay_baseline.mp4")
         if os.path.exists(baseline_file):
             os.remove(baseline_file)
@@ -1775,17 +1775,17 @@ class TestRunner:
             if info and info.frame_count > 0:
                 baseline_color = self.analyzer.get_average_color(baseline_file, frame_number=10)
                 if baseline_color:
-                    print(f"  Baseline color (mathilda alone): R={baseline_color.r}, G={baseline_color.g}, B={baseline_color.b}")
+                    print(f"  Baseline color (test1 alone): R={baseline_color.r}, G={baseline_color.g}, B={baseline_color.b}")
                     if baseline_color.r < 10 and baseline_color.g < 10 and baseline_color.b < 10:
-                        print("  WARNING: Baseline is BLACK - mathilda may not be rendering correctly")
+                        print("  WARNING: Baseline is BLACK - test1 may not be rendering correctly")
                     else:
-                        print("  OK: Baseline is not black - mathilda is rendering")
+                        print("  OK: Baseline is not black - test1 is rendering")
         else:
             print("  Could not create baseline recording")
 
-        # Test 3a: Play wipe ALONE (without mathilda) to test if wipe renders correctly
+        # Test 3a: Play wipe ALONE (without test1) to test if wipe renders correctly
         print("\n  === Test 3a: Play wipe ALONE (isolate wipe rendering) ===")
-        self.client.clear(ch)  # Clear mathilda first
+        self.client.clear(ch)  # Clear test1 first
         self.helper.wait(0.3)
 
         result = self.client.play(ch, 1, "wipe LOOP")
@@ -1831,13 +1831,13 @@ class TestRunner:
                                 else:
                                     print(f"    Unexpected color")
 
-        # Test 3b: Now play mathilda again and add wipe overlay
-        print("\n  === Test 3b: Add wipe overlay over mathilda ===")
+        # Test 3b: Now play test1 again and add wipe overlay
+        print("\n  === Test 3b: Add wipe overlay over test1 ===")
         self.client.clear(ch)
         self.helper.wait(0.3)
 
-        # Play mathilda first
-        self.client.play(ch, 10, "mathilda")
+        # Play test1 first
+        self.client.play(ch, 10, "test1")
         self.helper.wait(0.5)
 
         result = self.client.play(ch, 12, "wipe LOOP")
@@ -1845,7 +1845,7 @@ class TestRunner:
         if not self.helper.assert_success(result, "Play wipe on layer 12"):
             all_passed = False
         else:
-            print("  Wipe overlay added - should see wipe with alpha over mathilda")
+            print("  Wipe overlay added - should see wipe with alpha over test1")
 
         self.helper.wait(0.5)
 
@@ -1897,8 +1897,8 @@ class TestRunner:
         else:
             print("  Could not create overlay recording")
 
-        # Test 5: Stop wipe and verify mathilda is visible again
-        print("\n  === Test 5: Stop wipe - verify mathilda becomes visible ===")
+        # Test 5: Stop wipe and verify test1 is visible again
+        print("\n  === Test 5: Stop wipe - verify test1 becomes visible ===")
         result = self.client.stop(ch, 12)
         if not self.helper.assert_success(result, "Stop wipe on layer 12"):
             all_passed = False
@@ -1946,7 +1946,7 @@ class TestRunner:
         print("\n  === Summary ===")
         if overlay_is_black:
             print("  FAIL: Video overlay with alpha causes BLACK output")
-            print("  This confirms the bug: wipe over mathilda = black screen")
+            print("  This confirms the bug: wipe over test1 = black screen")
         elif all_passed:
             print("  PASS: Video overlay alpha test completed successfully")
         else:
@@ -3430,7 +3430,7 @@ class TestRunner:
         This is a regression test for a crash that occurred when stopping
         one video and immediately starting another.
 
-        The test uses two video files (mathilda.mp4 and slow.mov) and
+        The test uses two video files (test1.mov and test2.mp4) and
         rapidly switches between them to stress test:
         - GPU resource cleanup during producer destruction
         - Texture/buffer pool recycling
@@ -3448,7 +3448,7 @@ class TestRunner:
 
         # Video files to switch between (relative to media folder)
         # These are the files mentioned by the user as being available
-        video_files = ["mathilda", "slow"]
+        video_files = ["test1", "test2"]
 
         # Check if video files are playable
         print("  Checking video file availability...")

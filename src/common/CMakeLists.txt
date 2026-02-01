@@ -29,6 +29,7 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 	list(APPEND SOURCES
 			gl/gl_check_stub.cpp
 
+			os/macos/env_macos.cpp
 			os/macos/filesystem.cpp
 			os/macos/prec_timer.cpp
 			os/macos/thread.cpp
@@ -81,7 +82,9 @@ target_precompile_headers(common PRIVATE stdafx.h)
 
 # Platform-specific linking
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-	# macOS: No OpenGL/GLEW dependency
+	# macOS: Link CoreFoundation for path handling, no OpenGL/GLEW dependency
+	find_library(COREFOUNDATION_LIBRARY CoreFoundation REQUIRED)
+	target_link_libraries(common PRIVATE ${COREFOUNDATION_LIBRARY})
 else ()
 	# Windows/Linux: Link GLEW for OpenGL error checking
 	target_link_libraries(common PRIVATE GLEW::glew)

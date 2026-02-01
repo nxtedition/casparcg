@@ -18,4 +18,9 @@ src/.idea
 # debian build artifacts
 /debian
 /obj-*
+
+# Ignore test media files
 /tests/testmedia
+
+# Ignore MacOS system files
+.DS_Store

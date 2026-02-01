@@ -55,9 +55,10 @@ brew install boost ffmpeg tbb simde glfw
 ### Build
 
 ```bash
-./build_macos.sh             # Normal build
-./build_macos.sh --clean     # Clean build from scratch
-./build_macos.sh --verbose   # Verbose output
+./tools/macos/build.sh             # Normal build
+./tools/macos/build.sh --clean     # Clean build from scratch
+./tools/macos/build.sh --verbose   # Verbose output
+./tools/macos/build.sh --package   # Build and create .app bundle
 ```
 
 ### Run
@@ -181,8 +182,8 @@ settings.browser_subprocess_path = "<exe>"  // Main binary handles subprocesses
 ### Build Options
 
 ```bash
-./build_macos.sh              # Build with HTML/CEF (default)
-./build_macos.sh --no-html    # Build without HTML/CEF
+./tools/macos/build.sh              # Build with HTML/CEF (default)
+./tools/macos/build.sh --no-html    # Build without HTML/CEF
 ```
 
 ### Notes

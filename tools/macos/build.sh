@@ -5,8 +5,9 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/build"
-SRC_DIR="${SCRIPT_DIR}/src"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BUILD_DIR="${ROOT_DIR}/build"
+SRC_DIR="${ROOT_DIR}/src"
 
 # Parse arguments
 CLEAN_BUILD=0
@@ -160,6 +161,5 @@ echo "Run script: ${BUILD_DIR}/shell/run_macos.sh"
 if [[ $PACKAGE -eq 1 ]]; then
     echo ""
     echo "=== Creating App Bundle ==="
-    cd "${SCRIPT_DIR}"
-    eval "./package_macos.sh $PACKAGE_ARGS"
+    eval "${SCRIPT_DIR}/package.sh $PACKAGE_ARGS"
 fi

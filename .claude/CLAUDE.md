@@ -79,9 +79,10 @@ CLEAR 1                     # Clear all layers
 
 **ALWAYS use the build script for macOS builds:**
 ```bash
-./build_macos.sh           # Normal build
-./build_macos.sh --clean   # Clean build from scratch
-./build_macos.sh --verbose # Verbose output
+./tools/macos/build.sh           # Normal build
+./tools/macos/build.sh --clean   # Clean build from scratch
+./tools/macos/build.sh --verbose # Verbose output
+./tools/macos/build.sh --package # Build and create .app bundle
 ```
 
 ### Required Dependencies (install via Homebrew)

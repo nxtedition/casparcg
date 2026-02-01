@@ -9,17 +9,18 @@
 #   - Notarization
 #
 # Usage:
-#   ./package_macos.sh                              # Create unsigned app bundle
-#   ./package_macos.sh --include-ndi                # Include NDI library
-#   ./package_macos.sh --dmg                        # Create DMG
-#   ./package_macos.sh --sign --identity "..."      # Sign the app
-#   ./package_macos.sh --notarize --apple-id "..." --team-id "..." --password "..."
+#   ./package.sh                              # Create unsigned app bundle
+#   ./package.sh --include-ndi                # Include NDI library
+#   ./package.sh --dmg                        # Create DMG
+#   ./package.sh --sign --identity "..."      # Sign the app
+#   ./package.sh --notarize --apple-id "..." --team-id "..." --password "..."
 #
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$ROOT_DIR"
 
 # Configuration
 APP_NAME="CasparCG"
@@ -144,7 +145,7 @@ fi
 
 # Check build exists
 if [ ! -f "$BUILD_DIR/shell/casparcg" ]; then
-    echo "Error: Build not found. Run ./build_macos.sh first."
+    echo "Error: Build not found. Run tools/macos/build.sh first."
     exit 1
 fi
 

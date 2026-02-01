@@ -59,6 +59,12 @@
 #include <clocale>
 #include <csignal>
 
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+// Defined in macos_main_loop.mm - processes NSRunLoop events for GCD main queue
+extern "C" void macos_process_events(double timeout_seconds);
+#endif
+
 namespace caspar {
 
 std::atomic<bool> sig_exit;
@@ -165,7 +171,28 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
     boost::asio::signal_set signals(io, SIGINT, SIGTERM);
     signals.async_wait([&](auto, auto){ io.stop(); });
 
+#ifdef __APPLE__
+    // On macOS, run ASIO on a background thread so the main thread can process
+    // Cocoa/GCD events required by GLFW screen consumer windows.
+    // Keep io_context running with a work_guard to prevent early exit
+    auto work_guard = boost::asio::make_work_guard(io);
+    std::thread asio_thread([&io] { io.run(); });
+
+    CASPAR_LOG(info) << L"Main thread entering event loop";
+
+    // Main thread runs NSRunLoop to process GCD events (dispatch_sync to main queue)
+    // This is required because GLFW on macOS needs the main thread for Cocoa operations.
+    // NSRunLoop properly integrates with GCD's main queue.
+    while (!io.stopped()) {
+        macos_process_events(0.01);  // 10ms timeout
+    }
+
+    CASPAR_LOG(info) << L"Main thread exiting event loop";
+    work_guard.reset();
+    asio_thread.join();
+#else
     io.run();
+#endif
 
     caspar_server.reset();
 

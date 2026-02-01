@@ -36,6 +36,7 @@
 #include <common/env.h>
 #include <common/except.h>
 
+#include <boost/dll/runtime_symbol_info.hpp>
 #include <boost/filesystem.hpp>
 
 namespace caspar { namespace newtek { namespace ndi {
@@ -80,18 +81,48 @@ NDIlib_v5* load_library()
     }
 
 #else
-    // Try to load the library
-    void* hNDILib = dlopen(NDILIB_LIBRARY_NAME, RTLD_LOCAL | RTLD_LAZY);
+    // Try to load the library from multiple locations
+    void* hNDILib = nullptr;
 
+    // Get executable path for app bundle detection
+    auto exe_path = boost::dll::program_location();
+    auto exe_dir  = exe_path.parent_path();
+
+    // 1. Try app bundle Frameworks directory (Contents/MacOS/../Frameworks)
+    auto frameworks_path = exe_dir.parent_path() / "Frameworks" / NDILIB_LIBRARY_NAME;
+    CASPAR_LOG(debug) << L"[NDI] Trying app bundle path: " << frameworks_path.wstring();
+    hNDILib = dlopen(frameworks_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
+    if (hNDILib) {
+        dll_path = frameworks_path;
+    }
+
+    // 2. Try flat structure (executable directory)
+    if (!hNDILib) {
+        dll_path = exe_dir / NDILIB_LIBRARY_NAME;
+        CASPAR_LOG(debug) << L"[NDI] Trying executable directory: " << dll_path.wstring();
+        hNDILib = dlopen(dll_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
+    }
+
+    // 3. Try environment variable path
     if (!hNDILib && runtime_dir) {
         dll_path = boost::filesystem::path(runtime_dir) / NDILIB_LIBRARY_NAME;
-        hNDILib  = dlopen(dll_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
+        CASPAR_LOG(debug) << L"[NDI] Trying NDI_RUNTIME_DIR_V6: " << dll_path.wstring();
+        hNDILib = dlopen(dll_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
+    }
+
+    // 4. Try system default search (LD_LIBRARY_PATH, /usr/local/lib, etc.)
+    if (!hNDILib) {
+        CASPAR_LOG(debug) << L"[NDI] Trying system default: " << NDILIB_LIBRARY_NAME;
+        hNDILib = dlopen(NDILIB_LIBRARY_NAME, RTLD_LOCAL | RTLD_LAZY);
+        if (hNDILib) {
+            dll_path = NDILIB_LIBRARY_NAME;
+        }
     }
 
     // The main NDI entry point for dynamic loading if we got the library
     const NDIlib_v5* (*NDIlib_v5_load)(void) = NULL;
     if (hNDILib) {
-        CASPAR_LOG(info) << L"Loaded " << dll_path;
+        CASPAR_LOG(info) << L"[NDI] Loaded " << dll_path.wstring();
         static std::shared_ptr<void> lib(hNDILib, dlclose);
         *((void**)&NDIlib_v5_load) = dlsym(hNDILib, "NDIlib_v5_load");
     }

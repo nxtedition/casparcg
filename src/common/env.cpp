@@ -35,6 +35,10 @@
 #include <boost/algorithm/string.hpp>
 #include <fstream>
 
+#ifdef __APPLE__
+#include "os/macos/env_macos.h"
+#endif
+
 namespace caspar { namespace env {
 
 std::wstring                 initial;
@@ -88,6 +92,39 @@ void configure(const std::wstring& filename)
 {
     initial = clean_path(boost::filesystem::initial_path().wstring());
 
+#ifdef __APPLE__
+    // macOS: Use platform-specific config file search order
+    std::wstring fullpath = macos::find_config_file(filename, initial);
+    if (fullpath.empty()) {
+        // Provide helpful error message with all searched locations
+        std::wstring searched_locations = L"\n  - " + filename;
+        searched_locations += L"\n  - " + initial + L"/" + filename;
+        auto config_dir = macos::get_user_config_directory();
+        if (!config_dir.empty()) {
+            searched_locations += L"\n  - " + config_dir + L"/" + filename;
+        }
+        if (macos::is_running_from_app_bundle()) {
+            auto resources = macos::get_bundle_resources_path();
+            if (!resources.empty()) {
+                searched_locations += L"\n  - " + resources + L"/" + filename;
+            }
+        }
+        CASPAR_LOG(fatal) << L"### Configuration file " + filename + L" was not found. ###";
+        CASPAR_LOG(info) << L"Searched locations:" << searched_locations;
+        CASPAR_THROW_EXCEPTION(expected_user_error()
+                               << msg_info(L"Configuration file " + filename + L" was not found."));
+    }
+
+    // Determine base paths for macOS using XDG directories
+    auto data_dir = macos::get_user_data_directory();
+    auto state_dir = macos::get_user_state_directory();
+
+    // Default base paths for macOS (XDG-style)
+    std::wstring default_data_base = data_dir.empty() ? initial : data_dir;
+    std::wstring default_log_base = state_dir.empty() ? initial : state_dir;
+
+#else
+    // Windows/Linux: Original behavior
     std::wstring fullpath = filename;
     if (!boost::filesystem::exists(fullpath)) {
         fullpath = initial + L"/" + filename;
@@ -98,6 +135,7 @@ void configure(const std::wstring& filename)
         CASPAR_THROW_EXCEPTION(expected_user_error()
                                << msg_info(L"Configuration file " + fullpath + L" was not found."));
     }
+#endif
 
     try {
         boost::filesystem::wifstream file(fullpath);
@@ -107,6 +145,53 @@ void configure(const std::wstring& filename)
                                            boost::property_tree::xml_parser::no_comments);
 
         auto paths = ptree_get_child(pt, L"configuration.paths");
+
+#ifdef __APPLE__
+        // macOS: Use XDG-style default paths
+        auto config_media = paths.get_optional<std::wstring>(L"media-path");
+        if (config_media && !config_media->empty()) {
+            media = clean_path(*config_media);
+        } else {
+            media = default_data_base + L"/media/";
+        }
+
+        auto log_path_node = paths.get_child_optional(L"log-path");
+        if (log_path_node) {
+            log_enabled = !log_path_node->get(L"<xmlattr>.disabled", false);
+            if (log_enabled) {
+                auto config_log = log_path_node->get_value_optional<std::wstring>();
+                if (config_log && !config_log->empty()) {
+                    log = clean_path(*config_log);
+                } else {
+                    log = default_log_base + L"/log/";
+                }
+            }
+        } else {
+            log = default_log_base + L"/log/";
+        }
+
+        auto config_template = paths.get_optional<std::wstring>(L"template-path");
+        if (config_template && !config_template->empty()) {
+            ftemplate = clean_path(boost::filesystem::absolute(*config_template).wstring());
+        } else {
+            ftemplate = default_data_base + L"/template/";
+        }
+
+        auto config_data = paths.get_optional<std::wstring>(L"data-path");
+        if (config_data && !config_data->empty()) {
+            data = clean_path(*config_data);
+        } else {
+            data = default_data_base + L"/data/";
+        }
+
+        CASPAR_LOG(info) << L"macOS paths (XDG-style):";
+        CASPAR_LOG(info) << L"  Config: " << fullpath;
+        CASPAR_LOG(info) << L"  Media: " << media;
+        CASPAR_LOG(info) << L"  Log: " << (log_enabled ? log : L"(disabled)");
+        CASPAR_LOG(info) << L"  Template: " << ftemplate;
+        CASPAR_LOG(info) << L"  Data: " << data;
+#else
+        // Windows/Linux: Original behavior
         media      = clean_path(paths.get(L"media-path", initial + L"/media/"));
 
         auto log_path_node = paths.get_child(L"log-path");
@@ -118,6 +203,7 @@ void configure(const std::wstring& filename)
         ftemplate =
             clean_path(boost::filesystem::absolute(paths.get(L"template-path", initial + L"/template/")).wstring());
         data = clean_path(paths.get(L"data-path", initial + L"/data/"));
+#endif
     } catch (...) {
         CASPAR_LOG(error) << L" ### Invalid configuration file. ###";
         throw;

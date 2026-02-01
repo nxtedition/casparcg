@@ -5,9 +5,15 @@ add_subdirectory(image)
 add_subdirectory(ffmpeg)
 add_subdirectory(oal)
 add_subdirectory(decklink)
-add_subdirectory(screen)
 add_subdirectory(newtek)
-add_subdirectory(artnet)
+
+# Artnet has boost::variant compatibility issues on macOS with current Boost version
+if (NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+	add_subdirectory(artnet)
+endif()
+
+# Phase 9: Screen consumer now works on macOS with Vulkan backend
+add_subdirectory(screen)
 
 if (ENABLE_HTML)
 	add_subdirectory(html)

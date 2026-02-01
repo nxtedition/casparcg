@@ -21,8 +21,11 @@
 
 #include <common/compiler/vs/disable_silly_warnings.h>
 
+#ifndef CASPAR_MACOS
 #include <GL/glew.h>
 #include <SFML/Graphics.hpp>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <boost/algorithm/string.hpp>

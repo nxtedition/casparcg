@@ -180,15 +180,23 @@ spl::shared_ptr<frame_producer> create_color_producer(const spl::shared_ptr<fram
     if (params.size() < 1)
         return core::frame_producer::empty();
 
+    // Check if first param is the "COLOR" keyword prefix - if so, skip it
+    size_t start_index = 0;
+    if (boost::to_upper_copy(params.at(0)) == L"COLOR") {
+        if (params.size() < 2)
+            return core::frame_producer::empty();
+        start_index = 1;
+    }
+
     uint32_t value = 0;
-    if (!try_get_color(params.at(0), value))
+    if (!try_get_color(params.at(start_index), value))
         return core::frame_producer::empty();
 
     std::vector<std::wstring> colors;
 
-    for (auto& param : params) {
-        if (try_get_color(param, value)) {
-            colors.push_back(param);
+    for (size_t i = start_index; i < params.size(); ++i) {
+        if (try_get_color(params.at(i), value)) {
+            colors.push_back(params.at(i));
         } else {
             // Stop after something not a colour, as that probably means the transition definition
             break;

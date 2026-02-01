@@ -23,6 +23,11 @@ if (MSVC)
 			shell.rc
 			windows_specific.cpp
 	)
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+	list(APPEND SOURCES
+			macos_specific.cpp
+			macos_main_loop.mm
+	)
 else ()
 	list(APPEND SOURCES
 			linux_specific.cpp
@@ -53,11 +58,11 @@ target_link_libraries(casparcg
 
 		TBB::tbb
 		TBB::tbbmalloc
-		GLEW::glew
 )
 
 if (MSVC)
 	target_link_libraries(casparcg
+		GLEW::glew
 		Winmm.lib
 		Ws2_32.lib
 		OpenGL32.lib
@@ -75,8 +80,36 @@ if (MSVC)
 		swscale.lib
 		swresample.lib
 	)
-else ()
+elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+	# macOS: Vulkan backend, no OpenGL/X11
 	target_link_libraries(casparcg
+		${Boost_LIBRARIES}
+		${FFMPEG_LIBRARIES}
+		Vulkan::Vulkan
+		Apple::Frameworks
+		z
+		pthread
+	)
+	# Add rpath for CEF framework discovery
+	# CEF framework's install_name is @executable_path/../Frameworks/
+	set_target_properties(casparcg PROPERTIES
+		INSTALL_RPATH "@executable_path/../Frameworks"
+		BUILD_WITH_INSTALL_RPATH TRUE
+	)
+	# Copy CEF framework to Frameworks directory during build
+	# The framework bundle includes all resources
+	if (ENABLE_HTML AND DEFINED CEF_FRAMEWORK_PATH)
+		set(CEF_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/../Frameworks")
+		add_custom_command(TARGET casparcg POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${CEF_OUTPUT_DIR}"
+			COMMAND ${CMAKE_COMMAND} -E copy_directory "${CEF_FRAMEWORK_PATH}" "${CEF_OUTPUT_DIR}/Chromium Embedded Framework.framework"
+			COMMENT "Copying CEF framework to Frameworks directory"
+		)
+	endif()
+else ()
+	# Linux: OpenGL backend
+	target_link_libraries(casparcg
+		GLEW::glew
 		${Boost_LIBRARIES}
 		OpenGL::GL
 		OpenGL::OpenGL

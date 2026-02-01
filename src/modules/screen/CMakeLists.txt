@@ -1,37 +1,62 @@
 cmake_minimum_required (VERSION 3.16)
 project (screen)
 
-set(SOURCES
-	consumer/screen_consumer.cpp
-	consumer/screen_consumer.h
+if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    # macOS: Use Vulkan screen consumer (Phase 9)
+    # Uses .mm (Objective-C++) for Grand Central Dispatch to marshal GLFW to main thread
+    set(SOURCES
+        consumer/screen_consumer_vk.mm
+        consumer/screen_consumer_vk.h
 
-	consumer_screen_vertex.h
-	consumer_screen_fragment.h
+        screen.cpp
+        screen.h
+    )
 
-	screen.cpp
-	screen.h
-)
+    casparcg_add_module_project(screen
+        SOURCES ${SOURCES}
+        INIT_FUNCTION "screen::init"
+    )
+    target_include_directories(screen PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR}
+        ${FFMPEG_INCLUDE_PATH}
+    )
+    target_link_libraries(screen PRIVATE accelerator ffmpeg glfw)
+    target_link_libraries(screen PRIVATE Vulkan::Vulkan)
+    target_link_libraries(screen PRIVATE Apple::Frameworks)
+else()
+    # Windows/Linux: Use OpenGL screen consumer
+    set(SOURCES
+        consumer/screen_consumer.cpp
+        consumer/screen_consumer.h
 
-bin2c("consumer/screen.vert" "consumer_screen_vertex.h" "caspar::screen" "vertex_shader")
-bin2c("consumer/screen.frag" "consumer_screen_fragment.h" "caspar::screen" "fragment_shader")
+        consumer_screen_vertex.h
+        consumer_screen_fragment.h
 
-if (MSVC)
-else ()
-	list(APPEND SOURCES
-		util/x11_util.cpp
-		util/x11_util.h
-	)
-endif ()
+        screen.cpp
+        screen.h
+    )
 
-casparcg_add_module_project(screen
-	SOURCES ${SOURCES}
-	INIT_FUNCTION "screen::init"
-)
-target_include_directories(screen PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${FFMPEG_INCLUDE_PATH}
-)
-target_link_libraries(screen PRIVATE accelerator ffmpeg GLEW::glew sfml-window)
+    bin2c("consumer/screen.vert" "consumer_screen_vertex.h" "caspar::screen" "vertex_shader")
+    bin2c("consumer/screen.frag" "consumer_screen_fragment.h" "caspar::screen" "fragment_shader")
+
+    if (MSVC)
+    else ()
+        list(APPEND SOURCES
+            util/x11_util.cpp
+            util/x11_util.h
+        )
+    endif ()
+
+    casparcg_add_module_project(screen
+        SOURCES ${SOURCES}
+        INIT_FUNCTION "screen::init"
+    )
+    target_include_directories(screen PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR}
+        ${FFMPEG_INCLUDE_PATH}
+    )
+    target_link_libraries(screen PRIVATE accelerator ffmpeg GLEW::glew sfml-window)
+endif()
 
 set_target_properties(screen PROPERTIES FOLDER modules)
 source_group(sources\\consumer consumer/*)

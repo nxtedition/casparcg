@@ -29,12 +29,17 @@ set(SOURCES
 )
 
 if (MSVC)
+	# Windows: Use COM-based interop headers
 	list(APPEND SOURCES
 			interop/DeckLinkAPI_i.c
 			interop/DeckLinkAPI.h
 			interop/DeckLinkAPIVersion.h
 	)
 else()
+	# Linux and macOS: Use dynamic loading interop
+	# macOS uses the same API but loads from /Library/Frameworks/DeckLinkAPI.framework
+	# Linux loads from libDeckLinkAPI.so
+	# Both use dlopen() - see DeckLinkAPIDispatch.cpp for platform-specific paths
 	list(APPEND SOURCES
 			linux_interop/DeckLinkAPIConfiguration.h
 			linux_interop/DeckLinkAPIDeckControl.h
@@ -80,9 +85,10 @@ if (MSVC)
 			ffmpeg
 	)
 else()
+	# Linux and macOS both need libdl for dlopen/dlsym
+	# DeckLink SDK is loaded at runtime, not linked at compile time
 	target_link_libraries(decklink PRIVATE
 			ffmpeg
-
 			dl
 	)
 endif ()

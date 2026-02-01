@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>casparcg</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.casparcg.server</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>CasparCG</string>
+    <key>CFBundleDisplayName</key>
+    <string>CasparCG Server</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@CONFIG_VERSION_MAJOR@.@CONFIG_VERSION_MINOR@.@CONFIG_VERSION_BUG@</string>
+    <key>CFBundleVersion</key>
+    <string>@CONFIG_VERSION_MAJOR@.@CONFIG_VERSION_MINOR@.@CONFIG_VERSION_BUG@.@CONFIG_VERSION_GIT_HASH@</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.15</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.video</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright CasparCG Project. Licensed under GPLv3.</string>
+</dict>
+</plist>

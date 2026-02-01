@@ -29,6 +29,7 @@
 #include "image/image_mixer.h"
 
 #include <common/diagnostics/graph.h>
+#include <common/log.h>
 
 #include <core/frame/draw_frame.h>
 #include <core/frame/frame_transform.h>
@@ -65,6 +66,12 @@ struct mixer::impl
         image_mixer_->update_aspect_ratio(static_cast<double>(format_desc.square_width) /
                                           static_cast<double>(format_desc.square_height));
 
+        // Debug: Log how many frames we're processing
+        static int mixer_frame_count = 0;
+        if (mixer_frame_count++ < 30 || mixer_frame_count % 500 == 0) {
+            CASPAR_LOG(info) << L"[mixer] Processing " << frames.size() << L" frames for channel " << channel_index_;
+        }
+
         for (auto& frame : frames) {
             frame.accept(audio_mixer_);
             frame.transform().image_transform.layer_depth = 1;
@@ -89,7 +96,16 @@ struct mixer::impl
                                     desc.planes.push_back(
                                         pixel_format_desc::plane(format_desc.width, format_desc.height, 4, depth));
                                     std::vector<array<const uint8_t>> image_data;
-                                    image_data.emplace_back(std::move(image.get()));
+                                    auto img = std::move(image.get());
+                                    // Debug: Log first pixels of rendered frame
+                                    static int mixer_debug = 0;
+                                    if (mixer_debug++ < 20 && img.size() >= 4) {
+                                        auto* data = img.begin();
+                                        CASPAR_LOG(info) << L"[mixer] Frame created: size=" << img.size()
+                                                          << L" first_pixels=[" << (int)data[0] << L"," << (int)data[1]
+                                                          << L"," << (int)data[2] << L"," << (int)data[3] << L"]";
+                                    }
+                                    image_data.emplace_back(std::move(img));
                                     return const_frame(tag, std::move(image_data), std::move(audio), desc);
                                 }));
 
@@ -97,9 +113,16 @@ struct mixer::impl
             return const_frame{};
         }
 
-        auto frame = std::move(buffer_.front().get());
-        buffer_.pop();
-        return frame;
+        // Use RAII to ensure we always pop the front, even if get() throws.
+        // After calling get() on a future, it becomes invalid. If we don't pop
+        // and an exception occurs, the next call would try to get() the same
+        // invalid future, causing a crash.
+        struct scope_guard {
+            std::queue<std::future<const_frame>>& q;
+            ~scope_guard() { q.pop(); }
+        } guard{buffer_};
+
+        return std::move(buffer_.front().get());
     }
 
     void set_master_volume(float volume) { audio_mixer_.set_master_volume(volume); }

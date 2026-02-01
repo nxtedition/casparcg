@@ -2954,7 +2954,7 @@ class TestRunner:
 
         # Test 2: Try local HTML template (if available)
         print("  Testing HTML producer with local template...")
-        test_templates = ["TEST", "test", "lower_third", "LOWERTHIRD"]
+        test_templates = ["overlay", "TEST", "test", "lower_third", "LOWERTHIRD"]
         template_found = False
 
         for template in test_templates:

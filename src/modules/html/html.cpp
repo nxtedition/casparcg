@@ -264,16 +264,38 @@ void init(const core::module_dependencies& dependencies)
         }
 
 #ifdef __APPLE__
-        // macOS: Configure paths for non-bundle deployment
+        // macOS: Configure paths for both app bundle and flat deployment
         // Get executable path and derive framework/resource locations
-        // CEF framework's install_name is @executable_path/../Frameworks/
         auto exe_path = boost::dll::program_location();
         auto exe_dir = exe_path.parent_path();
 
+        // Detect if running from an app bundle (path contains .app/Contents/MacOS)
+        auto exe_path_str = exe_path.string();
+        bool is_app_bundle = exe_path_str.find(".app/Contents/MacOS") != std::string::npos;
+
+        boost::filesystem::path bundle_path;
+        boost::filesystem::path data_dir;
+
+        if (is_app_bundle) {
+            // App bundle: CasparCG.app/Contents/MacOS/casparcg
+            // bundle_path = CasparCG.app
+            // Frameworks at CasparCG.app/Contents/Frameworks
+            // Resources at CasparCG.app/Contents/Resources
+            auto contents_path = exe_dir.parent_path();  // Contents
+            bundle_path = contents_path.parent_path();   // CasparCG.app
+            data_dir = contents_path / "Resources" / "data";
+            CASPAR_LOG(info) << "[html] Running from app bundle: " << bundle_path.string();
+        } else {
+            // Flat structure: build/shell/casparcg
+            // Frameworks at build/Frameworks
+            bundle_path = exe_dir;
+            data_dir = exe_dir / "data";
+            CASPAR_LOG(info) << "[html] Running from flat structure: " << exe_dir.string();
+        }
+
         // Set root_cache_path to prevent CEF from using shared keychain storage
         // This avoids the "Chromium Safe Storage" keychain permission dialog on macOS
-        // Must be an absolute path
-        auto cef_cache_path = exe_dir / "data" / "cef_cache";
+        auto cef_cache_path = data_dir / "cef_cache";
         CefString(&settings.root_cache_path).FromString(cef_cache_path.string());
 #else
         // Set root_cache_path to prevent CEF from using shared keychain storage
@@ -283,9 +305,10 @@ void init(const core::module_dependencies& dependencies)
 #endif
 
 #ifdef __APPLE__
+        // Framework path is always ../Frameworks relative to executable
         auto frameworks_path = exe_dir.parent_path() / "Frameworks";
 
-        // Framework: <build>/Frameworks/Chromium Embedded Framework.framework
+        // Framework: Contents/Frameworks/Chromium Embedded Framework.framework
         auto framework_path = frameworks_path / "Chromium Embedded Framework.framework";
         CefString(&settings.framework_dir_path).FromString(framework_path.string());
 
@@ -300,13 +323,21 @@ void init(const core::module_dependencies& dependencies)
         // CEF will re-invoke this binary with --type=renderer, etc.
         CefString(&settings.browser_subprocess_path).FromString(exe_path.string());
 
-        // Set main_bundle_path to the executable directory (not an app bundle)
-        CefString(&settings.main_bundle_path).FromString(exe_dir.string());
+        // Set main_bundle_path appropriately for app bundle or flat structure
+        if (is_app_bundle) {
+            // For app bundle, point to the .app directory
+            CefString(&settings.main_bundle_path).FromString(bundle_path.string());
+        } else {
+            // For flat structure, point to the executable directory
+            CefString(&settings.main_bundle_path).FromString(exe_dir.string());
+        }
 
         CASPAR_LOG(info) << "[html] macOS CEF paths configured:";
+        CASPAR_LOG(info) << "[html]   App bundle: " << (is_app_bundle ? "yes" : "no");
         CASPAR_LOG(info) << "[html]   Framework: " << framework_path.string();
         CASPAR_LOG(info) << "[html]   Resources: " << resources_path.string();
         CASPAR_LOG(info) << "[html]   Subprocess: " << exe_path.string();
+        CASPAR_LOG(info) << "[html]   Bundle path: " << bundle_path.string();
 #endif
 
         return CefInitialize(main_args, settings, CefRefPtr<CefApp>(new renderer_application(enable_gpu)), nullptr);

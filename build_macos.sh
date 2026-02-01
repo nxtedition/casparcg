@@ -13,6 +13,36 @@ CLEAN_BUILD=0
 VERBOSE=0
 ENABLE_HTML=ON
 JOBS=$(sysctl -n hw.ncpu)
+PACKAGE=0
+PACKAGE_ARGS=""
+
+usage() {
+    echo "Usage: $0 [options]"
+    echo ""
+    echo "Build options:"
+    echo "  --clean, -c         Clean build from scratch"
+    echo "  --verbose, -v       Show verbose output"
+    echo "  --jobs, -j N        Number of parallel build jobs (default: CPU count)"
+    echo "  --with-html         Enable CEF/HTML module (default)"
+    echo "  --no-html           Disable CEF/HTML module"
+    echo ""
+    echo "Packaging options:"
+    echo "  --package           Create .app bundle after build"
+    echo "  --include-ndi       Include NDI library in package"
+    echo "  --dmg               Create DMG disk image"
+    echo "  --sign              Sign the app bundle (requires --identity)"
+    echo "  --identity \"...\"    Code signing identity"
+    echo "  --notarize          Notarize the app (requires Apple credentials)"
+    echo "  --apple-id \"...\"    Apple ID for notarization"
+    echo "  --team-id \"...\"     Team ID for notarization"
+    echo "  --password \"...\"    App-specific password"
+    echo ""
+    echo "Examples:"
+    echo "  $0                              # Build only"
+    echo "  $0 --clean                      # Clean build"
+    echo "  $0 --package --dmg              # Build and create DMG"
+    echo "  $0 --package --include-ndi      # Build with NDI bundled"
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -36,9 +66,49 @@ while [[ $# -gt 0 ]]; do
             JOBS="$2"
             shift 2
             ;;
+        --package)
+            PACKAGE=1
+            shift
+            ;;
+        --include-ndi)
+            PACKAGE_ARGS="$PACKAGE_ARGS --include-ndi"
+            shift
+            ;;
+        --dmg)
+            PACKAGE_ARGS="$PACKAGE_ARGS --dmg"
+            shift
+            ;;
+        --sign)
+            PACKAGE_ARGS="$PACKAGE_ARGS --sign"
+            shift
+            ;;
+        --identity)
+            PACKAGE_ARGS="$PACKAGE_ARGS --identity \"$2\""
+            shift 2
+            ;;
+        --notarize)
+            PACKAGE_ARGS="$PACKAGE_ARGS --notarize"
+            shift
+            ;;
+        --apple-id)
+            PACKAGE_ARGS="$PACKAGE_ARGS --apple-id \"$2\""
+            shift 2
+            ;;
+        --team-id)
+            PACKAGE_ARGS="$PACKAGE_ARGS --team-id \"$2\""
+            shift 2
+            ;;
+        --password)
+            PACKAGE_ARGS="$PACKAGE_ARGS --password \"$2\""
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--clean|-c] [--verbose|-v] [--jobs|-j N] [--with-html] [--no-html]"
+            usage
             exit 1
             ;;
     esac
@@ -85,3 +155,11 @@ echo ""
 echo "=== Build Complete ==="
 echo "Binary: ${BUILD_DIR}/shell/casparcg"
 echo "Run script: ${BUILD_DIR}/shell/run_macos.sh"
+
+# Package if requested
+if [[ $PACKAGE -eq 1 ]]; then
+    echo ""
+    echo "=== Creating App Bundle ==="
+    cd "${SCRIPT_DIR}"
+    eval "./package_macos.sh $PACKAGE_ARGS"
+fi

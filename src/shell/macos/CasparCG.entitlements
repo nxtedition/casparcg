@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- CEF/Chromium requires JIT compilation for V8 JavaScript engine -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- CEF/Chromium requires unsigned executable memory for V8 -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Allow loading of plugins and dynamic libraries -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Network server capability for AMCP protocol (port 5250) -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- Network client capability for NDI, streaming, and web content -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Camera access for video capture features (optional) -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+
+    <!-- Microphone access for audio capture features (optional) -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

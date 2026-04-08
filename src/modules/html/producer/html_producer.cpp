@@ -88,6 +88,7 @@ class html_client
     spl::shared_ptr<core::frame_factory>                        frame_factory_;
     core::video_format_desc                                     format_desc_;
     bool                                                        gpu_enabled_;
+    bool                                                        wait_for_fp_;
     tbb::concurrent_queue<std::wstring>                         javascript_before_load_;
     std::atomic<bool>                                           loaded_;
     std::atomic<bool>                                           ready_to_render_;
@@ -108,12 +109,14 @@ class html_client
                 const spl::shared_ptr<diagnostics::graph>& graph,
                 core::video_format_desc                    format_desc,
                 bool                                       gpu_enabled,
+                bool                                       wait_for_fp,
                 std::wstring                               url)
         : url_(std::move(url))
         , graph_(graph)
         , frame_factory_(std::move(frame_factory))
         , format_desc_(std::move(format_desc))
         , gpu_enabled_(gpu_enabled)
+        , wait_for_fp_(wait_for_fp)
     {
         graph_->set_color("browser-tick-time", diagnostics::color(0.1f, 1.0f, 0.1f));
         graph_->set_color("tick-time", diagnostics::color(0.0f, 0.6f, 0.9f));
@@ -328,22 +331,38 @@ class html_client
 
         browser_ = std::move(browser);
 
+        if(wait_for_fp_) {
+            if(SetupCDP()) {
+                CASPAR_LOG(info) << print() << L" CDP initialized, waiting for firstPaint";
+            }
+            else {
+                CASPAR_LOG(error) << print() << L" Failed to initialize CDP, will not wait for firstPaint";
+            }
+        }
+    }
+
+    bool SetupCDP() {
         auto host = get_browser_host();
-        if(host != nullptr) {
-            cdp_registration_ = host->AddDevToolsMessageObserver(this);
-
-            if (host->ExecuteDevToolsMethod(0, "Page.enable", nullptr) == 0)
-                CASPAR_LOG(error) << print() << L" failed to enable CDP Page domain";
-
-            // Enable Page lifecycle events to get notified of firstContentfulPaint
-            auto params = CefDictionaryValue::Create();
-            params->SetBool("enabled", true);
-            if (host->ExecuteDevToolsMethod(0, "Page.setLifecycleEventsEnabled", params) == 0)
-                CASPAR_LOG(error) << print() << L" failed to enable Page lifecycle events";
+        if(host == nullptr) {
+            return false;
         }
-        else {
-            CASPAR_LOG(error) << print() << L" Could not initialize CDP, browser host is null";
+
+        auto cdp = host->AddDevToolsMessageObserver(this);
+        if (host->ExecuteDevToolsMethod(0, "Page.enable", nullptr) == 0) {
+            CASPAR_LOG(error) << print() << L" failed to enable CDP Page domain";
+            return false;
         }
+
+        // Enable Page lifecycle events to get notified of firstPaint event
+        auto params = CefDictionaryValue::Create();
+        params->SetBool("enabled", true);
+        if (host->ExecuteDevToolsMethod(0, "Page.setLifecycleEventsEnabled", params) == 0) {
+            CASPAR_LOG(error) << print() << L" failed to enable Page lifecycle events";
+            return false;
+        }
+
+        cdp_registration_ = cdp;
+        return true;
     }
 
     void OnBeforeClose(CefRefPtr<CefBrowser> browser) override
@@ -415,6 +434,8 @@ class html_client
             return;
             
         loaded_ = true;
+        
+        // If we're not waiting for firstPaint, this is the closest we get to a "loaded" event
         if(cdp_registration_ == nullptr) {
             ready_to_render_ = true;
         }
@@ -542,8 +563,9 @@ class html_producer : public core::frame_producer
     {
         html::invoke([&] {
             const bool enable_gpu = env::properties().get(L"configuration.html.enable-gpu", false);
+            const bool wait_for_fp = env::properties().get(L"configuration.html.wait-for-fp", false);
 
-            client_ = new html_client(frame_factory, graph_, format_desc, enable_gpu, url_);
+            client_ = new html_client(frame_factory, graph_, format_desc, enable_gpu, wait_for_fp, url_);
 
             CefWindowInfo window_info;
             window_info.bounds.width                 = format_desc.square_width;

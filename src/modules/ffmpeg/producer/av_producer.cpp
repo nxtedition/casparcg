@@ -187,7 +187,7 @@ class Decoder
 
         FF(avcodec_open2(ctx.get(), codec, nullptr));
 
-        thread = boost::thread([=]() {
+        thread = boost::thread([=, this]() {
             try {
                 while (!thread.interruption_requested()) {
                     auto av_frame = alloc_frame();
@@ -779,7 +779,7 @@ struct AVProducer::Impl
 
         CASPAR_LOG(debug) << print() << " seekable: " << seekable_;
 
-        thread_ = boost::thread([=] {
+        thread_ = boost::thread([=, this] {
             try {
                 run(seek);
             } catch (boost::thread_interrupted&) {

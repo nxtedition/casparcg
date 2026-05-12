@@ -470,7 +470,7 @@ struct ffmpeg_consumer : public core::frame_consumer
 
         graph_->set_text(print());
 
-        frame_thread_ = std::thread([=] {
+        frame_thread_ = std::thread([=, this] {
             try {
                 std::map<std::string, std::string> options;
                 {

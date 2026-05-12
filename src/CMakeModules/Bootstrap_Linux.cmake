@@ -134,6 +134,8 @@ ADD_COMPILE_DEFINITIONS (SIMDE_ENABLE_OPENMP) # Enable OpenMP support in simde
 ADD_COMPILE_OPTIONS (-fopenmp-simd) # Enable OpenMP SIMD support
 ADD_COMPILE_OPTIONS (-fnon-call-exceptions) # Allow signal handler to throw exception
 
+set(CMAKE_CXX_STANDARD 20)
+
 ADD_COMPILE_OPTIONS (-Wno-deprecated-declarations -Wno-write-strings -Wno-multichar -Wno-cpp -Werror)
 IF (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     ADD_COMPILE_OPTIONS (-Wno-terminate)

@@ -7,6 +7,8 @@ set(CONFIG_VERSION_MINOR 6)
 set(CONFIG_VERSION_BUG 0)
 set(CONFIG_VERSION_TAG "Dev")
 
+set(CMAKE_CXX_STANDARD 20)
+
 # support for language servers (eg, clangd or ccls)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

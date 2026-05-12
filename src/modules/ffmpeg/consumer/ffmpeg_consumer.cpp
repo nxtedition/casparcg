@@ -41,7 +41,11 @@
 #include <boost/filesystem.hpp>
 #include <boost/format.hpp>
 #include <boost/property_tree/ptree.hpp>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
 #include <boost/regex.hpp>
+#pragma GCC diagnostic pop
 
 #pragma warning(push)
 #pragma warning(disable : 4244)

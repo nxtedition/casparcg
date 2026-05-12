@@ -63,6 +63,8 @@
 #include <future>
 #include <memory>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/regex.hpp>
 #include <boost/archive/iterators/base64_from_binary.hpp>
@@ -77,6 +79,7 @@
 #include <boost/range/adaptor/transformed.hpp>
 #include <boost/range/algorithm/copy.hpp>
 #include <boost/regex.hpp>
+#pragma GCC diagnostic pop
 
 #include <tbb/concurrent_unordered_map.h>
 

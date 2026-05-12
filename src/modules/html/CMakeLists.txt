@@ -25,8 +25,6 @@ target_include_directories(html PRIVATE
 	${FFMPEG_INCLUDE_PATH}
 )
 
-set(CMAKE_CXX_STANDARD 20)
-
 set_target_properties(html PROPERTIES FOLDER modules)
 source_group(sources\\producer producer/*)
 source_group(sources ./*)

@@ -43,7 +43,11 @@
 #include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/property_tree/ptree.hpp>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
 #include <boost/regex.hpp>
+#pragma GCC diagnostic pop
 
 #include <tbb/concurrent_queue.h>
 #include <tbb/parallel_for.h>

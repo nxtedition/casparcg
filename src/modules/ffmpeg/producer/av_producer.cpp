@@ -738,6 +738,7 @@ struct AVProducer::Impl
     core::frame_geometry::scale_mode scale_mode_;
     int64_t                          frame_count_    = 0;
     bool                             frame_flush_    = true;
+    bool                             preloading_     = true;
     int64_t                          frame_time_     = AV_NOPTS_VALUE;
     int64_t                          frame_duration_ = AV_NOPTS_VALUE;
     core::draw_frame                 frame_;
@@ -751,7 +752,7 @@ struct AVProducer::Impl
     std::optional<caspar::executor> video_executor_;
     std::optional<caspar::executor> audio_executor_;
 
-    int latency_ = 0;
+    int latency_ = -1;
 
     boost::thread thread_;
 
@@ -1049,7 +1050,7 @@ struct AVProducer::Impl
     bool is_ready()
     {
         boost::lock_guard<boost::mutex> lock(buffer_mutex_);
-        return !buffer_.empty() || frame_;
+        return !preloading_ && (!buffer_.empty() || frame_);
     }
 
     core::draw_frame next_frame(const core::video_field field)
@@ -1073,8 +1074,11 @@ struct AVProducer::Impl
                 }
                 return core::draw_frame::still(frame_);
             }
-            graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
-            latency_ += 1;
+
+            if (!preloading_) {
+                graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
+                latency_ += 1;
+            }
             return core::draw_frame{};
         }
 
@@ -1097,6 +1101,7 @@ struct AVProducer::Impl
         frame_time_     = buffer_[0].pts;
         frame_duration_ = buffer_[0].duration;
         frame_flush_    = false;
+        preloading_     = false;
 
         buffer_.pop_front();
         buffer_cond_.notify_all();

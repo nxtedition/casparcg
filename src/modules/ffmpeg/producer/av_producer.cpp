@@ -18,6 +18,7 @@
 #include <common/env.h>
 #include <common/except.h>
 #include <common/executor.h>
+#include <common/log_throttle.h>
 #include <common/os/thread.h>
 #include <common/scope_exit.h>
 #include <common/timer.h>
@@ -881,9 +882,8 @@ struct AVProducer::Impl
         timer frame_timer;
         timer decode_timer;
 
-        int           warning_debounce = 0;
-        uint8_t       warning_count    = 0;
-        const uint8_t max_warnings     = 5;
+        log_throttle frame_wait_throttle(
+            100, 500, 5, [this] { CASPAR_LOG(warning) << print() << " Too many warnings. Silencing."; });
 
         while (!thread_.interruption_requested()) {
             {
@@ -941,7 +941,7 @@ struct AVProducer::Impl
 
             if ((!video_filter_.frame && !video_filter_.eof) || (!audio_filter_.frame && !audio_filter_.eof)) {
                 if (!progress) {
-                    if (warning_debounce++ % 500 == 100 && warning_count < max_warnings) {
+                    if (frame_wait_throttle.tick()) {
                         if (!video_filter_.frame && !video_filter_.eof) {
                             CASPAR_LOG(warning) << print() << " Waiting for video frame...";
                         } else if (!audio_filter_.frame && !audio_filter_.eof) {
@@ -949,19 +949,15 @@ struct AVProducer::Impl
                         } else {
                             CASPAR_LOG(warning) << print() << " Waiting for frame...";
                         }
-                        warning_count++;
-                        if (warning_count == max_warnings) {
-                            CASPAR_LOG(warning) << print() << " Too many warnings. Silencing.";
-                        }
                     }
 
                     // TODO (perf): Avoid live loop.
-                    std::this_thread::sleep_for(std::chrono::milliseconds(warning_debounce > 25 ? 20 : 5));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(frame_wait_throttle.count() > 25 ? 20 : 5));
                 }
                 continue;
             }
 
-            warning_debounce = warning_count = 0;
+            frame_wait_throttle.reset();
 
             // TODO (fix)
             // if (start_ != AV_NOPTS_VALUE && frame.pts < start_) {

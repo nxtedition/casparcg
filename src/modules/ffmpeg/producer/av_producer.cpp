@@ -18,6 +18,7 @@
 #include <common/env.h>
 #include <common/except.h>
 #include <common/executor.h>
+#include <common/log_throttle.h>
 #include <common/os/thread.h>
 #include <common/scope_exit.h>
 #include <common/timer.h>
@@ -42,7 +43,6 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 #include <libavutil/samplefmt.h>
-#include <libavutil/channel_layout.h>
 }
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -601,7 +601,13 @@ struct Filter
                                               AV_PIX_FMT_GBRAP16,
                                               AV_PIX_FMT_NONE};
 #if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100) && LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 36, 100)
-            FF(av_opt_set_array(sink, "pixel_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(pix_fmts) - 1, AV_OPT_TYPE_PIXEL_FMT, pix_fmts));
+            FF(av_opt_set_array(sink,
+                                "pixel_formats",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                FF_ARRAY_ELEMS(pix_fmts) - 1,
+                                AV_OPT_TYPE_PIXEL_FMT,
+                                pix_fmts));
 #else
             FF(av_opt_set_int_list(sink, "pix_fmts", pix_fmts, -1, AV_OPT_SEARCH_CHILDREN));
 #endif
@@ -615,12 +621,24 @@ struct Filter
 #pragma warning(push)
 #pragma warning(disable : 4245)
 #endif
-            const AVSampleFormat sample_fmts[] = {AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_NONE};
-            const int sample_rates[] = {format_desc.audio_sample_rate, -1};
+            const AVSampleFormat sample_fmts[]  = {AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_NONE};
+            const int            sample_rates[] = {format_desc.audio_sample_rate, -1};
 
 #if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100) && LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 36, 100)
-            FF(av_opt_set_array(sink, "sample_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(sample_fmts) - 1, AV_OPT_TYPE_SAMPLE_FMT, sample_fmts));
-            FF(av_opt_set_array(sink, "samplerates", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(sample_rates) - 1, AV_OPT_TYPE_INT, sample_rates));
+            FF(av_opt_set_array(sink,
+                                "sample_formats",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                FF_ARRAY_ELEMS(sample_fmts) - 1,
+                                AV_OPT_TYPE_SAMPLE_FMT,
+                                sample_fmts));
+            FF(av_opt_set_array(sink,
+                                "samplerates",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                FF_ARRAY_ELEMS(sample_rates) - 1,
+                                AV_OPT_TYPE_INT,
+                                sample_rates));
 #else
             FF(av_opt_set_int(sink, "all_channel_counts", 1, AV_OPT_SEARCH_CHILDREN));
             FF(av_opt_set_int_list(sink, "sample_fmts", sample_fmts, -1, AV_OPT_SEARCH_CHILDREN));
@@ -721,6 +739,7 @@ struct AVProducer::Impl
     core::frame_geometry::scale_mode scale_mode_;
     int64_t                          frame_count_    = 0;
     bool                             frame_flush_    = true;
+    bool                             preloading_     = true;
     int64_t                          frame_time_     = AV_NOPTS_VALUE;
     int64_t                          frame_duration_ = AV_NOPTS_VALUE;
     core::draw_frame                 frame_;
@@ -734,7 +753,7 @@ struct AVProducer::Impl
     std::optional<caspar::executor> video_executor_;
     std::optional<caspar::executor> audio_executor_;
 
-    int latency_ = 0;
+    int latency_ = -1;
 
     boost::thread thread_;
 
@@ -863,9 +882,8 @@ struct AVProducer::Impl
         timer frame_timer;
         timer decode_timer;
 
-        int warning_debounce = 0;
-        uint8_t warning_count    = 0;
-        const uint8_t max_warnings = 5;
+        log_throttle frame_wait_throttle(
+            100, 500, 5, [this] { CASPAR_LOG(warning) << print() << " Too many warnings. Silencing."; });
 
         while (!thread_.interruption_requested()) {
             {
@@ -923,7 +941,7 @@ struct AVProducer::Impl
 
             if ((!video_filter_.frame && !video_filter_.eof) || (!audio_filter_.frame && !audio_filter_.eof)) {
                 if (!progress) {
-                    if (warning_debounce++ % 500 == 100 && warning_count < max_warnings) {
+                    if (frame_wait_throttle.tick()) {
                         if (!video_filter_.frame && !video_filter_.eof) {
                             CASPAR_LOG(warning) << print() << " Waiting for video frame...";
                         } else if (!audio_filter_.frame && !audio_filter_.eof) {
@@ -931,19 +949,15 @@ struct AVProducer::Impl
                         } else {
                             CASPAR_LOG(warning) << print() << " Waiting for frame...";
                         }
-                        warning_count++;
-                        if(warning_count == max_warnings) {
-                            CASPAR_LOG(warning) << print() << " Too many warnings. Silencing.";
-                        }
                     }
 
                     // TODO (perf): Avoid live loop.
-                    std::this_thread::sleep_for(std::chrono::milliseconds(warning_debounce > 25 ? 20 : 5));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(frame_wait_throttle.count() > 25 ? 20 : 5));
                 }
                 continue;
             }
 
-            warning_debounce = warning_count = 0;
+            frame_wait_throttle.reset();
 
             // TODO (fix)
             // if (start_ != AV_NOPTS_VALUE && frame.pts < start_) {
@@ -1032,7 +1046,7 @@ struct AVProducer::Impl
     bool is_ready()
     {
         boost::lock_guard<boost::mutex> lock(buffer_mutex_);
-        return !buffer_.empty() || frame_;
+        return !preloading_ && (!buffer_.empty() || frame_);
     }
 
     core::draw_frame next_frame(const core::video_field field)
@@ -1056,8 +1070,11 @@ struct AVProducer::Impl
                 }
                 return core::draw_frame::still(frame_);
             }
-            graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
-            latency_ += 1;
+
+            if (!preloading_) {
+                graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
+                latency_ += 1;
+            }
             return core::draw_frame{};
         }
 
@@ -1080,6 +1097,7 @@ struct AVProducer::Impl
         frame_time_     = buffer_[0].pts;
         frame_duration_ = buffer_[0].duration;
         frame_flush_    = false;
+        preloading_     = false;
 
         buffer_.pop_front();
         buffer_cond_.notify_all();

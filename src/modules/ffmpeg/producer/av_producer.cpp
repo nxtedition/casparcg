@@ -673,7 +673,13 @@ struct Filter
 
         FF(avfilter_graph_config(graph.get(), nullptr));
 
-        CASPAR_LOG(debug) << avfilter_graph_dump(graph.get(), nullptr);
+        {
+            char* graph_dump = avfilter_graph_dump(graph.get(), nullptr);
+            if (graph_dump) {
+                CASPAR_LOG(debug) << "ffmpeg[" << name << "] " << graph_dump;
+                av_free(graph_dump);
+            }
+        }
     }
 
     bool operator()(int nb_samples = -1)

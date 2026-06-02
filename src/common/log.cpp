@@ -22,9 +22,9 @@
 
 #include "except.h"
 
-#include <boost/bind.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/replace.hpp>
+#include <boost/bind.hpp>
 #include <boost/bind/bind.hpp>
 #include <boost/core/null_deleter.hpp>
 #include <boost/filesystem/operations.hpp>
@@ -156,6 +156,11 @@ void my_formatter(bool print_all_characters, const boost::log::record_view& rec,
     // thread_id_column.write(pre_message_stream, boost::log::extract<std::int64_t>("NativeThreadId", rec));
     severity_column.write(pre_message_stream,
                           boost::log::extract<boost::log::trivial::severity_level>("Severity", rec));
+
+    // per-call-site context — part of pre_message, so it repeats on every line
+    if (auto ctx = boost::log::extract<std::wstring>("Context", rec)) {
+        pre_message_stream << L"[" << ctx.get() << L"] ";
+    }
 
     auto pre_message = pre_message_stream.str();
 

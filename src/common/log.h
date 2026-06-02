@@ -27,6 +27,7 @@
 #include <boost/log/sources/severity_feature.hpp>
 #include <boost/log/sources/severity_logger.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/log/utility/manipulators/add_value.hpp>
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -61,6 +62,9 @@ using caspar_logger = boost::log::sources::wseverity_logger<boost::log::trivial:
 
 BOOST_LOG_INLINE_GLOBAL_LOGGER_DEFAULT(logger, caspar_logger)
 #define CASPAR_LOG(lvl) BOOST_LOG_SEV(::caspar::log::logger::get(), boost::log::trivial::severity_level::lvl)
+
+// Attaches per-call context that is repeated on every line of a multiline message.
+#define CASPAR_LOG_CTX(lvl, ctx) CASPAR_LOG(lvl) << ::boost::log::add_value("Context", std::wstring(ctx))
 
 struct logging_config
 {

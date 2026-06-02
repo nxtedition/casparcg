@@ -25,6 +25,7 @@
 
 #include "consumer/ffmpeg_consumer.h"
 #include "producer/ffmpeg_producer.h"
+#include "util/log_context.h"
 
 #include <common/log.h>
 
@@ -79,7 +80,7 @@ void log_callback(void* ptr, int level, const char* fmt, va_list vl)
 
     std::vsnprintf(line + strlen(line), sizeof(line) - strlen(line), fmt, vl);
 
-    print_prefix_tss = (strlen(line) != 0u) && line[strlen(line) - 1] == '\n';
+    print_prefix_tss = true; // (strlen(line) != 0u) && line[strlen(line) - 1] == '\n';
 
     sanitize(reinterpret_cast<uint8_t*>(line));
 
@@ -87,21 +88,38 @@ void log_callback(void* ptr, int level, const char* fmt, va_list vl)
         return;
     }
 
+    // Context for the calling thread (e.g. "ffmpeg[<file>]"), set by the producer/input/decoder.
+    const auto& thread_ctx = thread_log_context();
+    std::wstring tag;
+    if (thread_ctx) {
+        tag = thread_ctx.str();
+    } else if (avc != nullptr && std::strcmp(avc->class_name, "AVCodecContext") == 0) {
+        // Fallback for codec-internal worker threads: recover the context from AVCodecContext::opaque,
+        // which we set to the owning decoder's log_context_data (see Decoder constructor).
+        const auto* data = static_cast<const log_context_data*>(reinterpret_cast<AVCodecContext*>(ptr)->opaque);
+        tag              = data != nullptr ? to_log_string(*data) : std::wstring(L"ffmpeg");
+    } else {
+        tag = L"ffmpeg";
+    }
+
     try {
-        if (level == AV_LOG_VERBOSE)
-            CASPAR_LOG(trace) << L"[ffmpeg] " << line;
-        else if (level == AV_LOG_DEBUG)
-            CASPAR_LOG(trace) << L"[ffmpeg] " << line;
-        else if (level == AV_LOG_INFO)
-            CASPAR_LOG(info) << L"[ffmpeg] " << line;
-        else if (level == AV_LOG_WARNING)
-            CASPAR_LOG(warning) << L"[ffmpeg] " << line;
-        else if (level == AV_LOG_ERROR)
-            CASPAR_LOG(error) << L"[ffmpeg] " << line;
-        else if (level == AV_LOG_FATAL)
-            CASPAR_LOG(fatal) << L"[ffmpeg] " << line;
-        else
-            CASPAR_LOG(trace) << L"[ffmpeg] " << line;
+        switch (level) {
+            case AV_LOG_INFO:
+                CASPAR_LOG_CTX(info, tag) << line;
+                break;
+            case AV_LOG_WARNING:
+                CASPAR_LOG_CTX(warning, tag) << line;
+                break;
+            case AV_LOG_ERROR:
+                CASPAR_LOG_CTX(error, tag) << line;
+                break;
+            case AV_LOG_FATAL:
+                CASPAR_LOG_CTX(fatal, tag) << line;
+                break;
+            default:
+                CASPAR_LOG_CTX(trace, tag) << line;
+                break;
+        }
     } catch (...) {
     }
 }

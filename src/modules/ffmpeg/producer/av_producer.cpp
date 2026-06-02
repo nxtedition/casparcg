@@ -4,6 +4,7 @@
 
 #include "../util/av_assert.h"
 #include "../util/av_util.h"
+#include "../util/log_context.h"
 
 #include <boost/exception/exception.hpp>
 #include <boost/format.hpp>
@@ -145,13 +146,17 @@ class Decoder
 
     boost::thread thread;
 
+    // ffmpeg logging context for this decoder's thread (owned by the producer).
+    const log_context_data* log_ctx = nullptr;
+
   public:
     std::shared_ptr<AVCodecContext> ctx;
 
     Decoder() = default;
 
-    explicit Decoder(AVStream* stream)
+    explicit Decoder(AVStream* stream, const log_context_data* log_ctx)
         : st(stream)
+        , log_ctx(log_ctx)
     {
         const auto codec = get_decoder(stream->codecpar->codec_id);
 
@@ -167,6 +172,11 @@ class Decoder
         }
 
         FF(avcodec_parameters_to_context(ctx.get(), stream->codecpar));
+
+        // Expose the logging context via opaque so the ffmpeg log callback can recover it on
+        // codec-internal (frame/slice threaded) worker threads, where the thread-local is unset.
+        // Set before avcodec_open2 so it is inherited by the per-thread contexts.
+        ctx->opaque = const_cast<log_context_data*>(log_ctx);
 
         if (stream->metadata != NULL) {
             auto entry = av_dict_get(stream->metadata, "alpha_mode", NULL, AV_DICT_MATCH_CASE);
@@ -188,6 +198,7 @@ class Decoder
         FF(avcodec_open2(ctx.get(), codec, nullptr));
 
         thread = boost::thread([=]() {
+            set_thread_log_context(log_ctx);
             try {
                 while (!thread.interruption_requested()) {
                     auto av_frame = alloc_frame();
@@ -344,6 +355,7 @@ struct Filter
     std::map<int, AVFilterContext*> sources;
     std::shared_ptr<AVFrame>        frame;
     bool                            eof = false;
+    const log_context_data*         log_ctx;
 
     Filter() = default;
 
@@ -352,7 +364,9 @@ struct Filter
            std::map<int, Decoder>&        streams,
            int64_t                        start_time,
            AVMediaType                    media_type,
-           const core::video_format_desc& format_desc)
+           const core::video_format_desc& format_desc,
+           const log_context_data*        log_ctx)
+        : log_ctx(log_ctx)
     {
         if (media_type == AVMEDIA_TYPE_VIDEO) {
             if (filter_spec.empty()) {
@@ -509,7 +523,11 @@ struct Filter
 
                 auto it = streams.find(index);
                 if (it == streams.end()) {
-                    it = streams.emplace(index, input->streams[index]).first;
+                    it = streams
+                             .emplace(std::piecewise_construct,
+                                      std::forward_as_tuple(index),
+                                      std::forward_as_tuple(input->streams[index], log_ctx))
+                             .first;
                 }
 
                 auto st = it->second.ctx;
@@ -676,7 +694,9 @@ struct Filter
         {
             char* graph_dump = avfilter_graph_dump(graph.get(), nullptr);
             if (graph_dump) {
-                CASPAR_LOG(debug) << "ffmpeg[" << name << "] " << graph_dump;
+                const auto& thread_ctx = thread_log_context();
+                const auto  tag        = thread_ctx ? thread_ctx.str() : std::wstring(L"ffmpeg");
+                CASPAR_LOG_CTX(debug, tag) << graph_dump;
                 av_free(graph_dump);
             }
         }
@@ -724,6 +744,8 @@ struct AVProducer::Impl
     const AVRational                           format_tb_;
     const std::string                          name_;
     const std::string                          path_;
+
+    log_context_data log_ctx_;
 
     Input                  input_;
     std::map<int, Decoder> decoders_;
@@ -780,7 +802,11 @@ struct AVProducer::Impl
         , format_tb_({format_desc.duration, format_desc.time_scale * format_desc.field_count})
         , name_(name)
         , path_(path)
-        , input_(path, graph_, seekable >= 0 && seekable < 2 ? std::optional<bool>(false) : std::optional<bool>())
+        , log_ctx_{name}
+        , input_(path,
+                 graph_,
+                 seekable >= 0 && seekable < 2 ? std::optional<bool>(false) : std::optional<bool>(),
+                 &log_ctx_)
         , start_(start ? av_rescale_q(*start, format_tb_, TIME_BASE_Q) : AV_NOPTS_VALUE)
         , duration_(duration ? av_rescale_q(*duration, format_tb_, TIME_BASE_Q) : AV_NOPTS_VALUE)
         , loop_(loop)
@@ -804,7 +830,12 @@ struct AVProducer::Impl
 
         CASPAR_LOG(debug) << print() << " seekable: " << seekable_;
 
+        // Tag ffmpeg logs emitted on the filter executor threads with this producer.
+        video_executor_->begin_invoke([this] { set_thread_log_context(&log_ctx_); });
+        audio_executor_->begin_invoke([this] { set_thread_log_context(&log_ctx_); });
+
         thread_ = boost::thread([=] {
+            set_thread_log_context(&log_ctx_);
             try {
                 run(seek);
             } catch (boost::thread_interrupted&) {
@@ -1275,8 +1306,8 @@ struct AVProducer::Impl
 
     void reset(int64_t start_time)
     {
-        video_filter_ = Filter(vfilter_, input_, decoders_, start_time, AVMEDIA_TYPE_VIDEO, format_desc_);
-        audio_filter_ = Filter(afilter_, input_, decoders_, start_time, AVMEDIA_TYPE_AUDIO, format_desc_);
+        video_filter_ = Filter(vfilter_, input_, decoders_, start_time, AVMEDIA_TYPE_VIDEO, format_desc_, &log_ctx_);
+        audio_filter_ = Filter(afilter_, input_, decoders_, start_time, AVMEDIA_TYPE_AUDIO, format_desc_, &log_ctx_);
 
         sources_.clear();
         for (auto& p : video_filter_.sources) {

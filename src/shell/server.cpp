@@ -34,6 +34,7 @@
 #include <core/consumer/output.h>
 #include <core/diagnostics/call_context.h>
 #include <core/diagnostics/osd_graph.h>
+#include <core/diagnostics/snapshot_graph.h>
 #include <core/frame/pixel_format.h>
 #include <core/mixer/image/image_mixer.h>
 #include <core/producer/cg_proxy.h>
@@ -125,6 +126,11 @@ struct server::impl
         , shutdown_server_now_(std::move(shutdown_server_now))
     {
         caspar::core::diagnostics::osd::register_sink();
+
+        const auto& props             = env::properties();
+        const bool  snapshot_enabled  = props.get(L"configuration.diag.snapshot", true);
+        const int   snapshot_retention = props.get(L"configuration.diag.retention", 0);
+        caspar::core::diagnostics::snapshot::register_sink(snapshot_enabled, snapshot_retention);
     }
 
     void start()
@@ -176,6 +182,7 @@ struct server::impl
 
         uninitialize_modules();
         core::diagnostics::osd::shutdown();
+        core::diagnostics::snapshot::shutdown();
     }
 
     void setup_video_modes(const boost::property_tree::wptree& pt)

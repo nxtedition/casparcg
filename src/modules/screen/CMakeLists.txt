@@ -67,11 +67,16 @@ if (ENABLE_VULKAN AND NOT APPLE)
 		vulkan_consumer/util/swapchain.h
 		vulkan_consumer/util/vk_check.h
 		vulkan_consumer/util/window.h
-		vulkan_consumer/util/window_generic.cpp
 
 		screen_vk_vertex.h
 		screen_vk_fragment.h
 	)
+
+	if (MSVC)
+		list(APPEND SOURCES vulkan_consumer/util/window_sfml.cpp)
+	else ()
+		list(APPEND SOURCES vulkan_consumer/util/window_generic.cpp)
+	endif ()
 endif ()
 
 casparcg_add_module_project(screen
@@ -91,7 +96,10 @@ if (ENABLE_VULKAN)
 	target_link_libraries(screen PRIVATE Vulkan::Headers vk-bootstrap::vk-bootstrap)
 	target_compile_definitions(screen PUBLIC VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1)
 	if (NOT APPLE)
-		target_link_libraries(screen PRIVATE glfw)
+		if (NOT MSVC)
+			# Windows uses the SFML window backend; GLFW is only needed on Linux
+			target_link_libraries(screen PRIVATE glfw)
+		endif ()
 		add_dependencies(screen vulkan_screen_shaders)
 	endif ()
 endif ()

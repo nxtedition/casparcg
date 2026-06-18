@@ -61,6 +61,7 @@
 #include <algorithm>
 #include <fstream>
 #include <future>
+#include <list>
 #include <memory>
 
 #include <boost/algorithm/string.hpp>
@@ -1733,6 +1734,386 @@ std::wstring osc_unsubscribe_command(command_context& ctx)
     return L"202 OSC UNSUBSCRIBE OK\r\n";
 }
 
+// Per-connection state for an in-progress SCHEDULE BEGIN / ... / COMMIT session.
+// Bound to the client connection under the key L"schedule-session". When the connection
+// closes before COMMIT (or never reaches COMMIT), the dtor destroys the virtual channel
+// so a half-prepared render does not leak.
+struct schedule_session
+{
+    std::weak_ptr<virtual_channel_registry> registry;
+    int                                     virtual_channel_id = 0;
+    int                                     consumer_index     = 0;
+    std::shared_ptr<core::frame_consumer>   consumer;
+    std::optional<uint64_t>                 end_frame;
+    std::optional<uint64_t>                 highest_scheduled_frame; // largest frame given to SCHEDULE FRAME
+    std::atomic<bool>                       committed{false};
+
+    ~schedule_session()
+    {
+        if (committed.load())
+            return; // render owns itself (committed) or teardown was taken over (cancel/replace)
+        if (auto r = registry.lock())
+            r->destroy(virtual_channel_id);
+    }
+};
+
+static std::shared_ptr<schedule_session> get_schedule_session(const command_context& ctx)
+{
+    return std::static_pointer_cast<schedule_session>(
+        ctx.client->find_lifecycle_bound_object(L"schedule-session"));
+}
+
+// Destroy a virtual channel off the AMCP thread. ~video_channel joins the channel's tick
+// thread, which (for a running render) can be blocked up to the deterministic stall timeout
+// inside wait_for_frame; doing the join on the AMCP thread would stall the client connection.
+static void destroy_channel_async(std::shared_ptr<virtual_channel_registry> registry, int id)
+{
+    std::weak_ptr<virtual_channel_registry> registry_weak = std::move(registry);
+    std::thread([registry_weak, id]() {
+        if (auto r = registry_weak.lock())
+            r->destroy(id);
+    }).detach();
+}
+
+// Abort an in-progress (pre-commit) session: suppress the session dtor's synchronous destroy,
+// unbind it from the connection so a fresh SCHEDULE BEGIN works immediately, and tear the
+// channel down off-thread. Used by SCHEDULE CANCEL and SCHEDULE BEGIN NEW.
+static void abort_schedule_session(command_context& ctx, const std::shared_ptr<schedule_session>& session)
+{
+    session->committed.store(true); // stop the dtor (below) from also destroying the channel
+    ctx.client->remove_lifecycle_bound_object(L"schedule-session");
+    if (auto r = session->registry.lock())
+        destroy_channel_async(r, session->virtual_channel_id);
+}
+
+// Parse a non-negative frame number, throwing a clear user_error (rather than a raw
+// bad_lexical_cast) for non-numeric / negative input.
+static uint64_t parse_frame_number(const std::wstring& token, const std::wstring& cmd)
+{
+    try {
+        return boost::lexical_cast<uint64_t>(token);
+    } catch (...) {
+    }
+    CASPAR_THROW_EXCEPTION(user_error() << msg_info(cmd + L": invalid frame number: '" + token + L"'"));
+}
+
+// Rewrite the bare `$` token to `$<id>` and `$-N` to `$<id>-N` so the parser's
+// $<id>[-<layer>] handling can resolve them. Explicit `$<digits>...` is left alone.
+static void resolve_session_dollar(std::list<std::wstring>& tokens, int session_id)
+{
+    const std::wstring id_str = std::to_wstring(session_id);
+    for (auto& tok : tokens) {
+        if (tok == L"$") {
+            tok = L"$" + id_str;
+        } else if (tok.size() >= 2 && tok[0] == L'$' && tok[1] == L'-') {
+            tok = L"$" + id_str + tok.substr(1);
+        }
+    }
+}
+
+std::wstring schedule_begin_command(command_context& ctx)
+{
+    // Optional leading NEW keyword: discard any in-progress (pre-commit) session on this
+    // connection before starting a fresh one — a one-shot "clean the slate".
+    bool replace_existing = false;
+    if (!ctx.parameters.empty() && boost::iequals(ctx.parameters.front(), L"NEW")) {
+        replace_existing = true;
+        ctx.parameters.erase(ctx.parameters.begin());
+    }
+
+    if (auto existing = get_schedule_session(ctx)) {
+        if (!replace_existing)
+            CASPAR_THROW_EXCEPTION(user_error() << msg_info(
+                L"SCHEDULE BEGIN: a session is already in progress on this connection (use SCHEDULE BEGIN NEW ... "
+                L"to replace it, or SCHEDULE CANCEL)"));
+        abort_schedule_session(ctx, existing);
+    }
+
+    // Locate the ADD marker that separates channel metadata from the consumer spec.
+    auto add_it = std::find_if(
+        ctx.parameters.begin(), ctx.parameters.end(), [](const std::wstring& s) { return boost::iequals(s, L"ADD"); });
+    if (add_it == ctx.parameters.end())
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE BEGIN: missing 'ADD <consumer-spec>'"));
+    if (add_it == ctx.parameters.begin())
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE BEGIN: missing <format>"));
+
+    // SCHEDULE BEGIN <format> [color_space] [bit_depth] ADD <consumer-spec>
+    // The optional color_space (bt709|bt2020) and bit_depth (8|16) can appear in any order
+    // between <format> and ADD.
+    const std::wstring& format_str = ctx.parameters.front();
+    auto                format     = ctx.static_context->format_repository.find(format_str);
+    if (format.format == core::video_format::invalid)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE BEGIN: invalid video format: " + format_str));
+
+    core::color_space cs    = core::color_space::bt709;
+    common::bit_depth depth = common::bit_depth::bit8;
+    for (auto it = ctx.parameters.begin() + 1; it != add_it; ++it) {
+        const std::wstring tok = boost::to_lower_copy(*it);
+        if (tok == L"bt709")
+            cs = core::color_space::bt709;
+        else if (tok == L"bt2020")
+            cs = core::color_space::bt2020;
+        else if (tok == L"8")
+            depth = common::bit_depth::bit8;
+        else if (tok == L"16")
+            depth = common::bit_depth::bit16;
+        else
+            CASPAR_THROW_EXCEPTION(
+                user_error() << msg_info(L"SCHEDULE BEGIN: unexpected token (expected bt709|bt2020|8|16): " + *it));
+    }
+
+    std::vector<std::wstring> consumer_params(add_it + 1, ctx.parameters.end());
+    if (consumer_params.empty())
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE BEGIN: missing consumer-spec after ADD"));
+
+    auto registry   = ctx.static_context->virtual_channels;
+    int  virtual_id = registry->create(format, cs, depth);
+
+    auto session                = std::make_shared<schedule_session>();
+    session->registry           = std::weak_ptr<virtual_channel_registry>(registry);
+    session->virtual_channel_id = virtual_id;
+    try {
+        auto                                              channel      = registry->get(virtual_id);
+        std::vector<spl::shared_ptr<core::video_channel>> all_channels = get_channels(ctx);
+        all_channels.push_back(spl::make_shared_ptr(channel.raw_channel));
+        auto consumer = ctx.static_context->consumer_registry->create_consumer(
+            consumer_params,
+            ctx.static_context->format_repository,
+            all_channels,
+            channel.raw_channel->get_consumer_channel_info());
+        if (!consumer->supports_deterministic_sync()) {
+            CASPAR_THROW_EXCEPTION(
+                user_error() << msg_info(L"SCHEDULE BEGIN: consumer does not support deterministic sync: " +
+                                         consumer->print()));
+        }
+        session->consumer       = consumer;
+        session->consumer_index = consumer->index();
+    } catch (...) {
+        registry->destroy(virtual_id);
+        throw;
+    }
+
+    ctx.client->add_lifecycle_bound_object(L"schedule-session", session);
+
+    return L"201 SCHEDULE BEGIN OK\r\n$" + std::to_wstring(virtual_id) + L"\r\n";
+}
+
+std::wstring schedule_frame_command(command_context& ctx)
+{
+    auto session = get_schedule_session(ctx);
+    if (!session)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE FRAME: no SCHEDULE BEGIN in progress"));
+    if (session->committed.load())
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE FRAME: timeline is already committed"));
+
+    // Frame 0 is valid: frame_counter_ starts at 1 and the channel drains actions with
+    // key <= frame_counter_, so a frame-0 command is applied before the first rendered frame.
+    uint64_t frame_number = parse_frame_number(ctx.parameters.at(0), L"SCHEDULE FRAME");
+    if (session->end_frame && frame_number >= *session->end_frame)
+        CASPAR_THROW_EXCEPTION(user_error()
+                               << msg_info(L"SCHEDULE FRAME: frame " + std::to_wstring(frame_number) +
+                                           L" is at or after END frame " + std::to_wstring(*session->end_frame) +
+                                           L" and would never render"));
+
+    std::list<std::wstring> inner_tokens(ctx.parameters.begin() + 1, ctx.parameters.end());
+    if (inner_tokens.empty())
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE FRAME requires an inner command"));
+
+    resolve_session_dollar(inner_tokens, session->virtual_channel_id);
+
+    auto inner_cmd = ctx.static_context->parser->parse_command(ctx.client, inner_tokens, L"");
+    if (!inner_cmd)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE FRAME: failed to parse inner command"));
+
+    auto channel    = ctx.static_context->virtual_channels->get(session->virtual_channel_id);
+    auto channels   = ctx.channels;
+    auto inner_name = inner_cmd->name();
+
+    channel.raw_channel->schedule_at(frame_number, [inner_cmd, channels, frame_number, inner_name]() {
+        try {
+            inner_cmd->Execute(channels).get();
+            CASPAR_LOG(debug) << L"Scheduled command applied at frame " << frame_number << L": " << inner_name;
+        } catch (...) {
+            CASPAR_LOG_CURRENT_EXCEPTION();
+            CASPAR_LOG(error) << L"Scheduled command failed at frame " << frame_number << L": " << inner_name;
+        }
+    });
+
+    session->highest_scheduled_frame = std::max(session->highest_scheduled_frame.value_or(0), frame_number);
+
+    return L"202 SCHEDULE FRAME OK\r\n";
+}
+
+std::wstring schedule_commit_command(command_context& ctx); // defined below; SCHEDULE END [COMMIT] chains into it
+
+std::wstring schedule_end_command(command_context& ctx)
+{
+    auto session = get_schedule_session(ctx);
+    if (!session)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE END: no SCHEDULE BEGIN in progress"));
+    if (session->committed.load())
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE END: timeline is already committed"));
+
+    uint64_t end_frame = parse_frame_number(ctx.parameters.at(0), L"SCHEDULE END");
+    if (end_frame < 1)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE END: end frame must be >= 1"));
+    // END is exclusive (frames 1..end-1 render), so it must be strictly past the last scheduled
+    // frame or that command would never be rendered.
+    if (session->highest_scheduled_frame && end_frame <= *session->highest_scheduled_frame)
+        CASPAR_THROW_EXCEPTION(user_error()
+                               << msg_info(L"SCHEDULE END: end frame " + std::to_wstring(end_frame) +
+                                           L" must be greater than the last scheduled frame " +
+                                           std::to_wstring(*session->highest_scheduled_frame)));
+
+    // Optional trailing COMMIT: end and commit the timeline in one command.
+    bool commit_now = false;
+    if (ctx.parameters.size() > 1) {
+        if (boost::iequals(ctx.parameters.at(1), L"COMMIT"))
+            commit_now = true;
+        else
+            CASPAR_THROW_EXCEPTION(user_error() << msg_info(
+                L"SCHEDULE END: unexpected token after frame (expected COMMIT): " + ctx.parameters.at(1)));
+    }
+
+    session->end_frame = end_frame;
+
+    if (commit_now)
+        return schedule_commit_command(ctx);
+
+    return L"202 SCHEDULE END OK\r\n";
+}
+
+std::wstring schedule_commit_command(command_context& ctx)
+{
+    auto session = get_schedule_session(ctx);
+    if (!session)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE COMMIT: no SCHEDULE BEGIN in progress"));
+    if (session->committed.load())
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE COMMIT: timeline is already committed"));
+    if (!session->end_frame)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"SCHEDULE COMMIT: send SCHEDULE END <frame> before COMMIT"));
+
+    auto     registry     = ctx.static_context->virtual_channels;
+    auto     channel      = registry->get(session->virtual_channel_id);
+    auto     raw_channel  = channel.raw_channel;
+    int      virtual_id   = session->virtual_channel_id;
+    int      consumer_idx = session->consumer_index;
+    auto     consumer     = spl::make_shared_ptr(session->consumer);
+    uint64_t end_frame    = *session->end_frame;
+
+    // Schedule the teardown action at end_frame: remove the consumer (which pauses the
+    // channel via the on-consumers-changed CV) and then destroy the virtual channel from
+    // a detached thread so ~video_channel does not self-join the channel thread it runs on.
+    std::weak_ptr<virtual_channel_registry> registry_weak = registry;
+    // Capture the channel WEAKLY: this lambda is drained and destroyed on the channel's own
+    // thread, so a captured strong ref would be dropped here and could be the last one —
+    // making ~video_channel self-join its own thread (std::system_error -> terminate, the
+    // crash we hit on teardown). Take a temporary strong ref only to remove the consumer,
+    // release it, then destroy the channel from a detached thread where self-join can't occur.
+    std::weak_ptr<core::video_channel> channel_weak = raw_channel;
+    raw_channel->schedule_at(end_frame, [channel_weak, consumer_idx, virtual_id, end_frame, registry_weak]() {
+        if (auto rc = channel_weak.lock()) {
+            const bool removed = rc->output().remove(consumer_idx);
+            CASPAR_LOG(info) << L"SCHEDULE END fired at frame " << end_frame << L" on virtual channel $" << virtual_id
+                             << L"; consumer index " << consumer_idx << L" removed=" << (removed ? L"true" : L"false");
+        }
+        // No strong ref to the channel is held on this (channel) thread now, so destroying it
+        // from the detached thread below releases the last ref off-thread.
+        std::thread([virtual_id, registry_weak]() {
+            if (auto r = registry_weak.lock())
+                r->destroy(virtual_id);
+        }).detach();
+    });
+
+    // Attaching the consumer is the trigger that lifts the deterministic pause and starts
+    // ticking from frame 1. If it throws synchronously (e.g. a sanity check), tear down
+    // the half-built channel and clear the session so the user can immediately retry.
+    try {
+        raw_channel->output().add(consumer_idx, consumer);
+    } catch (...) {
+        registry->destroy(virtual_id);
+        ctx.client->remove_lifecycle_bound_object(L"schedule-session");
+        throw;
+    }
+
+    // Render is launched and owns itself from here on. Mark committed so the connection-
+    // close path leaves the running render alone, then unbind the session from the
+    // connection so a fresh SCHEDULE BEGIN on the same connection works immediately.
+    session->committed.store(true);
+    ctx.client->remove_lifecycle_bound_object(L"schedule-session");
+
+    return L"202 SCHEDULE COMMIT OK\r\n";
+}
+
+// SCHEDULE CANCEL [$<id>]
+//   no argument  → abort this connection's in-progress (pre-commit) session: a clean slate so a
+//                  fresh SCHEDULE BEGIN works immediately.
+//   $<id> / <id> → abort any virtual channel by id, including a committed/running render, so a
+//                  hung or failed render can be cleaned up without restarting the server.
+// The teardown always runs off the AMCP thread (a running render may be blocked in wait_for_frame).
+std::wstring schedule_cancel_command(command_context& ctx)
+{
+    auto session  = get_schedule_session(ctx);
+    auto registry = ctx.static_context->virtual_channels;
+
+    std::optional<int> target_id;
+    if (!ctx.parameters.empty()) {
+        std::wstring tok = ctx.parameters.at(0);
+        if (!tok.empty() && tok[0] == L'$')
+            tok = tok.substr(1);
+        try {
+            target_id = boost::lexical_cast<int>(tok);
+        } catch (...) {
+            CASPAR_THROW_EXCEPTION(user_error()
+                                   << msg_info(L"SCHEDULE CANCEL: invalid channel id: '" + ctx.parameters.at(0) + L"'"));
+        }
+    }
+
+    // No id: cancel this connection's in-progress session.
+    if (!target_id) {
+        if (!session)
+            CASPAR_THROW_EXCEPTION(user_error() << msg_info(
+                L"SCHEDULE CANCEL: no SCHEDULE BEGIN in progress on this connection (pass $<id> to cancel a "
+                L"running render)"));
+        abort_schedule_session(ctx, session);
+        return L"202 SCHEDULE CANCEL OK\r\n";
+    }
+
+    // Explicit id that happens to be this connection's own (pre-commit) session: abort + unbind.
+    if (session && *target_id == session->virtual_channel_id) {
+        abort_schedule_session(ctx, session);
+        return L"202 SCHEDULE CANCEL OK\r\n";
+    }
+
+    // Otherwise a committed/running render owned by the registry.
+    if (!registry->try_get(*target_id).raw_channel)
+        CASPAR_THROW_EXCEPTION(user_error()
+                               << msg_info(L"SCHEDULE CANCEL: no virtual channel $" + std::to_wstring(*target_id)));
+
+    destroy_channel_async(registry, *target_id);
+    return L"202 SCHEDULE CANCEL OK\r\n";
+}
+
+// SCHEDULE LIST — one line per live virtual channel:
+//   $<id> <format> <COMMITTED|UNCOMMITTED> frame <current-frame>
+// A channel is COMMITTED once SCHEDULE COMMIT attached its consumer (the consumer is created at
+// BEGIN but only added at COMMIT), so a consumer being present is the committed signal. Finished
+// renders are gone (the channel is destroyed at its end frame), so they do not appear.
+std::wstring schedule_list_command(command_context& ctx)
+{
+    auto channels = ctx.static_context->virtual_channels->list();
+
+    std::wstringstream out;
+    out << L"200 SCHEDULE LIST OK\r\n";
+    for (auto& [id, ch] : channels) {
+        const bool committed = ch->output().consumer_count() > 0;
+        out << L"$" << id << L" " << ch->stage()->video_format_desc().name << L" "
+            << (committed ? L"COMMITTED" : L"UNCOMMITTED") << L" frame " << ch->frame_number() << L"\r\n";
+    }
+    out << L"\r\n";
+    return out.str();
+}
+
 void register_commands(std::shared_ptr<amcp_command_repository_wrapper>& repo)
 {
     repo->register_channel_command(L"Basic Commands", L"LOADBG", loadbg_command, 1);
@@ -1813,5 +2194,12 @@ void register_commands(std::shared_ptr<amcp_command_repository_wrapper>& repo)
 
     repo->register_command(L"Query Commands", L"OSC SUBSCRIBE", osc_subscribe_command, 1);
     repo->register_command(L"Query Commands", L"OSC UNSUBSCRIBE", osc_unsubscribe_command, 1);
+
+    repo->register_command(L"Schedule Commands", L"SCHEDULE BEGIN", schedule_begin_command, 3);
+    repo->register_command(L"Schedule Commands", L"SCHEDULE FRAME", schedule_frame_command, 2);
+    repo->register_command(L"Schedule Commands", L"SCHEDULE END", schedule_end_command, 1);
+    repo->register_command(L"Schedule Commands", L"SCHEDULE COMMIT", schedule_commit_command, 0);
+    repo->register_command(L"Schedule Commands", L"SCHEDULE CANCEL", schedule_cancel_command, 0);
+    repo->register_command(L"Schedule Commands", L"SCHEDULE LIST", schedule_list_command, 0);
 }
 }}} // namespace caspar::protocol::amcp

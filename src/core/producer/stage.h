@@ -60,6 +60,10 @@ struct stage_frames
     int                     nb_samples;
     std::vector<draw_frame> frames;
     std::vector<draw_frame> frames2;
+    // Deterministic mode only: true if a sync-capable foreground producer failed to deliver a
+    // frame within the stall timeout this tick (the layer fell back to a still frame). The
+    // channel uses this to detect a hung render and abort it.
+    bool stalled = false;
 };
 
 /**
@@ -114,7 +118,8 @@ class stage final : public stage_base
   public:
     explicit stage(int                                         channel_index,
                    spl::shared_ptr<caspar::diagnostics::graph> graph,
-                   const core::video_format_desc&              format_desc);
+                   const core::video_format_desc&              format_desc,
+                   bool                                        deterministic = false);
 
     const stage_frames operator()(uint64_t                                     frame_number,
                                   std::vector<int>&                            fetch_background,

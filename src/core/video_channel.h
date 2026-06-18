@@ -74,6 +74,7 @@ class video_channel final
     explicit video_channel(int                                       index,
                            const video_format_desc&                  format_desc,
                            color_space                               default_color_space,
+                           bool                                      deterministic,
                            std::unique_ptr<image_mixer>              image_mixer,
                            std::function<void(core::monitor::state)> on_tick);
     ~video_channel();
@@ -91,9 +92,20 @@ class video_channel final
 
     int index() const;
 
+    // Number of frames produced so far (deterministic renders use this as the render progress).
+    uint64_t frame_number() const;
+
     [[nodiscard]] channel_info get_consumer_channel_info() const;
 
     std::shared_ptr<core::route> route(int index = -1, route_mode mode = route_mode::foreground);
+
+    void schedule_at(uint64_t frame_number, std::function<void()> action);
+
+    // Deterministic mode only: invoked from the channel thread when the render has stalled
+    // (a sync producer failed to deliver) for too many consecutive frames, signalling that the
+    // owner should tear the channel down. Must destroy the channel off-thread (never from the
+    // callback itself) to avoid self-joining the channel thread.
+    void set_on_deterministic_stall(std::function<void()> callback);
 
   private:
     struct impl;

@@ -223,7 +223,13 @@ struct Stream
             int nb_pix_fmts = 0;
             for (const auto* p = codec->pix_fmts; *p != AV_PIX_FMT_NONE; ++p, ++nb_pix_fmts)
                 ;
-            FF(av_opt_set_array(sink, "pixel_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, nb_pix_fmts, AV_OPT_TYPE_PIXEL_FMT, codec->pix_fmts));
+            FF(av_opt_set_array(sink,
+                                "pixel_formats",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                nb_pix_fmts,
+                                AV_OPT_TYPE_PIXEL_FMT,
+                                codec->pix_fmts));
 #else
             FF(av_opt_set_int_list(sink, "pix_fmts", codec->pix_fmts, -1, AV_OPT_SEARCH_CHILDREN));
 #endif
@@ -243,12 +249,24 @@ struct Stream
             int nb_sample_fmts = 0;
             for (const auto* p = codec->sample_fmts; *p != AV_SAMPLE_FMT_NONE; ++p, ++nb_sample_fmts)
                 ;
-            FF(av_opt_set_array(sink, "sample_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, nb_sample_fmts, AV_OPT_TYPE_SAMPLE_FMT, codec->sample_fmts));
+            FF(av_opt_set_array(sink,
+                                "sample_formats",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                nb_sample_fmts,
+                                AV_OPT_TYPE_SAMPLE_FMT,
+                                codec->sample_fmts));
 
             int nb_sample_rates = 0;
             for (const auto* p = codec->supported_samplerates; p && *p != 0; ++p, ++nb_sample_rates)
                 ;
-            FF(av_opt_set_array(sink, "samplerates", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, nb_sample_rates, AV_OPT_TYPE_INT, codec->supported_samplerates));
+            FF(av_opt_set_array(sink,
+                                "samplerates",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                nb_sample_rates,
+                                AV_OPT_TYPE_INT,
+                                codec->supported_samplerates));
 #else
             FF(av_opt_set_int_list(sink, "sample_fmts", codec->sample_fmts, -1, AV_OPT_SEARCH_CHILDREN));
             FF(av_opt_set_int_list(sink, "sample_rates", codec->supported_samplerates, 0, AV_OPT_SEARCH_CHILDREN));
@@ -422,14 +440,18 @@ struct ffmpeg_consumer : public core::frame_consumer
     std::future<void> offline_timeout_;
 
     common::bit_depth depth_;
+    bool              deterministic_ = false;
 
   public:
     ffmpeg_consumer(std::string path, std::string args, bool realtime, common::bit_depth depth)
-        : channel_info_([&] {
-            boost::crc_16_type result;
-            result.process_bytes(path.data(), path.length());
-            return result.checksum();
-        }(), depth, caspar::core::color_space::bt709)
+        : channel_info_(
+              [&] {
+                  boost::crc_16_type result;
+                  result.process_bytes(path.data(), path.length());
+                  return result.checksum();
+              }(),
+              depth,
+              caspar::core::color_space::bt709)
         , realtime_(realtime)
         , path_(std::move(path))
         , args_(std::move(args))
@@ -465,8 +487,9 @@ struct ffmpeg_consumer : public core::frame_consumer
         }
 
         format_desc_   = format_desc;
-        channel_info_ = channel_info;
+        channel_info_  = channel_info;
         port_index_    = port_index;
+        deterministic_ = channel_info.deterministic;
 
         graph_->set_text(print());
 
@@ -687,7 +710,11 @@ struct ffmpeg_consumer : public core::frame_consumer
             }
         }
 
-        if (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
+        if (deterministic_) {
+            // Block until the writer thread accepts the frame. This provides back-pressure
+            // to the channel loop so we never drop frames in deterministic render mode.
+            frame_buffer_.push({frame, video_pts, audio_pts});
+        } else if (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
             graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
         }
 
@@ -704,6 +731,8 @@ struct ffmpeg_consumer : public core::frame_consumer
     std::wstring name() const override { return L"ffmpeg"; }
 
     bool has_synchronization_clock() const override { return false; }
+
+    bool supports_deterministic_sync() const override { return true; }
 
     int index() const override { return 100000 + channel_info_.index; }
 

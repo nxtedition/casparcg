@@ -14,8 +14,8 @@
 
 #include <tbb/concurrent_queue.h>
 
-#include <boost/thread.hpp>
 #include <boost/optional.hpp>
+#include <boost/thread.hpp>
 
 struct AVPacket;
 struct AVFormatContext;
@@ -25,7 +25,10 @@ namespace caspar { namespace ffmpeg {
 class Input
 {
   public:
-    Input(const std::string& filename, std::shared_ptr<diagnostics::graph> graph, std::optional<bool> seekable);
+    Input(const std::string&                  filename,
+          std::shared_ptr<diagnostics::graph> graph,
+          std::optional<bool>                 seekable,
+          bool                                cache);
     ~Input();
 
     static int interrupt_cb(void* ctx);
@@ -45,6 +48,7 @@ class Input
     void internal_reset();
 
     std::optional<bool> seekable_;
+    bool                cache_;
 
     std::string                         filename_;
     std::shared_ptr<diagnostics::graph> graph_;

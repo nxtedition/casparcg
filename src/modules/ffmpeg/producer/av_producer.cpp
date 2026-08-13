@@ -766,13 +766,17 @@ struct AVProducer::Impl
          std::optional<int64_t>               duration,
          bool                                 loop,
          int                                  seekable,
-         core::frame_geometry::scale_mode     scale_mode)
+         core::frame_geometry::scale_mode     scale_mode,
+         bool                                 cache)
         : frame_factory_(frame_factory)
         , format_desc_(format_desc)
         , format_tb_({format_desc.duration, format_desc.time_scale * format_desc.field_count})
         , name_(name)
         , path_(path)
-        , input_(path, graph_, seekable >= 0 && seekable < 2 ? std::optional<bool>(false) : std::optional<bool>())
+        , input_(path,
+                 graph_,
+                 seekable >= 0 && seekable < 2 ? std::optional<bool>(false) : std::optional<bool>(),
+                 cache)
         , start_(start ? av_rescale_q(*start, format_tb_, TIME_BASE_Q) : AV_NOPTS_VALUE)
         , duration_(duration ? av_rescale_q(*duration, format_tb_, TIME_BASE_Q) : AV_NOPTS_VALUE)
         , loop_(loop)
@@ -1314,7 +1318,8 @@ AVProducer::AVProducer(std::shared_ptr<core::frame_factory> frame_factory,
                        std::optional<int64_t>               duration,
                        std::optional<bool>                  loop,
                        int                                  seekable,
-                       core::frame_geometry::scale_mode     scale_mode)
+                       core::frame_geometry::scale_mode     scale_mode,
+                       bool                                 cache)
     : impl_(new Impl(std::move(frame_factory),
                      std::move(format_desc),
                      std::move(name),
@@ -1326,7 +1331,8 @@ AVProducer::AVProducer(std::shared_ptr<core::frame_factory> frame_factory,
                      std::move(duration),
                      std::move(loop.value_or(false)),
                      seekable,
-                     scale_mode))
+                     scale_mode,
+                     cache))
 {
 }
 

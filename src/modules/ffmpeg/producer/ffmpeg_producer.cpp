@@ -304,7 +304,7 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
         return core::frame_producer::empty();
     } else {
         // only consider auto cache if the url includes some protocol, ie. not just a local path
-        bool auto_cache = env::properties().get<bool>(L"configuration.ffmpeg.producer.auto-cache", false);
+        bool auto_cache = env::properties().get<bool>(L"configuration.ffmpeg.producer.cache.auto", false);
 
         cache = cache || auto_cache;
     }

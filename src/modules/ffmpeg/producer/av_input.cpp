@@ -159,11 +159,11 @@ void Input::internal_reset()
 
     if (cache_) {
         auto cache_dir =
-            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache-path", L"./ffmpeg-cache"));
+            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.path", L"./ffmpeg-cache"));
         av_dict_set(&options, "cache_dir", cache_dir.c_str(), 0);
 
         auto cache_timeout =
-            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache-timeout", L"0"));
+            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.timeout", L"10000"));
         av_dict_set(&options, "cache_timeout", cache_timeout.c_str(), 0);
 
         filename_ = "shared:" + filename_;

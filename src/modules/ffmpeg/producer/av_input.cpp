@@ -162,9 +162,23 @@ void Input::internal_reset()
             u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.path", L"./ffmpeg-cache"));
         av_dict_set(&options, "cache_dir", cache_dir.c_str(), 0);
 
+        auto cache_size_max =
+            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.max-size", L""));
+        if (!cache_size_max.empty()) {
+            av_dict_set(&options, "cache_size_max", cache_size_max.c_str(), 0);
+        }
+
+        auto ignore_errors = env::properties().get<bool>(L"configuration.ffmpeg.producer.cache.ignore-errors", true);
+        av_dict_set(&options, "ignore_errors", ignore_errors ? "1" : "0", 0);
+
+        auto retry_corrupt = env::properties().get<bool>(L"configuration.ffmpeg.producer.cache.retry-corrupt", true);
+        av_dict_set(&options, "retry_corrupt", retry_corrupt ? "1" : "0", 0);
+
         auto cache_timeout =
-            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.timeout", L"10000"));
-        av_dict_set(&options, "cache_timeout", cache_timeout.c_str(), 0);
+            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.timeout", L""));
+        if (!cache_timeout.empty()) {
+            av_dict_set(&options, "cache_timeout", cache_timeout.c_str(), 0);
+        }
 
         filename_ = "shared:" + filename_;
     }

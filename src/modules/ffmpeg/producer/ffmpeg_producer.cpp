@@ -40,6 +40,7 @@
 #include <boost/filesystem/fstream.hpp>
 #include <boost/logic/tribool.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <boost/regex.hpp>
 #include <common/filesystem.h>
 
 #include <chrono>
@@ -304,9 +305,14 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
         return core::frame_producer::empty();
     } else {
         // only consider auto cache if the url includes some protocol, ie. not just a local path
-        bool auto_cache = env::properties().get<bool>(L"configuration.ffmpeg.producer.cache.auto", false);
+        auto auto_cache_pattern = env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.auto", L"");
+        bool auto_cache = !auto_cache_pattern.empty() && boost::regex_search(path, boost::wregex(auto_cache_pattern));
 
         cache = cache || auto_cache;
+
+        if (auto_cache) {
+            CASPAR_LOG(debug) << L"ffmpeg[" + path + L"]: auto cache enabled";
+        }
     }
 
     if (path.empty()) {

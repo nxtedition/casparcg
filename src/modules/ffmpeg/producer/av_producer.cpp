@@ -42,7 +42,6 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 #include <libavutil/samplefmt.h>
-#include <libavutil/channel_layout.h>
 }
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -601,7 +600,13 @@ struct Filter
                                               AV_PIX_FMT_GBRAP16,
                                               AV_PIX_FMT_NONE};
 #if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100) && LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 36, 100)
-            FF(av_opt_set_array(sink, "pixel_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(pix_fmts) - 1, AV_OPT_TYPE_PIXEL_FMT, pix_fmts));
+            FF(av_opt_set_array(sink,
+                                "pixel_formats",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                FF_ARRAY_ELEMS(pix_fmts) - 1,
+                                AV_OPT_TYPE_PIXEL_FMT,
+                                pix_fmts));
 #else
             FF(av_opt_set_int_list(sink, "pix_fmts", pix_fmts, -1, AV_OPT_SEARCH_CHILDREN));
 #endif
@@ -615,12 +620,24 @@ struct Filter
 #pragma warning(push)
 #pragma warning(disable : 4245)
 #endif
-            const AVSampleFormat sample_fmts[] = {AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_NONE};
-            const int sample_rates[] = {format_desc.audio_sample_rate, -1};
+            const AVSampleFormat sample_fmts[]  = {AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_NONE};
+            const int            sample_rates[] = {format_desc.audio_sample_rate, -1};
 
 #if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100) && LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 36, 100)
-            FF(av_opt_set_array(sink, "sample_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(sample_fmts) - 1, AV_OPT_TYPE_SAMPLE_FMT, sample_fmts));
-            FF(av_opt_set_array(sink, "samplerates", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(sample_rates) - 1, AV_OPT_TYPE_INT, sample_rates));
+            FF(av_opt_set_array(sink,
+                                "sample_formats",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                FF_ARRAY_ELEMS(sample_fmts) - 1,
+                                AV_OPT_TYPE_SAMPLE_FMT,
+                                sample_fmts));
+            FF(av_opt_set_array(sink,
+                                "samplerates",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                FF_ARRAY_ELEMS(sample_rates) - 1,
+                                AV_OPT_TYPE_INT,
+                                sample_rates));
 #else
             FF(av_opt_set_int(sink, "all_channel_counts", 1, AV_OPT_SEARCH_CHILDREN));
             FF(av_opt_set_int_list(sink, "sample_fmts", sample_fmts, -1, AV_OPT_SEARCH_CHILDREN));
@@ -749,13 +766,17 @@ struct AVProducer::Impl
          std::optional<int64_t>               duration,
          bool                                 loop,
          int                                  seekable,
-         core::frame_geometry::scale_mode     scale_mode)
+         core::frame_geometry::scale_mode     scale_mode,
+         bool                                 cache)
         : frame_factory_(frame_factory)
         , format_desc_(format_desc)
         , format_tb_({format_desc.duration, format_desc.time_scale * format_desc.field_count})
         , name_(name)
         , path_(path)
-        , input_(path, graph_, seekable >= 0 && seekable < 2 ? std::optional<bool>(false) : std::optional<bool>())
+        , input_(path,
+                 graph_,
+                 seekable >= 0 && seekable < 2 ? std::optional<bool>(false) : std::optional<bool>(),
+                 cache)
         , start_(start ? av_rescale_q(*start, format_tb_, TIME_BASE_Q) : AV_NOPTS_VALUE)
         , duration_(duration ? av_rescale_q(*duration, format_tb_, TIME_BASE_Q) : AV_NOPTS_VALUE)
         , loop_(loop)
@@ -863,9 +884,9 @@ struct AVProducer::Impl
         timer frame_timer;
         timer decode_timer;
 
-        int warning_debounce = 0;
-        uint8_t warning_count    = 0;
-        const uint8_t max_warnings = 5;
+        int           warning_debounce = 0;
+        uint8_t       warning_count    = 0;
+        const uint8_t max_warnings     = 5;
 
         while (!thread_.interruption_requested()) {
             {
@@ -932,7 +953,7 @@ struct AVProducer::Impl
                             CASPAR_LOG(warning) << print() << " Waiting for frame...";
                         }
                         warning_count++;
-                        if(warning_count == max_warnings) {
+                        if (warning_count == max_warnings) {
                             CASPAR_LOG(warning) << print() << " Too many warnings. Silencing.";
                         }
                     }
@@ -1297,7 +1318,8 @@ AVProducer::AVProducer(std::shared_ptr<core::frame_factory> frame_factory,
                        std::optional<int64_t>               duration,
                        std::optional<bool>                  loop,
                        int                                  seekable,
-                       core::frame_geometry::scale_mode     scale_mode)
+                       core::frame_geometry::scale_mode     scale_mode,
+                       bool                                 cache)
     : impl_(new Impl(std::move(frame_factory),
                      std::move(format_desc),
                      std::move(name),
@@ -1309,7 +1331,8 @@ AVProducer::AVProducer(std::shared_ptr<core::frame_factory> frame_factory,
                      std::move(duration),
                      std::move(loop.value_or(false)),
                      seekable,
-                     scale_mode))
+                     scale_mode,
+                     cache))
 {
 }
 

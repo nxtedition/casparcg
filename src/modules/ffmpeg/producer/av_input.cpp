@@ -3,6 +3,7 @@
 #include "../util/av_assert.h"
 #include "../util/av_util.h"
 
+#include <common/env.h>
 #include <common/except.h>
 #include <common/os/thread.h>
 #include <common/param.h>
@@ -10,6 +11,7 @@
 
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/property_tree/ptree.hpp>
 
 #include <set>
 
@@ -27,10 +29,14 @@ extern "C" {
 
 namespace caspar { namespace ffmpeg {
 
-Input::Input(const std::string& filename, std::shared_ptr<diagnostics::graph> graph, std::optional<bool> seekable)
+Input::Input(const std::string&                  filename,
+             std::shared_ptr<diagnostics::graph> graph,
+             std::optional<bool>                 seekable,
+             bool                                cache)
     : filename_(filename)
     , graph_(graph)
     , seekable_(seekable)
+    , cache_(cache)
 {
     graph_->set_color("seek", diagnostics::color(1.0f, 0.5f, 0.0f));
     graph_->set_color("input", diagnostics::color(0.7f, 0.4f, 0.4f));
@@ -149,6 +155,32 @@ void Input::internal_reset()
     if (seekable_) {
         CASPAR_LOG(debug) << "av_input[" + filename_ + "] Disabled seeking";
         FF(av_dict_set(&options, "seekable", *seekable_ ? "1" : "0", 0));
+    }
+
+    if (cache_) {
+        auto cache_dir =
+            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.path", L"./ffmpeg-cache"));
+        av_dict_set(&options, "cache_dir", cache_dir.c_str(), 0);
+
+        auto cache_size_max =
+            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.max-size", L""));
+        if (!cache_size_max.empty()) {
+            av_dict_set(&options, "cache_size_max", cache_size_max.c_str(), 0);
+        }
+
+        auto ignore_errors = env::properties().get<bool>(L"configuration.ffmpeg.producer.cache.ignore-errors", true);
+        av_dict_set(&options, "ignore_errors", ignore_errors ? "1" : "0", 0);
+
+        auto retry_corrupt = env::properties().get<bool>(L"configuration.ffmpeg.producer.cache.retry-corrupt", true);
+        av_dict_set(&options, "retry_corrupt", retry_corrupt ? "1" : "0", 0);
+
+        auto cache_timeout =
+            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.timeout", L""));
+        if (!cache_timeout.empty()) {
+            av_dict_set(&options, "cache_timeout", cache_timeout.c_str(), 0);
+        }
+
+        filename_ = "shared:" + filename_;
     }
 
     if (input_format == nullptr) {

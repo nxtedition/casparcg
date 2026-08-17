@@ -39,6 +39,8 @@
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/logic/tribool.hpp>
+#include <boost/property_tree/ptree.hpp>
+#include <boost/regex.hpp>
 #include <common/filesystem.h>
 
 #include <chrono>
@@ -77,7 +79,8 @@ struct ffmpeg_producer : public core::frame_producer
                              std::optional<int64_t>               duration,
                              std::optional<bool>                  loop,
                              int                                  seekable,
-                             core::frame_geometry::scale_mode     scale_mode)
+                             core::frame_geometry::scale_mode     scale_mode,
+                             bool                                 cache)
         : filename_(filename)
         , frame_factory_(frame_factory)
         , format_desc_(format_desc)
@@ -92,7 +95,8 @@ struct ffmpeg_producer : public core::frame_producer
                                    duration,
                                    loop,
                                    seekable,
-                                   scale_mode))
+                                   scale_mode,
+                                   cache))
     {
     }
 
@@ -280,8 +284,15 @@ bool is_valid_file(const boost::filesystem::path& filename)
 spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer_dependencies& dependencies,
                                                       const std::vector<std::wstring>&         params)
 {
-    auto name = params.at(0);
-    auto path = name;
+    auto name  = params.at(0);
+    auto path  = name;
+    bool cache = false;
+
+    auto shared_prefix = std::wstring(L"shared:");
+    if (boost::starts_with(path, shared_prefix)) {
+        path  = path.substr(shared_prefix.size());
+        cache = true;
+    }
 
     if (!boost::contains(path, L"://")) {
         auto fullMediaPath = find_file_within_dir_or_absolute(env::media_folder(), path, is_valid_file);
@@ -292,6 +303,16 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
         }
     } else if (!has_valid_extension(path) || has_invalid_protocol(path)) {
         return core::frame_producer::empty();
+    } else {
+        // only consider auto cache if the url includes some protocol, ie. not just a local path
+        auto auto_cache_pattern = env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.auto", L"");
+        bool auto_cache = !auto_cache_pattern.empty() && boost::regex_search(path, boost::wregex(auto_cache_pattern));
+
+        cache = cache || auto_cache;
+
+        if (auto_cache) {
+            CASPAR_LOG(debug) << L"ffmpeg[" + path + L"]: auto cache enabled";
+        }
     }
 
     if (path.empty()) {
@@ -351,7 +372,8 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
                                                  duration,
                                                  loop,
                                                  seekable,
-                                                 scale_mode);
+                                                 scale_mode,
+                                                 cache);
     } catch (...) {
         CASPAR_LOG_CURRENT_EXCEPTION();
     }

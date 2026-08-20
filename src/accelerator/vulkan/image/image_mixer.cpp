@@ -479,6 +479,16 @@ struct image_mixer::impl
         return vulkan_->create_texture(width, height, stride, depth);
     }
 
+    bool supports_dmabuf_import() const { return vulkan_->supports_dmabuf_import(); }
+
+    std::shared_ptr<imported_image> import_dmabuf(const dmabuf_image& img) { return vulkan_->import_dmabuf(img); }
+
+    bool          supports_sync_fd_semaphores() const { return vulkan_->supports_sync_fd_semaphores(); }
+    vk::Semaphore import_sync_fd_semaphore(int sync_fd) { return vulkan_->import_sync_fd_semaphore(sync_fd); }
+    vk::Semaphore create_exportable_semaphore() { return vulkan_->create_exportable_semaphore(); }
+    int           export_sync_fd(vk::Semaphore semaphore) { return vulkan_->export_sync_fd(semaphore); }
+    void          destroy_semaphore(vk::Semaphore semaphore) { vulkan_->destroy_semaphore(semaphore); }
+
     std::shared_ptr<command_context> create_command_context(queue_type queue)
     {
         auto q = vulkan_->acquire_queue(queue);
@@ -595,6 +605,16 @@ image_mixer::create_producer_texture(int width, int height, int stride, common::
 {
     return impl_->create_producer_texture(width, height, stride, depth);
 }
+bool image_mixer::supports_dmabuf_import() const { return impl_->supports_dmabuf_import(); }
+std::shared_ptr<imported_image> image_mixer::import_dmabuf(const dmabuf_image& img)
+{
+    return impl_->import_dmabuf(img);
+}
+bool image_mixer::supports_sync_fd_semaphores() const { return impl_->supports_sync_fd_semaphores(); }
+vk::Semaphore image_mixer::import_sync_fd_semaphore(int sync_fd) { return impl_->import_sync_fd_semaphore(sync_fd); }
+vk::Semaphore image_mixer::create_exportable_semaphore() { return impl_->create_exportable_semaphore(); }
+int           image_mixer::export_sync_fd(vk::Semaphore semaphore) { return impl_->export_sync_fd(semaphore); }
+void          image_mixer::destroy_semaphore(vk::Semaphore semaphore) { impl_->destroy_semaphore(semaphore); }
 std::shared_ptr<command_context> image_mixer::create_command_context(queue_type queue)
 {
     return impl_->create_command_context(queue);

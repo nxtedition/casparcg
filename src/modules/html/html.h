@@ -27,10 +27,20 @@
 
 #include <core/module_dependencies.h>
 
+#ifdef ENABLE_VULKAN
+namespace vkb {
+struct PhysicalDevice;
+} // namespace vkb
+#endif
+
 namespace caspar::html {
 
 bool intercept_command_line(int argc, char** argv);
 void init(const core::module_dependencies& dependencies);
 void uninit();
+
+#ifdef ENABLE_VULKAN
+void register_vulkan_requirements(vkb::PhysicalDevice& pd);
+#endif
 
 } // namespace caspar::html

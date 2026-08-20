@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include "dmabuf.h"        // dmabuf_image, imported_image
 #include "queue_manager.h" // queue_type
 #include "texture.h"       // texture, texture_usage, handoff_token (via handoff.h)
 
@@ -77,6 +78,39 @@ class gpu_frame_factory
     // texture_usage::storage for compute imageStore writes.
     virtual std::shared_ptr<texture>
     create_producer_texture(int width, int height, int stride, common::bit_depth depth) = 0;
+
+    // True when this device can import externally allocated DMA-BUFs (see
+    // device::supports_dmabuf_import). A producer that has a zero-copy hardware path AND a
+    // CPU fallback asks this once, up front, to decide which one to configure.
+    virtual bool supports_dmabuf_import() const = 0;
+
+    // Import an externally allocated DMA-BUF as a transfer-source image. Null on any
+    // unsupported case — always a signal to take the CPU path, never fatal. The imported
+    // image is a copy SOURCE only: its memory belongs to the foreign exporter, which may
+    // recycle it as soon as it stops hearing from us, so copy out of it (into a
+    // create_producer_texture() texture) inside the window the exporter guarantees.
+    virtual std::shared_ptr<imported_image> import_dmabuf(const dmabuf_image& img) = 0;
+
+    // True when a sync_file fd can be moved in and out of a VkSemaphore (see
+    // device::supports_sync_fd_semaphores). A producer importing a DMA-BUF asks this to
+    // decide between fencing the exchange on the GPU and blocking the CPU on every frame.
+    virtual bool supports_sync_fd_semaphores() const = 0;
+
+    // Wrap a sync_file fd in a binary semaphore for one submit to wait on. Takes ownership of
+    // `sync_fd` on success. Null when unsupported or refused.
+    virtual vk::Semaphore import_sync_fd_semaphore(int sync_fd) = 0;
+
+    // A binary semaphore whose signal can later be exported as a sync_file. Null when
+    // unsupported.
+    virtual vk::Semaphore create_exportable_semaphore() = 0;
+
+    // Export a semaphore's pending signal as a sync_file fd the caller owns and must close.
+    // Only meaningful after the submit that signals it has been queued. -1 on failure.
+    virtual int export_sync_fd(vk::Semaphore semaphore) = 0;
+
+    // Destroy a semaphore from the three calls above. The caller must be certain the submit
+    // that used it has completed.
+    virtual void destroy_semaphore(vk::Semaphore semaphore) = 0;
 
     // Mint a fresh command_context on the dedicated queue for `queue` (the render queue's alias when
     // the hardware has no dedicated family; null for an unsupported video queue). The producer holds

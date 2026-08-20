@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include "dmabuf.h"
 #include "queue_manager.h"
 
 #include <accelerator/accelerator.h>
@@ -68,6 +69,43 @@ class device final
     std::shared_ptr<class texture> create_texture(int width, int height, int stride, common::bit_depth depth);
     std::shared_ptr<class buffer>  create_buffer(int size, bool write);
     array<uint8_t>                 create_array(int size);
+
+    // True when the device came up with the whole DMA-BUF import extension set
+    // (external_memory_fd + external_memory_dma_buf + image_drm_format_modifier +
+    // queue_family_foreign). A module that wants to import must ask for those in its
+    // vulkan_requirements_fn — this only reports what actually got enabled, because a
+    // module cannot know whether some other GPU won the device selection.
+    bool supports_dmabuf_import() const;
+
+    // Import an externally allocated DMA-BUF as a transfer-source VkImage. Returns null
+    // (never throws) when the device lacks the extensions, when the exporter did not name
+    // a DRM format modifier, or when the driver rejects that format/modifier/plane layout
+    // — every one of those is a "fall back to the CPU path" answer, not a fatal error.
+    // The caller keeps ownership of the fds in `img`; anything kept is dup'd.
+    std::shared_ptr<imported_image> import_dmabuf(const dmabuf_image& img);
+
+    // True when the device can move a sync_file fd in and out of a VkSemaphore
+    // (VK_KHR_external_semaphore_fd, with the SYNC_FD handle type reported importable AND
+    // exportable by the driver). Together with the dma-buf sync_file ioctls this replaces
+    // blocking the CPU on an imported frame — see accelerator/vulkan/util/dmabuf.h.
+    bool supports_sync_fd_semaphores() const;
+
+    // Wrap a sync_file fd in a binary semaphore a submit can wait on. Takes OWNERSHIP of
+    // `sync_fd` on success (Vulkan closes it); the caller keeps it on failure. The import is
+    // temporary: after the wait consumes it the semaphore is unsignalled again and can be
+    // reused for the next frame. Returns null (never throws) if unsupported or refused.
+    vk::Semaphore import_sync_fd_semaphore(int sync_fd);
+
+    // A binary semaphore that a later vkGetSemaphoreFdKHR may export as a sync_file. Must be
+    // created up front with the export handle type — an ordinary semaphore cannot be exported.
+    vk::Semaphore create_exportable_semaphore();
+
+    // Turn a semaphore's PENDING signal operation into a sync_file fd the caller owns and
+    // must close. Legal — and only useful — after the submit that signals it has been
+    // queued; the fd signals when that work completes. -1 on failure.
+    int export_sync_fd(vk::Semaphore semaphore);
+
+    void destroy_semaphore(vk::Semaphore semaphore);
 
     std::wstring version() const;
 

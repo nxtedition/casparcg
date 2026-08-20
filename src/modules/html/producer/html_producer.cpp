@@ -57,7 +57,10 @@
 #include <include/cef_render_handler.h>
 #pragma warning(pop)
 
+#include <algorithm>
+#include <cstdlib>
 #include <optional>
+#include <atomic>
 #include <queue>
 #include <utility>
 
@@ -65,6 +68,8 @@
 
 #include "../html.h"
 #include "../util.h"
+
+#include "accelerated_paint_importer.h"
 
 namespace caspar { namespace html {
 
@@ -105,6 +110,7 @@ struct presentation_frame
     ~presentation_frame() {}
 };
 
+
 class html_client
     : public CefClient
     , public CefRenderHandler
@@ -136,6 +142,10 @@ class html_client
     std::atomic<bool>                    closing_;
 
     std::unique_ptr<ffmpeg::AudioResampler> audioResampler_;
+
+    // Null unless the config asks for it AND the device can do it. Non-null means the browser was created with
+    // shared_texture_enabled, so OnAcceleratedPaint runs instead of OnPaint.
+    std::unique_ptr<accelerated_paint_importer> accelerated_;
 
     core::draw_frame   last_video_frame_;
     core::draw_frame   last_frame_;
@@ -172,11 +182,28 @@ class html_client
         loaded_    = false;
         not_found_ = false;
         closing_   = false;
+
+        // Opt-in, and off by default: whether the browser can hand out a shared texture at all
+        // depends on the GPU driver, not on us, and on a driver that cannot the browser paints
+        // nothing rather than falling back (see accelerated_paint_importer::fail). Shared
+        // textures also only exist when the browser has a GPU process to render them with, so
+        // the path rides on enable-gpu rather than offering to work without it.
+        if (gpu_enabled_ && env::properties().get(L"configuration.html.enable-accelerated-paint", false)) {
+            // Every reason this can be refused — the platform, the window system, the GPU — is
+            // the importer's to know. Here there are only two outcomes.
+            if (auto importer = std::make_unique<accelerated_paint_importer>(frame_factory_); importer->usable()) {
+                accelerated_ = std::move(importer);
+                CASPAR_LOG(info) << print() << L" Using accelerated (shared texture) paint.";
+            } else {
+                CASPAR_LOG(warning) << print() << L" Accelerated paint was requested but "
+                                    << importer->unusable_reason() << L"; painting on the CPU.";
+            }
+        }
     }
 
     void reload()
     {
-        html::begin_invoke([=] {
+        html::begin_invoke([this] {
             if (browser_ != nullptr)
                 browser_->Reload();
         });
@@ -186,7 +213,7 @@ class html_client
     {
         closing_ = true;
 
-        html::invoke([=] {
+        html::invoke([this] {
             if (browser_ != nullptr) {
                 browser_->GetHost()->CloseBrowser(true);
             }
@@ -315,6 +342,13 @@ class html_client
         return state_;
     }
 
+    // Whether to create the browser with shared textures. Must be answered before
+    // CreateBrowser: it selects OnAcceleratedPaint over OnPaint for the browser's whole life.
+    bool accelerated_paint() const
+    {
+        return accelerated_ != nullptr;
+    }
+
   private:
     void GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) override
     {
@@ -363,18 +397,49 @@ class html_client
 
         graph_->set_value("memcpy", test_timer_.elapsed() * format_desc_.fps * 0.5 * 5);
 
-        {
-            std::lock_guard<std::mutex> lock(frames_mutex_);
+        push_frame(core::draw_frame(std::move(frame)));
+    }
 
-            core::draw_frame new_frame = core::draw_frame(std::move(frame));
+    void OnAcceleratedPaint(CefRefPtr<CefBrowser>          browser,
+                            PaintElementType               type,
+                            const RectList&                dirtyRects,
+                            const CefAcceleratedPaintInfo& info) override
+    {
+        // CEF calls this instead of OnPaint for the browser's whole life, because the browser
+        // was created with shared_texture_enabled — which only happens when accelerated_ is set.
+        if (closing_ || not_found_ || !accelerated_)
+            return;
 
-            frames_.push(presentation_frame(std::move(new_frame)));
-            while (frames_.size() > frames_max_size_) {
-                frames_.pop();
-                graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
-            }
-            graph_->set_value("buffered-frames", (double)frames_.size() / frames_max_size_);
+        graph_->set_value("browser-tick-time", paint_timer_.elapsed() * format_desc_.fps * 0.5);
+        paint_timer_.restart();
+        CASPAR_ASSERT(CefCurrentlyOn(TID_UI));
+
+        if (type != PET_VIEW)
+            return;
+
+        test_timer_.restart();
+        auto frame = accelerated_->import(this, info, format_desc_.square_width, format_desc_.square_height);
+        // Same slot the CPU path graphs its memcpy in, so the two are directly comparable.
+        graph_->set_value("memcpy", test_timer_.elapsed() * format_desc_.fps * 0.5 * 5);
+
+        if (!frame)
+            return; // already logged; keep showing the previous frame
+
+        push_frame(core::draw_frame(std::move(frame)));
+    }
+
+    // Publish a freshly painted frame, dropping the oldest if the producer is running ahead of
+    // the channel. Shared by the CPU and accelerated paint paths.
+    void push_frame(core::draw_frame frame)
+    {
+        std::lock_guard<std::mutex> lock(frames_mutex_);
+
+        frames_.push(presentation_frame(std::move(frame)));
+        while (frames_.size() > frames_max_size_) {
+            frames_.pop();
+            graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
         }
+        graph_->set_value("buffered-frames", (double)frames_.size() / frames_max_size_);
     }
 
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override
@@ -529,7 +594,8 @@ class html_client
 
     void do_execute_javascript(const std::wstring& javascript)
     {
-        html::begin_invoke([=] {
+        // `javascript` is copied deliberately: the lambda outlives this call.
+        html::begin_invoke([this, javascript] {
             if (browser_ != nullptr)
                 browser_->GetMainFrame()->ExecuteJavaScript(
                     u8(javascript).c_str(), browser_->GetMainFrame()->GetURL(), 0);
@@ -577,6 +643,9 @@ class html_producer : public core::frame_producer
             window_info.bounds.width                 = format_desc.square_width;
             window_info.bounds.height                = format_desc.square_height;
             window_info.windowless_rendering_enabled = true;
+            // Selects OnAcceleratedPaint over OnPaint for this browser's whole life, so the
+            // client has to have decided it can consume shared textures before we get here.
+            window_info.shared_texture_enabled = client_->accelerated_paint();
 
             CefBrowserSettings browser_settings;
             browser_settings.webgl = enable_gpu ? cef_state_t::STATE_ENABLED : cef_state_t::STATE_DISABLED;

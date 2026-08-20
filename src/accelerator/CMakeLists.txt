@@ -52,6 +52,7 @@ IF(ENABLE_VULKAN)
 		vulkan/util/command_context.cpp
 		vulkan/util/descriptor_pool.cpp
 		vulkan/util/device.cpp
+		vulkan/util/dmabuf.cpp
 		vulkan/util/handoff.cpp
 		vulkan/util/gpu_producer.cpp
 		vulkan/util/queue_manager.cpp
@@ -74,6 +75,7 @@ IF(ENABLE_VULKAN)
 		vulkan/util/completion_token.h
 		vulkan/util/descriptor_pool.h
 		vulkan/util/device.h
+		vulkan/util/dmabuf.h
 		vulkan/util/handoff.h
 		vulkan/util/gpu_producer.h
 		vulkan/util/queue_manager.h

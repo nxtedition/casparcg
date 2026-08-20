@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include "command_context.h"   // external_semaphores
 #include "gpu_frame_factory.h" // gpu_frame_factory, gpu_plane, queue_type
 #include "texture.h"           // texture, handoff_token (via handoff.h)
 
@@ -117,7 +118,8 @@ class gpu_producer
                               std::vector<producer_plane>    planes,
                               const core::pixel_format_desc& desc,
                               const record_fn&               record,
-                              array<const std::int32_t>      audio = {});
+                              array<const std::int32_t>      audio    = {},
+                              const external_semaphores&     external = {});
 
     // 1-plane convenience: derives the single-plane pixel_format_desc from the texture's
     // geometry and `fmt`, and passes the lone texture straight to `record` so the common
@@ -126,7 +128,8 @@ class gpu_producer
                               producer_plane                                                                 plane,
                               core::pixel_format                                                             fmt,
                               const std::function<void(vk::CommandBuffer, const std::shared_ptr<texture>&)>& record,
-                              array<const std::int32_t> audio = {});
+                              array<const std::int32_t>  audio    = {},
+                              const external_semaphores& external = {});
 
     gpu_frame_factory& factory() const { return *gpu_; } // for create_producer_texture(...)
     command_context&   context() const { return *ctx_; }

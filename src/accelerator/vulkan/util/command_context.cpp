@@ -78,6 +78,13 @@ completion_token command_context::record_and_submit(const std::function<void(vk:
 completion_token command_context::record_and_submit(const std::function<void(vk::CommandBuffer)>& record,
                                                     vk::ArrayProxy<const completion_token>        wait_tokens)
 {
+    return record_and_submit(record, wait_tokens, external_semaphores{});
+}
+
+completion_token command_context::record_and_submit(const std::function<void(vk::CommandBuffer)>& record,
+                                                    vk::ArrayProxy<const completion_token>        wait_tokens,
+                                                    const external_semaphores&                    external)
+{
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Cross-queue waits: keep only tokens on a foreign timeline. A token on our own
@@ -98,6 +105,15 @@ completion_token command_context::record_and_submit(const std::function<void(vk:
         wait_stages.push_back(vk::PipelineStageFlagBits::eAllCommands);
     }
 
+    // A binary semaphore joins the same wait arrays. Its slot in pWaitSemaphoreValues is
+    // ignored by the driver (values apply to timeline semaphores only), but the arrays are
+    // parallel, so it still needs one.
+    if (external.wait) {
+        wait_semaphores.push_back(external.wait);
+        wait_values.push_back(0);
+        wait_stages.push_back(external.wait_stage);
+    }
+
     auto cmd = acquire_command_buffer();
 
     cmd.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -106,15 +122,24 @@ completion_token command_context::record_and_submit(const std::function<void(vk:
 
     auto signal_value = ++value_;
 
+    // Same parallel-array rule on the signal side: the binary semaphore's value is ignored,
+    // but it must occupy a slot so the timeline's value stays aligned with timeline_.
+    std::vector<vk::Semaphore> signal_semaphores{timeline_};
+    std::vector<uint64_t>      signal_values{signal_value};
+    if (external.signal) {
+        signal_semaphores.push_back(external.signal);
+        signal_values.push_back(0);
+    }
+
     vk::TimelineSemaphoreSubmitInfo timeline_submit{};
     timeline_submit.setWaitSemaphoreValues(wait_values);
-    timeline_submit.setSignalSemaphoreValues(signal_value);
+    timeline_submit.setSignalSemaphoreValues(signal_values);
 
     vk::SubmitInfo submit_info{};
     submit_info.setCommandBuffers(cmd);
     submit_info.setWaitSemaphores(wait_semaphores);
     submit_info.setWaitDstStageMask(wait_stages);
-    submit_info.setSignalSemaphores(timeline_);
+    submit_info.setSignalSemaphores(signal_semaphores);
     submit_info.pNext = &timeline_submit;
     queue_->submit(submit_info);
 

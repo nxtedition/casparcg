@@ -34,6 +34,23 @@ namespace caspar { namespace accelerator { namespace vulkan {
 
 class vulkan_queue;
 
+// Binary semaphores that bridge to a timeline we do not own — a fence imported from a
+// dma-buf, and the fence we publish back to it. Unlike completion_tokens these carry no
+// value: a binary semaphore's signal is consumed by the wait, so each pair belongs to
+// exactly one submit and cannot be reused until that submit has completed.
+struct external_semaphores
+{
+    // Waited before `record`'s commands reach `wait_stage`. Null to wait for nothing.
+    vk::Semaphore          wait       = nullptr;
+    vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eAllCommands;
+
+    // Signalled alongside this context's timeline when the submit completes, so it can be
+    // exported as a sync_file. Null to signal only the timeline.
+    vk::Semaphore signal = nullptr;
+
+    explicit operator bool() const noexcept { return wait || signal; }
+};
+
 // A command pool + timeline semaphore + a deque of recycled one-time command
 // buffers, bound to one vulkan_queue. Generalizes device's old
 // submitSingleTimeCommands: record a one-time command buffer, submit it on the
@@ -70,6 +87,12 @@ class command_context final
     // commands recorded by `record` run.
     completion_token record_and_submit(const std::function<void(vk::CommandBuffer)>& record,
                                        vk::ArrayProxy<const completion_token>        wait_tokens);
+    // As above, plus binary semaphores for crossing into a foreign timeline. The returned
+    // token still describes THIS context's timeline; `external.signal` is a second, separate
+    // signal on the same submit.
+    completion_token record_and_submit(const std::function<void(vk::CommandBuffer)>& record,
+                                       vk::ArrayProxy<const completion_token>        wait_tokens,
+                                       const external_semaphores&                    external);
 
     // Block until the token's value is reached (or timeout). True on success;
     // an empty token is already complete.

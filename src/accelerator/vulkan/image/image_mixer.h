@@ -70,6 +70,13 @@ class image_mixer final
 
     std::shared_ptr<texture>
     create_producer_texture(int width, int height, int stride, common::bit_depth depth) override;
+    bool                             supports_dmabuf_import() const override;
+    std::shared_ptr<imported_image>  import_dmabuf(const dmabuf_image& img) override;
+    bool                             supports_sync_fd_semaphores() const override;
+    vk::Semaphore                    import_sync_fd_semaphore(int sync_fd) override;
+    vk::Semaphore                    create_exportable_semaphore() override;
+    int                              export_sync_fd(vk::Semaphore semaphore) override;
+    void                             destroy_semaphore(vk::Semaphore semaphore) override;
     std::shared_ptr<command_context> create_command_context(queue_type queue) override;
     handoff_token                    make_producer_handoff(const vulkan_queue&     producer_queue,
                                                            vk::ImageLayout         src_layout,

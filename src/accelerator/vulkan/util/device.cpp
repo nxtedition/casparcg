@@ -23,6 +23,7 @@
 
 #include "../image/image_kernel.h"
 #include "buffer.h"
+#include "dmabuf.h"
 #include "queue_manager.h"
 #include "texture.h"
 #include "transfer.h"
@@ -49,13 +50,19 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 
 #include <boost/property_tree/ptree.hpp>
 
+#ifndef _WIN32
+#include <unistd.h> // dup/close, for the DMA-BUF fd Vulkan takes ownership of
+#endif
+
 #include <tbb/concurrent_queue.h>
 #include <tbb/concurrent_unordered_map.h>
 
+#include <algorithm>
 #include <array>
 #include <deque>
 #include <future>
 #include <memory>
+#include <string>
 
 namespace caspar { namespace accelerator { namespace vulkan {
 
@@ -81,6 +88,19 @@ inline VKAPI_ATTR VkBool32 VKAPI_CALL default_debug_callback(VkDebugUtilsMessage
                      // driver)
 }
 
+namespace {
+// dup/close of a DMA-BUF fd. Only ever reached on POSIX — DMA-BUF import needs
+// VK_EXT_external_memory_dma_buf, which no Windows driver exposes — but the import code is
+// compiled everywhere, so give the calls somewhere to land.
+#ifdef _WIN32
+inline int  dup_dmabuf_fd(int) { return -1; }
+inline void close_dmabuf_fd(int) {}
+#else
+inline int  dup_dmabuf_fd(int fd) { return ::dup(fd); }
+inline void close_dmabuf_fd(int fd) { ::close(fd); }
+#endif
+} // namespace
+
 struct device::impl : public std::enable_shared_from_this<impl>
 {
     using texture_queue_t = tbb::concurrent_bounded_queue<std::shared_ptr<texture>>;
@@ -102,6 +122,14 @@ struct device::impl : public std::enable_shared_from_this<impl>
     VmaAllocator                   _allocator;
 
     std::unique_ptr<class transfer> transfer_;
+
+    // Whether the DMA-BUF import extension set survived device creation (see
+    // device::supports_dmabuf_import).
+    bool dmabuf_import_ = false;
+
+    // Whether sync_file <-> VkSemaphore round-tripping survived device creation (see
+    // device::supports_sync_fd_semaphores).
+    bool sync_fd_semaphores_ = false;
 
     explicit impl(const std::vector<vulkan_requirements_fn>& requirements)
     {
@@ -194,6 +222,47 @@ struct device::impl : public std::enable_shared_from_this<impl>
         for (auto& fn : requirements) {
             if (fn)
                 fn(_vkb_physical_device);
+        }
+
+        // Snapshot the DMA-BUF import capability from what the requirements actually got
+        // enabled — a module asks with enable_extension_if_present(), so "asked for" and
+        // "got" are not the same thing on every GPU.
+        {
+            static const char* const dmabuf_extensions[] = {VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+                                                            VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+                                                            VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+                                                            VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME};
+            const auto enabled = _vkb_physical_device.get_extensions();
+            dmabuf_import_     = std::all_of(std::begin(dmabuf_extensions), std::end(dmabuf_extensions), [&](auto* e) {
+                return std::find(enabled.begin(), enabled.end(), std::string(e)) != enabled.end();
+            });
+            CASPAR_LOG(info) << L"vulkan: DMA-BUF import "
+                             << (dmabuf_import_ ? L"available." : L"unavailable (extensions not enabled).");
+        }
+
+        // Same question for the sync_file bridge, but the extension being enabled is only
+        // half of it: the driver must also report the SYNC_FD handle type as both importable
+        // and exportable. NVIDIA in particular enables the extension while supporting only a
+        // subset of handle types, so ask rather than assume.
+        {
+            const auto enabled = _vkb_physical_device.get_extensions();
+            const bool has_ext = std::find(enabled.begin(),
+                                           enabled.end(),
+                                           std::string(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME)) != enabled.end();
+            if (has_ext) {
+                vk::PhysicalDeviceExternalSemaphoreInfo info{};
+                info.handleType = vk::ExternalSemaphoreHandleTypeFlagBits::eSyncFd;
+
+                const auto props =
+                    vk::PhysicalDevice(_vkb_physical_device.physical_device).getExternalSemaphoreProperties(info);
+
+                const auto features = props.externalSemaphoreFeatures;
+                sync_fd_semaphores_ = static_cast<bool>(features & vk::ExternalSemaphoreFeatureFlagBits::eImportable) &&
+                                      static_cast<bool>(features & vk::ExternalSemaphoreFeatureFlagBits::eExportable);
+            }
+            CASPAR_LOG(info) << L"vulkan: sync_file semaphores "
+                             << (sync_fd_semaphores_ ? L"available."
+                                                     : L"unavailable (imported frames will block the CPU).");
         }
 
         // Create the logical device. The queue_manager scans the families and
@@ -333,6 +402,224 @@ struct device::impl : public std::enable_shared_from_this<impl>
         auto ptr = tex.get();
         return std::shared_ptr<texture>(
             ptr, [tex = std::move(tex), pool, self = shared_from_this()](texture*) mutable { pool->push(tex); });
+    }
+
+    std::shared_ptr<imported_image> import_dmabuf(const dmabuf_image& img)
+    {
+        if (!dmabuf_import_) {
+            CASPAR_LOG(warning) << L"vulkan: DMA-BUF import requested but the extensions are not enabled.";
+            return nullptr;
+        }
+        if (img.planes.empty() || img.planes.size() > 4 || img.width <= 0 || img.height <= 0 ||
+            img.format == vk::Format::eUndefined) {
+            CASPAR_LOG(warning) << L"vulkan: DMA-BUF import got a malformed descriptor.";
+            return nullptr;
+        }
+        if (img.modifier == drm_format_mod_invalid) {
+            // Refusing beats guessing linear: on a tiling-strict driver the guess reads the
+            // memory with the wrong swizzle and produces a black or shredded picture rather
+            // than an error the caller can fall back from.
+            CASPAR_LOG(warning) << L"vulkan: DMA-BUF exporter did not report a DRM format modifier.";
+            return nullptr;
+        }
+        // Every plane must live in the same buffer object: one bound VkDeviceMemory below.
+        // Disjoint (fd-per-plane) images would need DISJOINT + one allocation per plane.
+        for (const auto& p : img.planes) {
+            if (p.fd < 0 || p.fd != img.planes.front().fd) {
+                CASPAR_LOG(warning) << L"vulkan: DMA-BUF import only supports planes sharing one buffer.";
+                return nullptr;
+            }
+        }
+
+        const auto handle_type = vk::ExternalMemoryHandleTypeFlagBits::eDmaBufEXT;
+        const auto usage       = vk::ImageUsageFlagBits::eTransferSrc;
+
+        // Ask the driver whether it can import THIS format at THIS modifier before creating
+        // anything, so an unsupported combination is a null return rather than a device-lost
+        // some frames later.
+        {
+            vk::PhysicalDeviceExternalImageFormatInfo external_info{handle_type};
+            vk::PhysicalDeviceImageDrmFormatModifierInfoEXT modifier_info{img.modifier, vk::SharingMode::eExclusive};
+            modifier_info.pNext = &external_info;
+
+            vk::PhysicalDeviceImageFormatInfo2 format_info{
+                img.format, vk::ImageType::e2D, vk::ImageTiling::eDrmFormatModifierEXT, usage, {}};
+            format_info.pNext = &modifier_info;
+
+            vk::ExternalImageFormatProperties external_props;
+            vk::ImageFormatProperties2        props;
+            props.pNext = &external_props;
+
+            const auto res = _physical_device.getImageFormatProperties2(&format_info, &props);
+            if (res != vk::Result::eSuccess ||
+                !(external_props.externalMemoryProperties.externalMemoryFeatures &
+                  vk::ExternalMemoryFeatureFlagBits::eImportable)) {
+                CASPAR_LOG(warning) << L"vulkan: driver cannot import DMA-BUF format " << static_cast<int>(img.format)
+                                    << L" with modifier 0x" << std::hex << img.modifier << std::dec << L".";
+                return nullptr;
+            }
+        }
+
+        vk::Image        image;
+        vk::DeviceMemory memory;
+        int              dup_fd = -1;
+        try {
+            // The explicit plane layouts are how the driver learns where each plane starts
+            // and how wide its rows are; together with the modifier they fully describe the
+            // exporter's memory layout, which is what keeps the import zero-copy.
+            std::vector<vk::SubresourceLayout> plane_layouts;
+            plane_layouts.reserve(img.planes.size());
+            for (const auto& p : img.planes) {
+                vk::SubresourceLayout layout{};
+                layout.offset     = p.offset;
+                layout.rowPitch   = p.stride;
+                layout.size       = 0; // required to be 0 here
+                layout.arrayPitch = 0;
+                layout.depthPitch = 0;
+                plane_layouts.push_back(layout);
+            }
+
+            vk::ImageDrmFormatModifierExplicitCreateInfoEXT modifier_create{img.modifier, plane_layouts};
+            vk::ExternalMemoryImageCreateInfo              external_create{handle_type};
+            external_create.pNext = &modifier_create;
+
+            vk::ImageCreateInfo image_info{};
+            image_info.pNext         = &external_create;
+            image_info.imageType     = vk::ImageType::e2D;
+            image_info.format        = img.format;
+            image_info.extent        = vk::Extent3D{static_cast<uint32_t>(img.width),
+                                             static_cast<uint32_t>(img.height),
+                                             1};
+            image_info.mipLevels     = 1;
+            image_info.arrayLayers   = 1;
+            image_info.samples       = vk::SampleCountFlagBits::e1;
+            image_info.tiling        = vk::ImageTiling::eDrmFormatModifierEXT;
+            image_info.usage         = usage;
+            image_info.sharingMode   = vk::SharingMode::eExclusive;
+            image_info.initialLayout = vk::ImageLayout::eUndefined;
+
+            image = _device.createImage(image_info);
+
+            // The memory type must satisfy the image AND be one the fd can actually back.
+            const auto memReq   = _device.getImageMemoryRequirements(image);
+            const auto fd_props = _device.getMemoryFdPropertiesKHR(handle_type, img.planes.front().fd);
+
+            const uint32_t type_bits = memReq.memoryTypeBits & fd_props.memoryTypeBits;
+            if (type_bits == 0)
+                CASPAR_THROW_EXCEPTION(caspar_exception()
+                                       << msg_info("no memory type can back the imported DMA-BUF"));
+
+            uint32_t type_index = 0;
+            while (!(type_bits & (1u << type_index)))
+                ++type_index;
+
+            // Vulkan takes ownership of the fd it imports, so hand it a dup and leave the
+            // caller's copy alone. On failure the dup is ours to close (see catch).
+            dup_fd = dup_dmabuf_fd(img.planes.front().fd);
+            if (dup_fd < 0)
+                CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info("dup() of the DMA-BUF fd failed"));
+
+            // Dedicated: an imported image owns its whole allocation, and NVIDIA requires
+            // the dedicated chain for external images.
+            vk::MemoryDedicatedAllocateInfo dedicated{};
+            dedicated.image = image;
+            vk::ImportMemoryFdInfoKHR import_info{handle_type, dup_fd};
+            import_info.pNext = &dedicated;
+
+            vk::MemoryAllocateInfo alloc_info{memReq.size, type_index};
+            alloc_info.pNext = &import_info;
+
+            memory = _device.allocateMemory(alloc_info);
+            dup_fd = -1; // consumed by the successful import; freeMemory closes it now
+            _device.bindImageMemory(image, memory, 0);
+        } catch (...) {
+            if (dup_fd >= 0)
+                close_dmabuf_fd(dup_fd);
+            if (memory)
+                _device.freeMemory(memory);
+            if (image)
+                _device.destroyImage(image);
+            CASPAR_LOG_CURRENT_EXCEPTION();
+            return nullptr;
+        }
+
+        return std::make_shared<imported_image>(
+            _device, image, memory, img.width, img.height, img.format, img.modifier);
+    }
+
+    vk::Semaphore import_sync_fd_semaphore(int sync_fd)
+    {
+        if (!sync_fd_semaphores_ || sync_fd < 0)
+            return nullptr;
+
+        vk::Semaphore semaphore;
+        try {
+            semaphore = _device.createSemaphore(vk::SemaphoreCreateInfo{});
+
+            vk::ImportSemaphoreFdInfoKHR import{};
+            import.semaphore = semaphore;
+            import.handleType = vk::ExternalSemaphoreHandleTypeFlagBits::eSyncFd;
+            import.fd         = sync_fd;
+            // SYNC_FD imports are required to be temporary: the payload lasts until a wait
+            // consumes it, after which the semaphore reverts to its own (unsignalled) state.
+            // That is what lets the same handle be re-imported next frame.
+            import.flags = vk::SemaphoreImportFlagBits::eTemporary;
+
+            _device.importSemaphoreFdKHR(import);
+        } catch (const vk::SystemError& e) {
+            // A refused import means the fd is not something this driver can wait on. The
+            // caller falls back to blocking, so this is not fatal.
+            CASPAR_LOG(warning) << L"vulkan: could not import a sync_file fence: " << u16(e.what());
+            if (semaphore)
+                _device.destroySemaphore(semaphore);
+            return nullptr;
+        }
+
+        return semaphore;
+    }
+
+    vk::Semaphore create_exportable_semaphore()
+    {
+        if (!sync_fd_semaphores_)
+            return nullptr;
+
+        try {
+            vk::ExportSemaphoreCreateInfo export_info{};
+            export_info.handleTypes = vk::ExternalSemaphoreHandleTypeFlagBits::eSyncFd;
+
+            vk::SemaphoreCreateInfo create{};
+            create.pNext = &export_info;
+
+            return _device.createSemaphore(create);
+        } catch (const vk::SystemError& e) {
+            CASPAR_LOG(warning) << L"vulkan: could not create an exportable semaphore: " << u16(e.what());
+            return nullptr;
+        }
+    }
+
+    int export_sync_fd(vk::Semaphore semaphore)
+    {
+        if (!sync_fd_semaphores_ || !semaphore)
+            return -1;
+
+        try {
+            vk::SemaphoreGetFdInfoKHR get{};
+            get.semaphore  = semaphore;
+            get.handleType = vk::ExternalSemaphoreHandleTypeFlagBits::eSyncFd;
+
+            // Exporting SYNC_FD also RESETS the semaphore's payload, which is why the caller
+            // may hand the same semaphore back for the next frame.
+            return _device.getSemaphoreFdKHR(get);
+        } catch (const vk::SystemError& e) {
+            CASPAR_LOG(warning) << L"vulkan: could not export a fence as a sync_file: " << u16(e.what());
+            return -1;
+        }
+    }
+
+    void destroy_semaphore(vk::Semaphore semaphore)
+    {
+        if (semaphore)
+            _device.destroySemaphore(semaphore);
     }
 
     std::shared_ptr<buffer> create_buffer(int size, bool write)
@@ -491,7 +778,14 @@ std::shared_ptr<texture> device::create_texture(int width, int height, int strid
 {
     return impl_->create_texture(width, height, stride, depth, true);
 }
-std::shared_ptr<buffer>      device::create_buffer(int size, bool write) { return impl_->create_buffer(size, write); }
+std::shared_ptr<buffer> device::create_buffer(int size, bool write) { return impl_->create_buffer(size, write); }
+bool                    device::supports_dmabuf_import() const { return impl_->dmabuf_import_; }
+std::shared_ptr<imported_image> device::import_dmabuf(const dmabuf_image& img) { return impl_->import_dmabuf(img); }
+bool device::supports_sync_fd_semaphores() const { return impl_->sync_fd_semaphores_; }
+vk::Semaphore device::import_sync_fd_semaphore(int sync_fd) { return impl_->import_sync_fd_semaphore(sync_fd); }
+vk::Semaphore device::create_exportable_semaphore() { return impl_->create_exportable_semaphore(); }
+int           device::export_sync_fd(vk::Semaphore semaphore) { return impl_->export_sync_fd(semaphore); }
+void          device::destroy_semaphore(vk::Semaphore semaphore) { impl_->destroy_semaphore(semaphore); }
 array<uint8_t>               device::create_array(int size) { return impl_->create_array(size); }
 std::wstring                 device::version() const { return impl_->version(); }
 boost::property_tree::wptree device::info() const { return impl_->info(); }

@@ -39,7 +39,12 @@
 
 #include <atomic>
 #include <memory>
+#include <sstream>
 #include <utility>
+
+#ifdef ENABLE_VULKAN
+#include <VkBootstrap.h>
+#endif
 
 #ifdef __APPLE__
 #include <boost/dll/runtime_symbol_info.hpp>
@@ -112,7 +117,9 @@ class remove_handler : public CefV8Handler
 
 class renderer_application
     : public CefApp
+#ifdef __APPLE__
     , public CefBrowserProcessHandler
+#endif
     , CefRenderProcessHandler
 {
     std::vector<CefRefPtr<CefV8Context>> contexts_;
@@ -197,8 +204,18 @@ class renderer_application
 
     void OnBeforeCommandLineProcessing(const CefString& process_type, CefRefPtr<CefCommandLine> command_line) override
     {
+#if defined(__unix__) && !defined(__APPLE__)
+        const auto server = detect_display_server();
+#endif
+
+        // Whether we intend to ask CEF for shared textures. The producer has the final say — it
+        // also needs the Vulkan accelerator to be able to import DMA-BUFs — but the browser's
+        // command line has to be configured for it before any browser exists.
+        bool accelerated_paint = false;
+
         if (enable_gpu_) {
             command_line->AppendSwitch("enable-webgl");
+            accelerated_paint = env::properties().get(L"configuration.html.enable-accelerated-paint", false);
 
             auto default_backend = L"gl";
 
@@ -206,9 +223,17 @@ class renderer_application
             // macOS: prefer Metal backend via ANGLE for best performance
             default_backend = L"metal";
 #elif __unix__
-            // If there is no X server, Chromium requires us to force it to the angle backend
-            if (getenv("DISPLAY") == nullptr)
+            if (server == display_server::none) {
+                // With no display server ANGLE has no native GL display to bind to, so drive it
+                // through Vulkan instead.
                 default_backend = L"vulkan";
+            } else if (accelerated_paint) {
+                // Shared-texture OSR needs ANGLE's EGL backend. Chromium's fallback path exports
+                // through X11 pixmaps, which only Mesa implements, so NVIDIA produces nothing
+                // without this. CEF's own client does exactly the same — see
+                // cef/tests/shared/browser/client_app_browser.cc and CEF issue #3953.
+                default_backend = L"gl-egl";
+            }
 #endif
 
             // This gives better performance on the gpu->cpu readback, but can perform worse with intense templates
@@ -219,9 +244,20 @@ class renderer_application
         }
 
 #if defined(__unix__) && !defined(__APPLE__)
-        // Linux: If there is no X server, use headless ozone platform
-        if (getenv("DISPLAY") == nullptr) {
+        if (server == display_server::none) {
+            // No display server of any kind. Ozone's headless platform cannot allocate a real
+            // DMA-BUF, so accelerated paint is impossible here and the producer stays on the CPU
+            // path; these switches are only about getting GPU rasterization to work at all.
             command_line->AppendSwitchWithValue("ozone-platform", "headless");
+            command_line->AppendSwitchWithValue("use-gl", "angle");
+            command_line->AppendSwitch("disable-vulkan-surface");
+            command_line->AppendSwitchWithValue("enable-features", "Vulkan,VulkanFromANGLE,DefaultANGLEVulkan");
+        } else if (accelerated_paint) {
+            // Pin the ozone platform for shared-texture OSR, as CEF's own client does. Note this
+            // deliberately does NOT enable Chromium's Vulkan compositing: with a correctly tiled
+            // buffer that breaks the hand-off, and the working configuration is Ganesh-GL.
+            command_line->AppendSwitchWithValue("ozone-platform",
+                                                server == display_server::wayland ? "wayland" : "x11");
         }
 #endif
 
@@ -240,6 +276,24 @@ class renderer_application
         // CEF's GPU subprocess can fail to launch on macOS due to signing/sandbox issues
         command_line->AppendSwitch("in-process-gpu");
 #endif
+
+        // TEMPORARY (experiment): CefInitialize is handed a default-constructed CefMainArgs, so
+        // switches on casparcg's own command line never reach CEF. This lets a switch matrix be
+        // tried without a rebuild per combination.
+        if (const char* extra = getenv("CASPAR_CEF_SWITCHES")) {
+            std::string       all(extra);
+            std::stringstream ss(all);
+            std::string       tok;
+            while (ss >> tok) {
+                while (!tok.empty() && tok.front() == '-')
+                    tok.erase(tok.begin());
+                auto eq = tok.find('=');
+                if (eq == std::string::npos)
+                    command_line->AppendSwitch(tok);
+                else
+                    command_line->AppendSwitchWithValue(tok.substr(0, eq), tok.substr(eq + 1));
+            }
+        }
 
         if (process_type.empty() && !enable_gpu_) {
             // This gives more performance, but disabled gpu effects. Without it a single 1080p producer cannot be run
@@ -460,6 +514,40 @@ class cef_task : public CefTask
 
     IMPLEMENT_REFCOUNTING(cef_task);
 };
+
+#ifdef ENABLE_VULKAN
+void register_vulkan_requirements(vkb::PhysicalDevice& pd)
+{
+    // What the OnAcceleratedPaint path needs to consume CEF's shared texture without a
+    // CPU round trip. CEF hands us the browser's frame as a DMA-BUF; importing it means
+    // (a) turning an fd into device memory, (b) saying that fd is a DMA-BUF specifically,
+    // (c) describing how the exporter tiled that memory, and (d) taking the image over from
+    // a producer outside Vulkan entirely:
+    //
+    //   external_memory_fd       -- import device memory from a file descriptor
+    //   external_memory_dma_buf  -- ...where the descriptor is a DMA-BUF
+    //   image_drm_format_modifier-- import at the exporter's exact DRM format modifier.
+    //                               Without this the driver assumes its own tiling; NVIDIA
+    //                               in particular never hands out linear, so a modifier-less
+    //                               import reads the memory wrong (black / shredded output)
+    //                               instead of failing loudly.
+    //   queue_family_foreign     -- transfer ownership from the non-Vulkan producer (the
+    //                               browser's GPU process) to our queue
+    //
+    // All four are enable-if-present: on a GPU that lacks any of them the producer simply
+    // keeps using the CPU OnPaint path (see device::supports_dmabuf_import).
+    pd.enable_extension_if_present(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+    pd.enable_extension_if_present(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+    pd.enable_extension_if_present(VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
+    pd.enable_extension_if_present(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
+
+    //   external_semaphore_fd    -- move a sync_file fence in and out of a VkSemaphore, so the
+    //                               copy out of the browser's buffer can be ordered against the
+    //                               browser's own writes on the GPU instead of on the CPU.
+    // Optional on top of the set above: without it the import still works, it just blocks.
+    pd.enable_extension_if_present(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
+}
+#endif
 
 void invoke(const std::function<void()>& func) { begin_invoke(func).get(); }
 

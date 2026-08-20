@@ -31,7 +31,7 @@ MARK_AS_ADVANCED (CMAKE_INSTALL_PREFIX)
 if (USE_STATIC_BOOST)
 	SET (Boost_USE_STATIC_LIBS ON)
 endif()
-find_package(Boost 1.83.0 COMPONENTS system thread filesystem log_setup log locale regex date_time coroutine REQUIRED)
+find_package(Boost 1.83.0 COMPONENTS thread filesystem log_setup log locale regex date_time coroutine REQUIRED)
 find_package(FFmpeg REQUIRED)
 find_package(OpenGL REQUIRED COMPONENTS OpenGL GLX EGL)
 find_package(GLEW REQUIRED)
@@ -76,8 +76,8 @@ if (ENABLE_HTML)
     else()
         casparcg_add_external_project(cef)
         ExternalProject_Add(cef
-            URL https://nxt-artifacts.s3.eu-central-1.amazonaws.com/cef_binary_142.0.17%2Bg60aac24%2Bchromium-142.0.7444.176_linux64_minimal.tar.bz2
-            URL_HASH SHA256=136ffdc219f7cdf14c1c55db2ee95b547633880eebfda4a0d980bab6c52fd85c
+            URL https://nxt-artifacts.s3.eu-central-1.amazonaws.com/cef_binary_152.0.4%2Bg6d60deb%2Bchromium-152.0.7977.42_linux64_minimal.tar.bz2
+            URL_HASH SHA256=ec8090e3bb581c4e659f8925bc421646b621c1252a534d4112156250c983fed6
             DOWNLOAD_DIR ${CASPARCG_DOWNLOAD_CACHE}
             CMAKE_ARGS -DUSE_SANDBOX=Off
             INSTALL_COMMAND ""

@@ -44,7 +44,8 @@ core::const_frame gpu_producer::produce(const void*                    tag,
                                         std::vector<producer_plane>    planes,
                                         const core::pixel_format_desc& desc,
                                         const record_fn&               record,
-                                        array<const std::int32_t>      audio)
+                                        array<const std::int32_t>      audio,
+                                        const external_semaphores&     external)
 {
     // One hand-off per plane (planes may differ in scope, e.g. NV12 Y vs UV); they all share
     // the single completion token of the one submit below. completion is empty here — filled
@@ -82,7 +83,9 @@ core::const_frame gpu_producer::produce(const void*                    tag,
         // distance 0/1, a queue-family release at distance 2).
         for (std::size_t i = 0; i < planes.size(); ++i)
             record_release(cmd, handoffs[i], planes[i].tex->id());
-    });
+    },
+                                       {},
+                                       external);
 
     // Stamp the shared completion onto every hand-off so the renderer waits it (inert at
     // distance 0). Done in a loop the producer can no longer skip or get out of order.
@@ -102,7 +105,8 @@ gpu_producer::produce(const void*                                               
                       producer_plane                                                                 plane,
                       core::pixel_format                                                             fmt,
                       const std::function<void(vk::CommandBuffer, const std::shared_ptr<texture>&)>& record,
-                      array<const std::int32_t>                                                      audio)
+                      array<const std::int32_t>                                                      audio,
+                      const external_semaphores&                                                     external)
 {
     core::pixel_format_desc desc(fmt);
     desc.planes.push_back(core::pixel_format_desc::plane(plane.tex->width(), plane.tex->height(), plane.tex->stride()));
@@ -117,7 +121,8 @@ gpu_producer::produce(const void*                                               
         [&](vk::CommandBuffer cmd, const std::vector<std::shared_ptr<texture>>& textures) {
             record(cmd, textures.front());
         },
-        std::move(audio));
+        std::move(audio),
+        external);
 }
 
 }}} // namespace caspar::accelerator::vulkan

@@ -15,8 +15,8 @@
 #include <boost/thread/condition_variable.hpp>
 #include <boost/thread/mutex.hpp>
 
-#include <common/diagnostics/graph.h>
 #include <common/assert.h>
+#include <common/diagnostics/graph.h>
 #include <common/env.h>
 #include <common/except.h>
 #include <common/executor.h>
@@ -33,11 +33,11 @@ extern "C" {
 #include <libavfilter/avfilter.h>
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
-#include <libavutil/hwcontext.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 #include <libavutil/samplefmt.h>
@@ -549,8 +549,7 @@ struct Filter
                     it = streams
                              .emplace(std::piecewise_construct,
                                       std::forward_as_tuple(stream->index),
-                                      std::forward_as_tuple(
-                                          stream, type == AVMEDIA_TYPE_VIDEO ? strategy : nullptr))
+                                      std::forward_as_tuple(stream, type == AVMEDIA_TYPE_VIDEO ? strategy : nullptr))
                              .first;
                 }
 
@@ -564,8 +563,8 @@ struct Filter
                     // belong to a pool the source has to be handed before the graph is
                     // configured. It is null for software decoding, which leaves this exactly
                     // the plain buffer source it has always been.
-                    auto* source = FFMEM(
-                        avfilter_graph_alloc_filter(graph.get(), avfilter_get_by_name("buffer"), name.c_str()));
+                    auto* source =
+                        FFMEM(avfilter_graph_alloc_filter(graph.get(), avfilter_get_by_name("buffer"), name.c_str()));
 
                     auto* params = av_buffersrc_parameters_alloc();
                     if (!params) {
@@ -766,7 +765,7 @@ struct AVProducer::Impl
     /// candidate that turns out not to fit the file is abandoned for the rest of this producer's
     /// life and the next one tried (see reset()), so this only ever moves forwards.
     std::vector<std::shared_ptr<video_strategy>> video_candidates_;
-    size_t                                      video_candidate_ = 0;
+    size_t                                       video_candidate_ = 0;
 
     /// Where the current reset() started. Kept because the video graph is built later than
     /// reset() returns, and a strategy that falls through has to rewind the input to here.
@@ -1373,8 +1372,7 @@ struct AVProducer::Impl
     /// lands somewhere.
     void next_video_strategy()
     {
-        CASPAR_LOG(info) << print() << " " << u8(video()->name())
-                         << " video decoding is not available for this file.";
+        CASPAR_LOG(info) << print() << " " << u8(video()->name()) << " video decoding is not available for this file.";
         if (video_candidate_ + 1 < video_candidates_.size()) {
             ++video_candidate_;
             CASPAR_LOG(info) << print() << " Trying " << u8(video()->name()) << " video decoding instead.";
@@ -1481,14 +1479,8 @@ struct AVProducer::Impl
         }
 
         try {
-            video_filter_ = Filter(vfilter_,
-                                   input_,
-                                   decoders_,
-                                   reset_time_,
-                                   AVMEDIA_TYPE_VIDEO,
-                                   format_desc_,
-                                   video().get(),
-                                   description);
+            video_filter_ = Filter(
+                vfilter_, input_, decoders_, reset_time_, AVMEDIA_TYPE_VIDEO, format_desc_, video().get(), description);
         } catch (...) {
             if (!video()->hw_device_context()) {
                 throw; // the software graph failing to build is a real error, as it always was

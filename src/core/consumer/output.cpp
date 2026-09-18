@@ -104,6 +104,23 @@ struct output::impl
         return true;
     }
 
+    void change_format(const core::video_format_desc& format_desc)
+    {
+        std::lock_guard<std::mutex> lock(consumers_mutex_);
+        for (auto it = consumers_.begin(); it != consumers_.end();) {
+            try {
+                it->second->initialize(format_desc, channel_info_, it->first);
+                ++it;
+            } catch (...) {
+                CASPAR_LOG_CURRENT_EXCEPTION();
+                it = consumers_.erase(it);
+            }
+        }
+        report_consumers_locked(); // some may have failed to re-initialize and been dropped
+        format_desc_ = format_desc;
+        pacing_->reset();
+    }
+
     // Call with consumers_mutex_ held, so reports reach the strategy in the order the changes
     // were made: a stale report of zero would end a render that still has a consumer.
     void report_consumers_locked() { pacing_->consumers_changed(consumers_.size()); }
@@ -137,19 +154,7 @@ struct output::impl
                     const core::video_format_desc& format_desc)
     {
         if (format_desc_ != format_desc) {
-            std::lock_guard<std::mutex> lock(consumers_mutex_);
-            for (auto it = consumers_.begin(); it != consumers_.end();) {
-                try {
-                    it->second->initialize(format_desc, channel_info_, it->first);
-                    ++it;
-                } catch (...) {
-                    CASPAR_LOG_CURRENT_EXCEPTION();
-                    it = consumers_.erase(it);
-                }
-            }
-            report_consumers_locked(); // some may have failed to re-initialize and been dropped
-            format_desc_ = format_desc;
-            pacing_->reset();
+            change_format(format_desc);
             return;
         }
 
@@ -267,6 +272,7 @@ std::future<bool> output::call(int index, const std::vector<std::wstring>& param
     return impl_->call(index, params);
 }
 size_t output::consumer_count() const { return impl_->consumer_count(); }
+void   output::change_format(const video_format_desc& format_desc) { impl_->change_format(format_desc); }
 void   output::operator()(const const_frame& frame, const const_frame& frame2, const video_format_desc& format_desc)
 {
     return (*impl_)(frame, frame2, format_desc);

@@ -136,6 +136,23 @@ class separated_producer : public frame_producer
     core::monitor::state state() const override { return state_; }
 
     bool is_ready() override { return key_producer_->is_ready() && fill_producer_->is_ready(); }
+
+    // Only as waitable as its parts, and ready once all it may draw are. They share one
+    // deadline, so the pair costs the caller no more latency than a single producer would.
+
+    bool supports_deterministic_sync() const override
+    {
+        return fill_producer_->supports_deterministic_sync() && key_producer_->supports_deterministic_sync();
+    }
+
+    bool wait_for_frame(const core::video_field field, std::chrono::milliseconds timeout) override
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+        const bool fill = fill_producer_->wait_for_frame(field, timeout);
+        const bool key  = key_producer_->wait_for_frame(field, time_left_until(deadline));
+        return fill && key;
+    }
 };
 
 spl::shared_ptr<frame_producer> create_separated_producer(const spl::shared_ptr<frame_producer>& fill,

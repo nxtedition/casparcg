@@ -370,6 +370,24 @@ class transition_producer : public frame_producer
     [[nodiscard]] core::monitor::state state() const override { return state_; }
 
     bool is_ready() override { return dst_producer_->is_ready(); }
+
+    // Only as waitable as its parts, and ready once all it may draw are. They share one
+    // deadline, so the pair costs the caller no more latency than a single producer would.
+
+    bool supports_deterministic_sync() const override
+    {
+        return src_producer_->supports_deterministic_sync() && dst_producer_->supports_deterministic_sync();
+    }
+
+    bool wait_for_frame(const core::video_field field, std::chrono::milliseconds timeout) override
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+        // Both sides are drawn while the transition runs.
+        const bool src = src_producer_->wait_for_frame(field, timeout);
+        const bool dst = dst_producer_->wait_for_frame(field, time_left_until(deadline));
+        return src && dst;
+    }
 };
 
 spl::shared_ptr<frame_producer> create_transition_producer(const spl::shared_ptr<frame_producer>& destination,

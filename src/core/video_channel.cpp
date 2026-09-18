@@ -108,7 +108,7 @@ struct video_channel::impl final
          bool                                      deterministic,
          std::unique_ptr<image_mixer>              image_mixer,
          std::function<void(core::monitor::state)> tick)
-        : channel_info_(index, image_mixer->depth(), default_color_space)
+        : channel_info_(index, image_mixer->depth(), default_color_space, deterministic)
         , pacing_(deterministic ? create_deterministic_pacing() : create_realtime_pacing())
         , output_(graph_, format_desc, channel_info_, pacing_)
         , image_mixer_(std::move(image_mixer))

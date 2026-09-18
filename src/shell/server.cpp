@@ -282,6 +282,31 @@ struct server::impl
             // reproducible output. See core/channel_pacing.h.
             auto deterministic = xml_channel.second.get(L"deterministic", false);
 
+            if (deterministic) {
+                // The render attaches its own consumer and loads its own producers, and must
+                // start from a clean slate. Anything declared here would still be there when
+                // the first render begins, and a consumer would start it ticking at boot.
+                auto declares = [](const auto& node) {
+                    if (!node)
+                        return false;
+                    for (const auto& child : *node) {
+                        if (child.first != L"<xmlcomment>")
+                            return true;
+                    }
+                    return false;
+                };
+
+                if (declares(xml_channel.second.get_child_optional(L"consumers")))
+                    CASPAR_THROW_EXCEPTION(
+                        user_error() << msg_info(L"A deterministic channel cannot declare <consumers>; the render "
+                                                 L"attaches its own."));
+
+                if (declares(xml_channel.second.get_child_optional(L"producers")))
+                    CASPAR_THROW_EXCEPTION(
+                        user_error() << msg_info(L"A deterministic channel cannot declare <producers>; the render "
+                                                 L"loads its own."));
+            }
+
             auto weak_client = std::weak_ptr<osc::client>(osc_client_);
             auto channel_id  = static_cast<int>(channels_->size() + 1);
             auto depth       = color_depth == 16 ? common::bit_depth::bit16 : common::bit_depth::bit8;

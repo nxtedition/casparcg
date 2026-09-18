@@ -882,8 +882,17 @@ struct AVProducer::Impl
                 start       = start != AV_NOPTS_VALUE ? start : 0;
                 auto end    = duration != AV_NOPTS_VALUE ? start + duration : INT64_MAX;
                 auto time   = frame.pts != AV_NOPTS_VALUE ? frame.pts + frame.duration : 0;
+                const bool was_eof = buffer_eof_.load();
+
                 buffer_eof_ = (video_filter_.eof && audio_filter_.eof) ||
                               av_rescale_q(time, TIME_BASE_Q, format_tb_) >= av_rescale_q(end, TIME_BASE_Q, format_tb_);
+
+                if (!was_eof && buffer_eof_.load()) {
+                    // Wake wait_for_frame(); no further frame is coming, so waiting for one
+                    // would block until the caller's timeout on every tick past the end.
+                    boost::lock_guard<boost::mutex> lock(buffer_mutex_);
+                    buffer_cond_.notify_all();
+                }
 
                 if (buffer_eof_) {
                     if (loop_ && frame_count_ > 2) {
@@ -977,6 +986,9 @@ struct AVProducer::Impl
                 buffer_cond_.wait(buffer_lock, [&] { return buffer_.size() < buffer_capacity_; });
                 if (seek_ == AV_NOPTS_VALUE) {
                     buffer_.push_back(frame);
+                    // Wake anyone in wait_for_frame(); this condvar otherwise only signals
+                    // that the buffer drained.
+                    buffer_cond_.notify_all();
                 }
             }
 
@@ -1024,10 +1036,33 @@ struct AVProducer::Impl
         return core::draw_frame::still(frame_);
     }
 
+    // How many frames next_frame() wants queued before its first delivery after construction
+    // or a seek; with fewer it underflows and every later frame lags a tick. Never more than
+    // the buffer can hold: the writer stops pushing at buffer_capacity_, so a larger target
+    // would leave wait_for_frame() waiting for a fill that can never arrive.
+    size_t prefill_target() const { return static_cast<size_t>(std::min(4, std::max(buffer_capacity_, 1))); }
+
     bool is_ready()
     {
         boost::lock_guard<boost::mutex> lock(buffer_mutex_);
         return !buffer_.empty() || frame_;
+    }
+
+    bool wait_for_frame(std::chrono::milliseconds timeout)
+    {
+        // Mirrors next_frame()'s underflow check, not is_ready(): is_ready() is also satisfied
+        // by the last frame delivered, which would make the wait a no-op, and next_frame() wants
+        // a prefill on the first delivery after construction or a seek. At EOF nothing more is
+        // coming, so stop waiting and let next_frame() serve its still frame.
+        auto ready = [this] {
+            if (buffer_eof_.load()) {
+                return true;
+            }
+            return !buffer_.empty() && (!frame_flush_ || buffer_.size() >= prefill_target());
+        };
+
+        boost::unique_lock<boost::mutex> lock(buffer_mutex_);
+        return buffer_cond_.wait_for(lock, boost::chrono::milliseconds(timeout.count()), ready);
     }
 
     core::draw_frame next_frame(const core::video_field field)
@@ -1036,7 +1071,7 @@ struct AVProducer::Impl
 
         boost::lock_guard<boost::mutex> lock(buffer_mutex_);
 
-        if (buffer_.empty() || (frame_flush_ && buffer_.size() < 4)) {
+        if (buffer_.empty() || (frame_flush_ && buffer_.size() < prefill_target())) {
             auto start    = start_.load();
             auto duration = duration_.load();
 
@@ -1315,6 +1350,8 @@ core::draw_frame AVProducer::next_frame(const core::video_field field) { return 
 core::draw_frame AVProducer::prev_frame(const core::video_field field) { return impl_->prev_frame(field); }
 
 bool AVProducer::is_ready() { return impl_->is_ready(); }
+
+bool AVProducer::wait_for_frame(std::chrono::milliseconds timeout) { return impl_->wait_for_frame(timeout); }
 
 AVProducer& AVProducer::seek(int64_t time)
 {

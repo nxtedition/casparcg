@@ -58,6 +58,7 @@
 #include <algorithm>
 #include <fstream>
 #include <future>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -2090,13 +2091,86 @@ namespace {
 // map, after main() has returned and what a live consumer needs to shut down is gone.
 struct pending_render
 {
+    // Tells one BEGIN from the next on the same channel, so a disconnect cleans up only the
+    // render it belongs to and never one scheduled since.
+    uint64_t id = 0;
+
     core::video_format_desc   format_desc;
     std::vector<std::wstring> consumer_params;
     std::optional<uint64_t>   end_frame;
+
+    // Commands, as tokens, by the render frame they run before.
+    std::multimap<uint64_t, std::list<std::wstring>> commands;
 };
 
 std::mutex                    pending_renders_mutex;
 std::map<int, pending_render> pending_renders;
+uint64_t                      next_pending_render_id = 1;
+
+std::wstring pending_render_token(int channel_index)
+{
+    return L"schedule_render_" + std::to_wstring(channel_index);
+}
+
+// Bound to the client that sent BEGIN: a render never committed would otherwise sit on the
+// channel for the life of the server, and refuse the next client's COMMIT with its own plan.
+struct pending_render_cleanup
+{
+    const int      channel_index;
+    const uint64_t id;
+
+    ~pending_render_cleanup()
+    {
+        std::lock_guard<std::mutex> lock(pending_renders_mutex);
+
+        auto it = pending_renders.find(channel_index);
+        if (it != pending_renders.end() && it->second.id == id)
+            pending_renders.erase(it);
+    }
+};
+
+// A render outlives the connection that committed it, so the commands it runs must not keep
+// that connection's state alive. They hold this instead: replies reach the client while it is
+// there and are dropped once it has gone, and the address is kept for placeholders.
+class detached_client : public IO::client_connection<wchar_t>
+{
+    const std::weak_ptr<IO::client_connection<wchar_t>> client_;
+    const std::wstring                                  address_;
+
+  public:
+    explicit detached_client(const IO::ClientInfoPtr& client)
+        : client_(client)
+        , address_(client->address())
+    {
+    }
+
+    void send(std::wstring&& data, bool skip_log) override
+    {
+        if (auto client = client_.lock())
+            client->send(std::move(data), skip_log);
+    }
+
+    void disconnect() override
+    {
+        if (auto client = client_.lock())
+            client->disconnect();
+    }
+
+    std::wstring address() const override { return address_; }
+
+    void add_lifecycle_bound_object(const std::wstring& key, const std::shared_ptr<void>& lifecycle_bound) override
+    {
+        if (auto client = client_.lock())
+            client->add_lifecycle_bound_object(key, lifecycle_bound);
+    }
+
+    std::shared_ptr<void> remove_lifecycle_bound_object(const std::wstring& key) override
+    {
+        if (auto client = client_.lock())
+            return client->remove_lifecycle_bound_object(key);
+        return {};
+    }
+};
 
 // Throws unless the command's channel is deterministic, so a caller that only needs the check
 // can discard the result.
@@ -2118,6 +2192,23 @@ spl::shared_ptr<core::frame_consumer> create_render_consumer(const command_conte
                                                                   ctx.static_context->format_repository,
                                                                   get_channels(ctx),
                                                                   ctx.channel.raw_channel->get_consumer_channel_info());
+}
+
+// An ordinary AMCP command, whose channel is the render it belongs to. `client` is whoever the
+// command replies to: the caller when validating, a detached_client once the render owns it.
+std::shared_ptr<AMCPCommand> parse_render_command(const command_context&        ctx,
+                                                  const IO::ClientInfoPtr&      client,
+                                                  const std::list<std::wstring>& tokens)
+{
+    auto command = ctx.static_context->parser->parse_command(client, tokens, L"");
+    if (!command || command->channel_index() < 0)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"not a command on a channel that exists: " +
+                                                        boost::algorithm::join(tokens, L" ")));
+
+    if (boost::starts_with(command->name(), L"SCHEDULE"))
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"cannot schedule " + command->name()));
+
+    return command;
 }
 
 uint64_t parse_frame_number(const std::wstring& token)
@@ -2161,9 +2252,20 @@ std::wstring schedule_begin_command(command_context& ctx)
                                                         L"record a deterministic render: " +
                                                         consumer->print()));
 
-    std::lock_guard<std::mutex> lock(pending_renders_mutex);
-    pending_renders.insert_or_assign(ctx.channel_index,
-                                     pending_render{format_desc, std::move(consumer_params), std::nullopt});
+    uint64_t id = 0;
+    {
+        std::lock_guard<std::mutex> lock(pending_renders_mutex);
+
+        id = next_pending_render_id++;
+        pending_renders.insert_or_assign(ctx.channel_index,
+                                         pending_render{id, format_desc, std::move(consumer_params), std::nullopt});
+    }
+
+    // Removed first: the lifecycle map's insert keeps the entry already under the key, so a
+    // second BEGIN from this client would otherwise leave the new render unguarded.
+    const auto token = pending_render_token(ctx.channel_index);
+    ctx.client->remove_lifecycle_bound_object(token);
+    ctx.client->add_lifecycle_bound_object(token, std::make_shared<pending_render_cleanup>(ctx.channel_index, id));
 
     return L"202 SCHEDULE BEGIN OK\r\n";
 }
@@ -2183,9 +2285,44 @@ std::wstring schedule_end_command(command_context& ctx)
     if (it == pending_renders.end())
         CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"no SCHEDULE BEGIN on this channel"));
 
+    auto& commands = it->second.commands;
+    if (!commands.empty() && commands.rbegin()->first >= end_frame)
+        CASPAR_THROW_EXCEPTION(
+            user_error() << msg_info(L"a command is scheduled at frame " + std::to_wstring(commands.rbegin()->first) +
+                                     L", which a render of " + std::to_wstring(end_frame) + L" frames never reaches"));
+
     it->second.end_frame = end_frame;
 
     return L"202 SCHEDULE END OK\r\n";
+}
+
+// SCHEDULE FRAME <frame> <command>
+//   Runs <command> just before frame <frame> is produced -- frame 0 before the first. <command>
+//   is an ordinary AMCP command whose channel picks the render: SCHEDULE FRAME 0 PLAY 1-10 AMB.
+std::wstring schedule_frame_command(command_context& ctx)
+{
+    const auto frame = parse_frame_number(ctx.parameters.at(0));
+
+    // Parsed now to refuse a bad one early and learn its render; COMMIT parses it again to run.
+    std::list<std::wstring> tokens(ctx.parameters.begin() + 1, ctx.parameters.end());
+    const int               channel_index = parse_render_command(ctx, ctx.client, tokens)->channel_index();
+
+    std::lock_guard<std::mutex> lock(pending_renders_mutex);
+
+    auto it = pending_renders.find(channel_index);
+    if (it == pending_renders.end())
+        CASPAR_THROW_EXCEPTION(user_error()
+                               << msg_info(L"no SCHEDULE BEGIN on channel " + std::to_wstring(channel_index + 1)));
+
+    const auto& end_frame = it->second.end_frame;
+    if (end_frame && frame >= *end_frame)
+        CASPAR_THROW_EXCEPTION(user_error()
+                               << msg_info(L"frame " + std::to_wstring(frame) + L" is never reached by a render of " +
+                                           std::to_wstring(*end_frame) + L" frames"));
+
+    it->second.commands.emplace(frame, std::move(tokens));
+
+    return L"202 SCHEDULE FRAME OK\r\n";
 }
 
 // SCHEDULE <ch> COMMIT
@@ -2209,7 +2346,35 @@ std::wstring schedule_commit_command(command_context& ctx)
         render = it->second;
     }
 
-    if (!controller->schedule_render({}, *render->end_frame))
+    // Held weakly: the actions are stored in the channel's own pacing, and the channel list
+    // holds the channel, so a strong reference would keep the channel alive from inside itself.
+    std::weak_ptr<std::vector<channel_context>> weak_channels = ctx.channels;
+
+    const IO::ClientInfoPtr render_client = spl::make_shared<detached_client>(ctx.client);
+
+    core::deterministic_controller::schedule actions;
+    for (const auto& [frame, tokens] : render->commands) {
+        actions.emplace(frame, [frame = frame, command = parse_render_command(ctx, render_client, tokens), weak_channels] {
+            auto channels = weak_channels.lock();
+            if (!channels)
+                return;
+
+            std::wstring reply;
+            try {
+                reply = command->Execute(spl::make_shared_ptr(channels)).get();
+            } catch (...) {
+                CASPAR_LOG_CURRENT_EXCEPTION();
+                reply = L"(exception)";
+            }
+
+            if (boost::starts_with(reply, L"2"))
+                CASPAR_LOG(debug) << L"SCHEDULE: frame " << frame << L" " << command->name() << L": " << reply;
+            else
+                CASPAR_LOG(warning) << L"SCHEDULE: frame " << frame << L" " << command->name() << L" failed: " << reply;
+        });
+    }
+
+    if (!controller->schedule_render(std::move(actions), *render->end_frame))
         CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"the channel is still busy with the "
                                                         L"previous render; retry once it has finished"));
 
@@ -2217,6 +2382,9 @@ std::wstring schedule_commit_command(command_context& ctx)
         std::lock_guard<std::mutex> lock(pending_renders_mutex);
         pending_renders.erase(ctx.channel_index);
     }
+
+    // Committed, so there is nothing left for a disconnect to clean up.
+    ctx.client->remove_lifecycle_bound_object(pending_render_token(ctx.channel_index));
 
     try {
         if (channel.stage()->video_format_desc() != render->format_desc)
@@ -2327,6 +2495,24 @@ void register_commands(std::shared_ptr<amcp_command_repository_wrapper>& repo)
     repo->register_command(L"Query Commands", L"OSC UNSUBSCRIBE", osc_unsubscribe_command, 1);
 
     repo->register_channel_command(L"Schedule Commands", L"SCHEDULE BEGIN", schedule_begin_command, 3);
+    // Queued on the channel its payload names, so it keeps its place among that render's
+    // other SCHEDULE commands.
+    repo->register_command(L"Schedule Commands",
+                           L"SCHEDULE FRAME",
+                           schedule_frame_command,
+                           2,
+                           [](const std::vector<std::wstring>& parameters) {
+                               // parameters are <frame> <command> [channel spec] ...
+                               if (parameters.size() < 3)
+                                   return -1;
+
+                               std::list<std::wstring> tokens(parameters.begin() + 2, parameters.end());
+                               std::wstring            channel_spec;
+                               int                     channel_index = -1;
+                               int                     layer_index   = -1;
+                               parse_channel_id(tokens, channel_spec, channel_index, layer_index);
+                               return channel_index;
+                           });
     repo->register_channel_command(L"Schedule Commands", L"SCHEDULE END", schedule_end_command, 1);
     repo->register_channel_command(L"Schedule Commands", L"SCHEDULE COMMIT", schedule_commit_command, 0);
 }

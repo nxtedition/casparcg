@@ -56,6 +56,9 @@ class output final
     bool remove(const spl::shared_ptr<frame_consumer>& consumer);
     bool remove(int index);
 
+    // Detach every consumer.
+    void clear();
+
     std::future<bool> call(int index, const std::vector<std::wstring>& params);
 
     size_t consumer_count() const;

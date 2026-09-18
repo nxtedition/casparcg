@@ -190,6 +190,8 @@ struct video_channel::impl final
                     // Consume
                     caspar::timer consume_timer;
                     output_(mixed_frame, mixed_frame2, stage_frames.format_desc);
+                    if (mixed_frame)
+                        pacing_->frame_delivered();
                     graph_->set_value("consume-time", consume_timer.elapsed() * stage_frames.format_desc.hz * 0.5);
 
                     graph_->set_value("frame-time", frame_timer.elapsed() * stage_frames.format_desc.hz * 0.5);
@@ -214,13 +216,16 @@ struct video_channel::impl final
         });
     }
 
-    // Put a deterministic channel back the way it was when it booted, once a render has
-    // finished, so that every render starts from the same state as the first. Without this
-    // the next render would inherit the previous one's layers, transforms and mixer state,
-    // and start mid-cadence. Runs on the channel thread, between ticks.
+    // Back to how the channel booted, so every render starts from the state the first one did:
+    // otherwise the next inherits consumers, layers, transforms, mixer state and audio cadence.
+    // Runs on the channel thread, between ticks.
     void reset_for_next_render()
     {
         CASPAR_LOG(info) << print() << L" Render finished; resetting the channel for the next one.";
+
+        // First, so the render's consumers are gone even if the rest fails: while one is
+        // attached, the channel would carry on producing as though the render were still going.
+        output_.clear();
 
         frame_counter_ = 0;
         stage_->clear().get();

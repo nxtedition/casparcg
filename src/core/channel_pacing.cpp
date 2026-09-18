@@ -54,11 +54,11 @@ class realtime_pacing final : public channel_pacing
 
     void reset() override { deadline_.reset(); }
 
-    // A realtime channel always has a reason to tick: with no consumers attached it still
-    // runs the loop, pacing itself on the empty-frame shortcut in output.
-    bool wait_for_demand() override { return true; }
-    void consumers_changed(size_t /*consumer_count*/) override {}
-    void abort() override {}
+    // Always a reason to tick: with no consumers the loop still runs, paced by the empty-frame
+    // shortcut in output. It never finishes, and shuts down through the channel's abort flag.
+    demand wait_for_demand() override { return demand::produce; }
+    void   consumers_changed(size_t /*consumer_count*/) override {}
+    void   abort() override {}
 
     // A realtime channel samples its producers and drops a frame if one is not ready;
     // blocking the tick loop on a slow producer would be worse than the dropped frame.
@@ -73,14 +73,31 @@ class deterministic_pacing final : public channel_pacing
     size_t                  consumer_count_ = 0;
     bool                    aborted_        = false;
 
+    // A render has produced frames and still has a consumer.
+    bool running_ = false;
+
+    // A render lost its last consumer and the channel has not reset yet. Recorded when the loss
+    // is reported, so a consumer attached again before the channel looks cannot hide it.
+    bool finish_pending_ = false;
+
   public:
     // Only produce while something is there to take the frames: without a consumer,
     // free-running would burn through the render with nothing to show for it.
-    bool wait_for_demand() override
+    demand wait_for_demand() override
     {
         std::unique_lock<std::mutex> lock(mutex_);
+
+        if (finish_pending_ && !aborted_) {
+            finish_pending_ = false;
+            return demand::finished;
+        }
+
         cv_.wait(lock, [this] { return aborted_ || consumer_count_ > 0; });
-        return !aborted_;
+        if (aborted_)
+            return demand::shutdown;
+
+        running_ = true;
+        return demand::produce;
     }
 
     void consumers_changed(size_t consumer_count) override
@@ -88,6 +105,10 @@ class deterministic_pacing final : public channel_pacing
         {
             std::lock_guard<std::mutex> lock(mutex_);
             consumer_count_ = consumer_count;
+            if (consumer_count == 0 && running_) {
+                running_        = false;
+                finish_pending_ = true;
+            }
         }
         cv_.notify_all();
     }

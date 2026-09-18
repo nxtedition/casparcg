@@ -60,7 +60,14 @@ class frame_consumer
     virtual std::wstring print() const = 0;
     virtual std::wstring name() const  = 0;
     virtual bool         has_synchronization_clock() const { return false; }
-    virtual int          index() const = 0;
+
+    /**
+     * Whether send() blocks until the frame is accepted rather than dropping it. That
+     * back-pressure is what paces a deterministic channel, which cannot afford a dropped frame.
+     */
+    virtual bool supports_deterministic_sync() const { return false; }
+
+    virtual int index() const = 0;
 };
 
 }} // namespace caspar::core

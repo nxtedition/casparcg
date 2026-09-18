@@ -426,6 +426,7 @@ struct ffmpeg_consumer : public core::frame_consumer
     std::future<void> offline_timeout_;
 
     common::bit_depth depth_;
+    bool              deterministic_ = false;
 
   public:
     ffmpeg_consumer(std::string path, std::string args, bool realtime, common::bit_depth depth)
@@ -471,9 +472,10 @@ struct ffmpeg_consumer : public core::frame_consumer
             CASPAR_THROW_EXCEPTION(invalid_operation() << msg_info("Cannot reinitialize ffmpeg-consumer."));
         }
 
-        format_desc_  = format_desc;
-        channel_info_ = channel_info;
-        port_index_   = port_index;
+        format_desc_   = format_desc;
+        channel_info_  = channel_info;
+        port_index_    = port_index;
+        deterministic_ = channel_info.deterministic;
 
         graph_->set_text(print());
 
@@ -677,6 +679,18 @@ struct ffmpeg_consumer : public core::frame_consumer
                 std::rethrow_exception(exception);
             }
         } catch (...) {
+            if (deterministic_) {
+                // No reconnecting on a deterministic channel. go_offline() discards whatever is
+                // queued and then accepts and drops frames for five seconds, and the retry
+                // reopens the file from frame 0 while the render carries on counting deliveries
+                // -- so the render would report success over a truncated, restarted recording.
+                // Detach instead: losing its last consumer is what ends a render.
+                CASPAR_LOG_CURRENT_EXCEPTION();
+                CASPAR_LOG(error) << print()
+                                  << " Writer failed; aborting the render. The recording is incomplete.";
+                return make_ready_future(false);
+            }
+
             if (!offline_) {
                 CASPAR_LOG_CURRENT_EXCEPTION();
             } else {
@@ -694,7 +708,25 @@ struct ffmpeg_consumer : public core::frame_consumer
             }
         }
 
-        if (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
+        if (deterministic_) {
+            // Back-pressure: what paces a deterministic channel, which cannot lose a frame.
+            // Not a blocking push(): the writer stops popping once it records an exception, so
+            // that would never return.
+            while (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
+                {
+                    std::lock_guard<std::mutex> lock(exception_mutex_);
+                    if (exception_ != nullptr) {
+                        // The writer is gone, so this frame can never be recorded. Detach,
+                        // which ends the render, rather than drop it and let the recording come
+                        // up short in silence.
+                        CASPAR_LOG(error)
+                            << print() << " Writer stopped while a frame waited to be queued; aborting the render.";
+                        return make_ready_future(false);
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        } else if (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
             graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
         }
 
@@ -711,6 +743,9 @@ struct ffmpeg_consumer : public core::frame_consumer
     std::wstring name() const override { return L"ffmpeg"; }
 
     bool has_synchronization_clock() const override { return false; }
+
+    // send() blocks until the writer thread accepts the frame, so no frame is ever dropped.
+    bool supports_deterministic_sync() const override { return true; }
 
     int index() const override { return 100000 + channel_info_.index; }
 

@@ -62,6 +62,13 @@ struct output::impl
 
     void add(int index, spl::shared_ptr<frame_consumer> consumer)
     {
+        if (channel_info_.deterministic && !consumer->supports_deterministic_sync()) {
+            CASPAR_THROW_EXCEPTION(user_error()
+                                   << msg_info(L"Cannot attach a consumer that drops frames to a deterministic "
+                                               L"channel: " +
+                                               consumer->print()));
+        }
+
         remove(index);
 
         consumer->initialize(format_desc_, channel_info_, index);

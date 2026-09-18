@@ -62,6 +62,7 @@
 #include <algorithm>
 #include <fstream>
 #include <future>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1748,6 +1749,9 @@ struct pending_render
     core::video_format_desc   format_desc;
     std::vector<std::wstring> consumer_params;
     std::optional<uint64_t>   end_frame;
+
+    // Commands, as tokens, by the render frame they run before.
+    std::multimap<uint64_t, std::list<std::wstring>> commands;
 };
 
 std::mutex                    pending_renders_mutex;
@@ -1771,6 +1775,20 @@ spl::shared_ptr<core::frame_consumer> create_render_consumer(const command_conte
                                                                   ctx.static_context->format_repository,
                                                                   get_channels(ctx),
                                                                   ctx.channel.raw_channel->get_consumer_channel_info());
+}
+
+// An ordinary AMCP command, whose channel is the render it belongs to.
+std::shared_ptr<AMCPCommand> parse_render_command(const command_context& ctx, const std::list<std::wstring>& tokens)
+{
+    auto command = ctx.static_context->parser->parse_command(ctx.client, tokens, L"");
+    if (!command || command->channel_index() < 0)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"not a command on a channel that exists: " +
+                                                        boost::algorithm::join(tokens, L" ")));
+
+    if (boost::starts_with(command->name(), L"SCHEDULE"))
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"cannot schedule " + command->name()));
+
+    return command;
 }
 
 uint64_t parse_frame_number(const std::wstring& token)
@@ -1827,9 +1845,44 @@ std::wstring schedule_end_command(command_context& ctx)
     if (it == pending_renders.end())
         CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"no SCHEDULE BEGIN on this channel"));
 
+    auto& commands = it->second.commands;
+    if (!commands.empty() && commands.rbegin()->first >= end_frame)
+        CASPAR_THROW_EXCEPTION(
+            user_error() << msg_info(L"a command is scheduled at frame " + std::to_wstring(commands.rbegin()->first) +
+                                     L", which a render of " + std::to_wstring(end_frame) + L" frames never reaches"));
+
     it->second.end_frame = end_frame;
 
     return L"202 SCHEDULE END OK\r\n";
+}
+
+// SCHEDULE FRAME <frame> <command>
+//   Runs <command> just before frame <frame> is produced -- frame 0 before the first. <command>
+//   is an ordinary AMCP command whose channel picks the render: SCHEDULE FRAME 0 PLAY 1-10 AMB.
+std::wstring schedule_frame_command(command_context& ctx)
+{
+    const auto frame = parse_frame_number(ctx.parameters.at(0));
+
+    // Parsed now to refuse a bad one early and learn its render; COMMIT parses it again to run.
+    std::list<std::wstring> tokens(ctx.parameters.begin() + 1, ctx.parameters.end());
+    const int               channel_index = parse_render_command(ctx, tokens)->channel_index();
+
+    std::lock_guard<std::mutex> lock(pending_renders_mutex);
+
+    auto it = pending_renders.find(channel_index);
+    if (it == pending_renders.end())
+        CASPAR_THROW_EXCEPTION(user_error()
+                               << msg_info(L"no SCHEDULE BEGIN on channel " + std::to_wstring(channel_index + 1)));
+
+    const auto& end_frame = it->second.end_frame;
+    if (end_frame && frame >= *end_frame)
+        CASPAR_THROW_EXCEPTION(user_error()
+                               << msg_info(L"frame " + std::to_wstring(frame) + L" is never reached by a render of " +
+                                           std::to_wstring(*end_frame) + L" frames"));
+
+    it->second.commands.emplace(frame, std::move(tokens));
+
+    return L"202 SCHEDULE FRAME OK\r\n";
 }
 
 // SCHEDULE <ch> COMMIT
@@ -1853,7 +1906,33 @@ std::wstring schedule_commit_command(command_context& ctx)
         render = it->second;
     }
 
-    if (!controller->schedule_render({}, *render->end_frame))
+    // Held weakly: the actions are stored in the channel's own pacing, and the channel list
+    // holds the channel, so a strong reference would keep the channel alive from inside itself.
+    std::weak_ptr<std::vector<channel_context>> weak_channels = ctx.channels;
+
+    core::deterministic_controller::schedule actions;
+    for (const auto& [frame, tokens] : render->commands) {
+        actions.emplace(frame, [frame = frame, command = parse_render_command(ctx, tokens), weak_channels] {
+            auto channels = weak_channels.lock();
+            if (!channels)
+                return;
+
+            std::wstring reply;
+            try {
+                reply = command->Execute(spl::make_shared_ptr(channels)).get();
+            } catch (...) {
+                CASPAR_LOG_CURRENT_EXCEPTION();
+                reply = L"(exception)";
+            }
+
+            if (boost::starts_with(reply, L"2"))
+                CASPAR_LOG(debug) << L"SCHEDULE: frame " << frame << L" " << command->name() << L": " << reply;
+            else
+                CASPAR_LOG(warning) << L"SCHEDULE: frame " << frame << L" " << command->name() << L" failed: " << reply;
+        });
+    }
+
+    if (!controller->schedule_render(std::move(actions), *render->end_frame))
         CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"the channel is still busy with the "
                                                         L"previous render; retry once it has finished"));
 
@@ -1963,6 +2042,24 @@ void register_commands(std::shared_ptr<amcp_command_repository_wrapper>& repo)
     repo->register_command(L"Query Commands", L"OSC UNSUBSCRIBE", osc_unsubscribe_command, 1);
 
     repo->register_channel_command(L"Schedule Commands", L"SCHEDULE BEGIN", schedule_begin_command, 3);
+    // Queued on the channel its payload names, so it keeps its place among that render's
+    // other SCHEDULE commands.
+    repo->register_command(L"Schedule Commands",
+                           L"SCHEDULE FRAME",
+                           schedule_frame_command,
+                           2,
+                           [](const std::vector<std::wstring>& parameters) {
+                               // parameters are <frame> <command> [channel spec] ...
+                               if (parameters.size() < 3)
+                                   return -1;
+
+                               std::list<std::wstring> tokens(parameters.begin() + 2, parameters.end());
+                               std::wstring            channel_spec;
+                               int                     channel_index = -1;
+                               int                     layer_index   = -1;
+                               parse_channel_id(tokens, channel_spec, channel_index, layer_index);
+                               return channel_index;
+                           });
     repo->register_channel_command(L"Schedule Commands", L"SCHEDULE END", schedule_end_command, 1);
     repo->register_channel_command(L"Schedule Commands", L"SCHEDULE COMMIT", schedule_commit_command, 0);
 }

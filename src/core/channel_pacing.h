@@ -23,8 +23,36 @@
 #include <core/video_format.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <map>
 
 namespace caspar { namespace core {
+
+/**
+ * Control over the renders on a deterministic channel. A render starts when a consumer
+ * attaches and finishes when the last one leaves. See video_channel::deterministic().
+ */
+class deterministic_controller
+{
+  public:
+    virtual ~deterministic_controller() = default;
+
+    /** Actions keyed by the render frame they run before. */
+    using schedule = std::multimap<uint64_t, std::function<void()>>;
+
+    /**
+     * Set the actions the next render runs, replacing any set before. Each runs on the channel
+     * thread just before its frame is produced: frame 0 before the first frame, frame N once N
+     * frames have been produced. Actions for the same frame run in the order given.
+     *
+     * Refused, returning false, unless the channel is idle -- waiting for a consumer, and done
+     * resetting after any previous render. Otherwise the actions would land in a render already
+     * under way, or be thrown away by the reset still to come. Anything a render leaves unrun
+     * is discarded when it finishes. May be called from any thread.
+     */
+    virtual bool set_schedule(schedule actions) = 0;
+};
 
 /**
  * Decides how fast a channel's loop may run: for a realtime channel the wall clock, unless a
@@ -72,6 +100,9 @@ class channel_pacing
      * is shutting down or has no demand: blocked inside the stage, it cannot notice either.
      */
     virtual bool keep_waiting() const = 0;
+
+    /** Called on the channel thread at the start of every frame, before it is produced. */
+    virtual void begin_frame() = 0;
 
     /**
      * Block until the next frame is due, then arm the following deadline. Once per tick, from

@@ -70,6 +70,7 @@ class realtime_pacing final : public channel_pacing
     bool keep_waiting() const override { return false; }
 
     void begin_frame() override {}
+    void frame_delivered() override {}
 };
 
 class deterministic_pacing final
@@ -81,7 +82,7 @@ class deterministic_pacing final
     size_t                  consumer_count_ = 0;
     bool                    aborted_        = false;
 
-    // A render has produced frames and still has a consumer.
+    // A render is producing frames and has not finished.
     bool running_ = false;
 
     // A render lost its last consumer and the channel has not reset yet. Recorded when the loss
@@ -99,6 +100,10 @@ class deterministic_pacing final
     // The render frame the next begin_frame() starts.
     uint64_t next_frame_ = 0;
 
+    // How many frames the planned render delivers, and how many it has delivered so far.
+    std::optional<uint64_t> frames_;
+    uint64_t                delivered_ = 0;
+
   public:
     // Only produce while something is there to take the frames: without a consumer,
     // free-running would burn through the render with nothing to show for it.
@@ -113,6 +118,8 @@ class deterministic_pacing final
             // Whatever the render left unrun belongs to it, not to the next one.
             schedule_.clear();
             next_frame_ = 0;
+            frames_.reset();
+            delivered_ = 0;
 
             return demand::finished;
         }
@@ -181,23 +188,50 @@ class deterministic_pacing final
         }
     }
 
-    bool set_schedule(schedule actions) override
+    void frame_delivered() override
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_)
+            return;
 
-        const bool idle = consumer_count_ == 0 && !finish_pending_ && !resetting_;
-        if (!idle)
+        ++delivered_;
+        if (frames_ && delivered_ >= *frames_) {
+            // The channel resets on its next wait_for_demand(), detaching the consumers.
+            running_        = false;
+            finish_pending_ = true;
+        }
+    }
+
+    bool schedule_render(schedule actions, uint64_t frames) override
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!idle())
             return false;
 
         schedule_ = std::move(actions);
+        frames_   = frames;
         return true;
+    }
+
+    void discard_render() override
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!idle())
+            return; // it started after all, and is no longer just a plan
+
+        schedule_.clear();
+        frames_.reset();
     }
 
     bool keep_waiting() const override
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        return !aborted_ && consumer_count_ > 0;
+        return !aborted_ && running_;
     }
+
+  private:
+    // Waiting for a consumer, and done resetting after any previous render. Call locked.
+    bool idle() const { return consumer_count_ == 0 && !finish_pending_ && !resetting_; }
 };
 
 } // namespace

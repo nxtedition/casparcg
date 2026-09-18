@@ -66,17 +66,32 @@ struct output::impl
 
         consumer->initialize(format_desc_, channel_info_, index);
 
-        std::lock_guard<std::mutex> lock(consumers_mutex_);
-        consumers_.emplace(index, std::move(consumer));
+        size_t count;
+        {
+            std::lock_guard<std::mutex> lock(consumers_mutex_);
+            consumers_.emplace(index, std::move(consumer));
+            count = consumers_.size();
+        }
+
+        pacing_->consumers_changed(count);
     }
 
     void add(const spl::shared_ptr<frame_consumer>& consumer) { add(consumer->index(), consumer); }
 
     bool remove(int index)
     {
-        std::lock_guard<std::mutex> lock(consumers_mutex_);
-        auto                        count = consumers_.erase(index);
-        return count > 0;
+        bool   removed;
+        size_t count;
+        {
+            std::lock_guard<std::mutex> lock(consumers_mutex_);
+            removed = consumers_.erase(index) > 0;
+            count   = consumers_.size();
+        }
+
+        if (removed)
+            pacing_->consumers_changed(count);
+
+        return removed;
     }
 
     bool remove(const spl::shared_ptr<frame_consumer>& consumer) { return remove(consumer->index()); }
@@ -155,7 +170,20 @@ struct output::impl
             consumers = consumers_;
         }
 
-        auto do_send = [this, &consumers](core::video_field field, const core::const_frame& frame) {
+        // Callers stay responsible for the local `consumers` copy, so the iterator handling
+        // below is unchanged.
+        auto drop_consumer = [this](int index) {
+            size_t count;
+            {
+                std::lock_guard<std::mutex> lock(consumers_mutex_);
+                consumers_.erase(index);
+                count = consumers_.size();
+            }
+
+            pacing_->consumers_changed(count);
+        };
+
+        auto do_send = [&](core::video_field field, const core::const_frame& frame) {
             std::map<int, std::future<bool>> futures;
 
             for (auto it = consumers.begin(); it != consumers.end();) {
@@ -166,9 +194,7 @@ struct output::impl
                     CASPAR_LOG_CURRENT_EXCEPTION();
                     auto index = it->first;
                     it         = consumers.erase(it);
-
-                    std::lock_guard<std::mutex> lock(consumers_mutex_);
-                    consumers_.erase(index);
+                    drop_consumer(index);
                 }
             }
 
@@ -176,16 +202,12 @@ struct output::impl
                 try {
                     if (!p.second.get()) {
                         consumers.erase(p.first);
-
-                        std::lock_guard<std::mutex> lock(consumers_mutex_);
-                        consumers_.erase(p.first);
+                        drop_consumer(p.first);
                     }
                 } catch (...) {
                     CASPAR_LOG_CURRENT_EXCEPTION();
                     consumers.erase(p.first);
-
-                    std::lock_guard<std::mutex> lock(consumers_mutex_);
-                    consumers_.erase(p.first);
+                    drop_consumer(p.first);
                 }
             }
         };

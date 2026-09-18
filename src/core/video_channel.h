@@ -71,9 +71,14 @@ class video_channel final
     video_channel& operator=(const video_channel&);
 
   public:
+    /**
+     * `deterministic` takes the channel off the wall clock: frames are produced as fast as its
+     * producers and consumers allow, and only while a consumer is attached. See channel_pacing.h.
+     */
     explicit video_channel(int                                       index,
                            const video_format_desc&                  format_desc,
                            color_space                               default_color_space,
+                           bool                                      deterministic,
                            std::unique_ptr<image_mixer>              image_mixer,
                            std::function<void(core::monitor::state)> on_tick);
     ~video_channel();

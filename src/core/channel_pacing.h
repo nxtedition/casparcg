@@ -22,6 +22,8 @@
 #include <common/memory.h>
 #include <core/video_format.h>
 
+#include <cstddef>
+
 namespace caspar { namespace core {
 
 /**
@@ -37,6 +39,18 @@ class channel_pacing
 
     channel_pacing(const channel_pacing&)            = delete;
     channel_pacing& operator=(const channel_pacing&) = delete;
+
+    /**
+     * Block at the top of a tick until the channel has a reason to produce a frame.
+     * Returns false when the channel is shutting down and its loop should exit.
+     */
+    virtual bool wait_for_demand() = 0;
+
+    /** The output's consumer set changed, so a strategy gating on demand can wake. */
+    virtual void consumers_changed(size_t consumer_count) = 0;
+
+    /** Unblock wait_for_demand() permanently; the channel is shutting down. */
+    virtual void abort() = 0;
 
     /**
      * Block until the next frame is due, then arm the following deadline. Once per tick, from
@@ -55,5 +69,12 @@ class channel_pacing
  * Paces the channel against the wall clock at the format's frame rate.
  */
 spl::shared_ptr<channel_pacing> create_realtime_pacing();
+
+/**
+ * Off the wall clock entirely: frames are produced as fast as the producers and consumers
+ * allow, and only while a consumer is attached. Rendering then depends on how many frames
+ * have been produced rather than how much time has passed, which is what makes it repeatable.
+ */
+spl::shared_ptr<channel_pacing> create_deterministic_pacing();
 
 }} // namespace caspar::core

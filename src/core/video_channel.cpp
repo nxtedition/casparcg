@@ -105,10 +105,11 @@ struct video_channel::impl final
     impl(int                                       index,
          const core::video_format_desc&            format_desc,
          color_space                               default_color_space,
+         bool                                      deterministic,
          std::unique_ptr<image_mixer>              image_mixer,
          std::function<void(core::monitor::state)> tick)
         : channel_info_(index, image_mixer->depth(), default_color_space)
-        , pacing_(create_realtime_pacing())
+        , pacing_(deterministic ? create_deterministic_pacing() : create_realtime_pacing())
         , output_(graph_, format_desc, channel_info_, pacing_)
         , image_mixer_(std::move(image_mixer))
         , mixer_(index, graph_, image_mixer_)
@@ -131,6 +132,11 @@ struct video_channel::impl final
 
             while (!abort_request_) {
                 try {
+                    // Blocks until the channel has a reason to produce a frame. Realtime
+                    // channels always do; a deterministic one waits for a consumer.
+                    if (!pacing_->wait_for_demand())
+                        break;
+
                     graph_->set_text(print());
 
                     frame_counter_ += 1;
@@ -203,6 +209,7 @@ struct video_channel::impl final
     {
         CASPAR_LOG(info) << print() << " Uninitializing.";
         abort_request_ = true;
+        pacing_->abort(); // the tick loop may be parked in wait_for_demand()
         thread_.join();
     }
 
@@ -247,9 +254,10 @@ struct video_channel::impl final
 video_channel::video_channel(int                                       index,
                              const core::video_format_desc&            format_desc,
                              color_space                               default_color_space,
+                             bool                                      deterministic,
                              std::unique_ptr<image_mixer>              image_mixer,
                              std::function<void(core::monitor::state)> tick)
-    : impl_(new impl(index, format_desc, default_color_space, std::move(image_mixer), std::move(tick)))
+    : impl_(new impl(index, format_desc, default_color_space, deterministic, std::move(image_mixer), std::move(tick)))
 {
 }
 video_channel::~video_channel() {}

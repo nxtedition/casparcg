@@ -113,7 +113,7 @@ struct video_channel::impl final
         , output_(graph_, format_desc, channel_info_, pacing_)
         , image_mixer_(std::move(image_mixer))
         , mixer_(index, graph_, image_mixer_)
-        , stage_(std::make_shared<core::stage>(index, graph_, format_desc))
+        , stage_(std::make_shared<core::stage>(index, graph_, format_desc, pacing_))
         , tick_(std::move(tick))
     {
         graph_->set_color("produce-time", caspar::diagnostics::color(0.0f, 1.0f, 0.0f));

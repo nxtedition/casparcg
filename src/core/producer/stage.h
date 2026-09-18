@@ -28,6 +28,7 @@
 #include <common/memory.h>
 #include <common/tweener.h>
 
+#include <core/channel_pacing.h>
 #include <core/frame/draw_frame.h>
 #include <core/video_format.h>
 
@@ -114,7 +115,8 @@ class stage final : public stage_base
   public:
     explicit stage(int                                         channel_index,
                    spl::shared_ptr<caspar::diagnostics::graph> graph,
-                   const core::video_format_desc&              format_desc);
+                   const core::video_format_desc&              format_desc,
+                   spl::shared_ptr<channel_pacing>             pacing);
 
     const stage_frames operator()(uint64_t                                     frame_number,
                                   std::vector<int>&                            fetch_background,

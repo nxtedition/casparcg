@@ -36,6 +36,7 @@
 
 #include <boost/range/adaptors.hpp>
 
+#include <chrono>
 #include <functional>
 #include <future>
 #include <map>
@@ -45,12 +46,13 @@ namespace caspar { namespace core {
 
 struct stage::impl : public std::enable_shared_from_this<impl>
 {
-    int                                 channel_index_;
-    spl::shared_ptr<diagnostics::graph> graph_;
-    monitor::state                      state_;
-    std::map<int, layer>                layers_;
-    std::map<int, tweened_transform>    tweens_;
-    std::set<int>                       routeSources;
+    int                                   channel_index_;
+    spl::shared_ptr<diagnostics::graph>   graph_;
+    monitor::state                        state_;
+    std::map<int, layer>                  layers_;
+    std::map<int, tweened_transform>      tweens_;
+    std::set<int>                         routeSources;
+    const spl::shared_ptr<channel_pacing> pacing_;
 
     mutable std::mutex      format_desc_mutex_;
     core::video_format_desc format_desc_;
@@ -109,9 +111,13 @@ struct stage::impl : public std::enable_shared_from_this<impl>
     }
 
   public:
-    impl(int channel_index, spl::shared_ptr<diagnostics::graph> graph, const core::video_format_desc& format_desc)
+    impl(int                                 channel_index,
+         spl::shared_ptr<diagnostics::graph> graph,
+         const core::video_format_desc&      format_desc,
+         spl::shared_ptr<channel_pacing>     pacing)
         : channel_index_(channel_index)
         , graph_(std::move(graph))
+        , pacing_(std::move(pacing))
         , format_desc_(format_desc)
     {
     }
@@ -160,6 +166,43 @@ struct stage::impl : public std::enable_shared_from_this<impl>
                 // when running interlaced, both fields are be pulled at once.
                 // This will risk some stutter for freshly created producers, but it lets us tick at 25hz and avoids
                 // amcp changes starting on the second field
+
+                // Wait for every waitable foreground before pulling any, so the result depends
+                // on which frame each producer is at, not on how long it took to warm up.
+                // Producers on an external clock are skipped and sampled as they are.
+                if (pacing_->waits_for_producers()) {
+                    // In slices, re-checking with the strategy each time: the channel thread
+                    // is blocked inside this executor invocation for the whole wait and
+                    // cannot notice shutdown, or the render being cancelled, by itself.
+                    constexpr auto slice = std::chrono::milliseconds(50);
+
+                    auto wait_for = [&](core::layer& layer, video_field field) {
+                        while (!layer.wait_for_foreground(field, slice)) {
+                            if (!pacing_->keep_waiting())
+                                return;
+                        }
+                    };
+
+                    for (auto& l : layerVec) {
+                        if (!l.second)
+                            continue;
+
+                        auto p = layers_.find(l.first);
+                        if (p == layers_.end())
+                            continue;
+
+                        // Settle any pending swap before asking about the producer, so the
+                        // answers and the later receive() all concern the same one.
+                        p->second.resolve_pending_swap(field1);
+
+                        if (!p->second.foreground_supports_deterministic_sync())
+                            continue;
+
+                        wait_for(p->second, field1);
+                        if (is_interlaced)
+                            wait_for(p->second, video_field::b);
+                    }
+                }
 
                 for (auto& l : layerVec) {
                     auto p = layers_.find(l.first);
@@ -427,8 +470,11 @@ struct stage::impl : public std::enable_shared_from_this<impl>
     }
 };
 
-stage::stage(int channel_index, spl::shared_ptr<diagnostics::graph> graph, const core::video_format_desc& format_desc)
-    : impl_(new impl(channel_index, std::move(graph), format_desc))
+stage::stage(int                                 channel_index,
+             spl::shared_ptr<diagnostics::graph> graph,
+             const core::video_format_desc&      format_desc,
+             spl::shared_ptr<channel_pacing>     pacing)
+    : impl_(new impl(channel_index, std::move(graph), format_desc, std::move(pacing)))
 {
 }
 std::future<std::wstring> stage::call(int index, const std::vector<std::wstring>& params)

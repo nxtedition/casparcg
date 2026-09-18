@@ -134,8 +134,14 @@ struct video_channel::impl final
                 try {
                     // Blocks until the channel has a reason to produce a frame. Realtime
                     // channels always do; a deterministic one waits for a consumer.
-                    if (!pacing_->wait_for_demand())
+                    const auto demand = pacing_->wait_for_demand();
+                    if (demand == channel_pacing::demand::shutdown)
                         break;
+
+                    if (demand == channel_pacing::demand::finished) {
+                        reset_for_next_render();
+                        continue;
+                    }
 
                     graph_->set_text(print());
 
@@ -203,6 +209,20 @@ struct video_channel::impl final
                 }
             }
         });
+    }
+
+    // Put a deterministic channel back the way it was when it booted, once a render has
+    // finished, so that every render starts from the same state as the first. Without this
+    // the next render would inherit the previous one's layers, transforms and mixer state,
+    // and start mid-cadence. Runs on the channel thread, between ticks.
+    void reset_for_next_render()
+    {
+        CASPAR_LOG(info) << print() << L" Render finished; resetting the channel for the next one.";
+
+        frame_counter_ = 0;
+        stage_->clear().get();
+        stage_->clear_transforms().get();
+        mixer_.reset();
     }
 
     ~impl()

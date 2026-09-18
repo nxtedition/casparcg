@@ -40,11 +40,20 @@ class channel_pacing
     channel_pacing(const channel_pacing&)            = delete;
     channel_pacing& operator=(const channel_pacing&) = delete;
 
+    /** What the channel should do next, as decided by wait_for_demand(). */
+    enum class demand
+    {
+        produce,  // produce the next frame
+        finished, // the render in progress has lost its last consumer; reset, then ask again
+        shutdown, // the channel is shutting down; leave the loop
+    };
+
     /**
-     * Block at the top of a tick until the channel has a reason to produce a frame.
-     * Returns false when the channel is shutting down and its loop should exit.
+     * Block at the top of a tick until the channel has a reason to produce a frame. `finished`
+     * is reported once when a render loses its last consumer, before blocking again: the
+     * channel resets then, so anything set up while it waits belongs to the next render.
      */
-    virtual bool wait_for_demand() = 0;
+    virtual demand wait_for_demand() = 0;
 
     /** The output's consumer set changed, so a strategy gating on demand can wake. */
     virtual void consumers_changed(size_t consumer_count) = 0;

@@ -59,11 +59,16 @@ class realtime_pacing final : public channel_pacing
     bool wait_for_demand() override { return true; }
     void consumers_changed(size_t /*consumer_count*/) override {}
     void abort() override {}
+
+    // A realtime channel samples its producers and drops a frame if one is not ready;
+    // blocking the tick loop on a slow producer would be worse than the dropped frame.
+    bool waits_for_producers() const override { return false; }
+    bool keep_waiting() const override { return false; }
 };
 
 class deterministic_pacing final : public channel_pacing
 {
-    std::mutex              mutex_;
+    mutable std::mutex      mutex_;
     std::condition_variable cv_;
     size_t                  consumer_count_ = 0;
     bool                    aborted_        = false;
@@ -100,6 +105,14 @@ class deterministic_pacing final : public channel_pacing
     // not by how much time has passed.
     void tick(const video_format_desc& /*format_desc*/) override {}
     void reset() override {}
+
+    bool waits_for_producers() const override { return true; }
+
+    bool keep_waiting() const override
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return !aborted_ && consumer_count_ > 0;
+    }
 };
 
 } // namespace

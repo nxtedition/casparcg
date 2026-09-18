@@ -53,6 +53,18 @@ class channel_pacing
     virtual void abort() = 0;
 
     /**
+     * Whether to wait for producers to have a frame rather than sampling what they hold.
+     * Waiting keeps a render off producer warm-up timing, but would stall a realtime channel.
+     */
+    virtual bool waits_for_producers() const = 0;
+
+    /**
+     * Whether a wait started under waits_for_producers() should go on. False once the channel
+     * is shutting down or has no demand: blocked inside the stage, it cannot notice either.
+     */
+    virtual bool keep_waiting() const = 0;
+
+    /**
      * Block until the next frame is due, then arm the following deadline. Once per tick, from
      * the channel thread, after the frame has gone to the consumers.
      */

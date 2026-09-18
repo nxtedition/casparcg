@@ -25,6 +25,7 @@
 #include "../monitor/monitor.h"
 
 #include <common/memory.h>
+#include <core/channel_pacing.h>
 #include <core/video_format.h>
 
 #include <memory>
@@ -40,7 +41,8 @@ class output final
   public:
     explicit output(const spl::shared_ptr<diagnostics::graph>& graph,
                     const video_format_desc&                   format_desc,
-                    const core::channel_info&                  channel_info);
+                    const core::channel_info&                  channel_info,
+                    spl::shared_ptr<channel_pacing>            pacing);
 
     output(const output&)            = delete;
     output& operator=(const output&) = delete;

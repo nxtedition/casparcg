@@ -31,15 +31,10 @@
 #include <common/except.h>
 #include <common/memory.h>
 
-#include <chrono>
 #include <map>
-#include <optional>
-#include <thread>
 #include <utility>
 
 namespace caspar { namespace core {
-
-using time_point_t = decltype(std::chrono::high_resolution_clock::now());
 
 struct output::impl
 {
@@ -51,15 +46,17 @@ struct output::impl
     std::mutex                                     consumers_mutex_;
     std::map<int, spl::shared_ptr<frame_consumer>> consumers_;
 
-    std::optional<time_point_t> time_;
+    const spl::shared_ptr<channel_pacing> pacing_;
 
   public:
     impl(const spl::shared_ptr<diagnostics::graph>& graph,
          const video_format_desc&                   format_desc,
-         const core::channel_info&                  channel_info)
+         const core::channel_info&                  channel_info,
+         spl::shared_ptr<channel_pacing>            pacing)
         : graph_(graph)
         , channel_info_(channel_info)
         , format_desc_(format_desc)
+        , pacing_(std::move(pacing))
     {
     }
 
@@ -110,8 +107,6 @@ struct output::impl
                     const const_frame&             input_frame2,
                     const core::video_format_desc& format_desc)
     {
-        auto time = std::move(time_);
-
         if (format_desc_ != format_desc) {
             std::lock_guard<std::mutex> lock(consumers_mutex_);
             for (auto it = consumers_.begin(); it != consumers_.end();) {
@@ -124,19 +119,14 @@ struct output::impl
                 }
             }
             format_desc_ = format_desc;
-            time_        = {};
+            pacing_->reset();
             return;
         }
 
         // If no frame is provided, this should only happen when the channel has no consumers.
         // Take a shortcut and perform the sleep to let the channel tick correctly.
         if (!input_frame1) {
-            if (!time) {
-                time = std::chrono::high_resolution_clock::now();
-            } else {
-                std::this_thread::sleep_until(*time);
-            }
-            time_ = *time + std::chrono::microseconds(static_cast<int>(1e6 / format_desc_.hz));
+            pacing_->tick(format_desc_);
             return;
         }
 
@@ -144,6 +134,7 @@ struct output::impl
             input_frame1.pixel_format_desc().planes.at(0).depth == common::bit_depth::bit8 ? 1 : 2;
         if (input_frame1.size() != format_desc_.size * bytesPerComponent1) {
             CASPAR_LOG(warning) << print() << L" Invalid input frame size.";
+            pacing_->reset();
             return;
         }
 
@@ -153,6 +144,7 @@ struct output::impl
 
             if (input_frame2.size() != format_desc_.size * bytesPerComponent2) {
                 CASPAR_LOG(warning) << print() << L" Invalid input frame size.";
+                pacing_->reset();
                 return;
             }
         }
@@ -216,14 +208,10 @@ struct output::impl
             consumers.begin(), consumers.end(), [](auto& p) { return !p.second->has_synchronization_clock(); });
 
         if (needs_sync) {
-            if (!time) {
-                time = std::chrono::high_resolution_clock::now();
-            } else {
-                std::this_thread::sleep_until(*time);
-            }
-            time_ = *time + std::chrono::microseconds(static_cast<int>(1e6 / format_desc_.hz));
+            pacing_->tick(format_desc_);
         } else {
-            time_.reset();
+            // A consumer brings its own clock; its blocking send() is what paces us.
+            pacing_->reset();
         }
     }
 
@@ -232,8 +220,9 @@ struct output::impl
 
 output::output(const spl::shared_ptr<diagnostics::graph>& graph,
                const video_format_desc&                   format_desc,
-               const core::channel_info&                  channel_info)
-    : impl_(new impl(graph, format_desc, channel_info))
+               const core::channel_info&                  channel_info,
+               spl::shared_ptr<channel_pacing>            pacing)
+    : impl_(new impl(graph, format_desc, channel_info, std::move(pacing)))
 {
 }
 output::~output() {}

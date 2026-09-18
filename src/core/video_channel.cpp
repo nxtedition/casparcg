@@ -26,6 +26,7 @@
 
 #include "video_format.h"
 
+#include "channel_pacing.h"
 #include "consumer/channel_info.h"
 #include "consumer/output.h"
 #include "frame/draw_frame.h"
@@ -61,6 +62,8 @@ struct video_channel::impl final
         core::diagnostics::call_context::for_thread().video_channel = index;
         return spl::make_shared<caspar::diagnostics::graph>();
     }(channel_info_.index);
+
+    const spl::shared_ptr<channel_pacing> pacing_;
 
     caspar::core::output         output_;
     spl::shared_ptr<image_mixer> image_mixer_;
@@ -105,7 +108,8 @@ struct video_channel::impl final
          std::unique_ptr<image_mixer>              image_mixer,
          std::function<void(core::monitor::state)> tick)
         : channel_info_(index, image_mixer->depth(), default_color_space)
-        , output_(graph_, format_desc, channel_info_)
+        , pacing_(create_realtime_pacing())
+        , output_(graph_, format_desc, channel_info_, pacing_)
         , image_mixer_(std::move(image_mixer))
         , mixer_(index, graph_, image_mixer_)
         , stage_(std::make_shared<core::stage>(index, graph_, format_desc))

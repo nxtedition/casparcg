@@ -127,6 +127,16 @@ struct output::impl
 
     bool remove(const spl::shared_ptr<frame_consumer>& consumer) { return remove(consumer->index()); }
 
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock(consumers_mutex_);
+        if (consumers_.empty())
+            return;
+
+        consumers_.clear();
+        report_consumers_locked();
+    }
+
     std::future<bool> call(int index, const std::vector<std::wstring>& params)
     {
         std::lock_guard<std::mutex> lock(consumers_mutex_);
@@ -149,20 +159,22 @@ struct output::impl
         return consumers_.size();
     }
 
-    void operator()(const const_frame&             input_frame1,
+    // True if the frame reached the consumers, so a caller counting a render's output can tell
+    // a delivered frame from one dropped on the way.
+    bool operator()(const const_frame&             input_frame1,
                     const const_frame&             input_frame2,
                     const core::video_format_desc& format_desc)
     {
         if (format_desc_ != format_desc) {
             change_format(format_desc);
-            return;
+            return false;
         }
 
         // If no frame is provided, this should only happen when the channel has no consumers.
         // Take a shortcut and perform the sleep to let the channel tick correctly.
         if (!input_frame1) {
             pacing_->tick(format_desc_);
-            return;
+            return false;
         }
 
         const auto bytesPerComponent1 =
@@ -170,7 +182,7 @@ struct output::impl
         if (input_frame1.size() != format_desc_.size * bytesPerComponent1) {
             CASPAR_LOG(warning) << print() << L" Invalid input frame size.";
             pacing_->reset();
-            return;
+            return false;
         }
 
         if (input_frame2) {
@@ -180,7 +192,7 @@ struct output::impl
             if (input_frame2.size() != format_desc_.size * bytesPerComponent2) {
                 CASPAR_LOG(warning) << print() << L" Invalid input frame size.";
                 pacing_->reset();
-                return;
+                return false;
             }
         }
 
@@ -250,6 +262,8 @@ struct output::impl
             // A consumer brings its own clock; its blocking send() is what paces us.
             pacing_->reset();
         }
+
+        return true;
     }
 
     std::wstring print() const { return L"output[" + std::to_wstring(channel_info_.index) + L"]"; }
@@ -267,13 +281,14 @@ void output::add(int index, const spl::shared_ptr<frame_consumer>& consumer) { i
 void output::add(const spl::shared_ptr<frame_consumer>& consumer) { impl_->add(consumer); }
 bool output::remove(int index) { return impl_->remove(index); }
 bool output::remove(const spl::shared_ptr<frame_consumer>& consumer) { return impl_->remove(consumer); }
+void              output::clear() { impl_->clear(); }
 std::future<bool> output::call(int index, const std::vector<std::wstring>& params)
 {
     return impl_->call(index, params);
 }
 size_t output::consumer_count() const { return impl_->consumer_count(); }
 void   output::change_format(const video_format_desc& format_desc) { impl_->change_format(format_desc); }
-void   output::operator()(const const_frame& frame, const const_frame& frame2, const video_format_desc& format_desc)
+bool   output::operator()(const const_frame& frame, const const_frame& frame2, const video_format_desc& format_desc)
 {
     return (*impl_)(frame, frame2, format_desc);
 }

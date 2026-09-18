@@ -22,10 +22,12 @@
 #include <common/memory.h>
 #include <core/video_format.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <string>
 
 namespace caspar { namespace core {
 
@@ -42,16 +44,17 @@ class deterministic_controller
     using schedule = std::multimap<uint64_t, std::function<void()>>;
 
     /**
-     * Set the actions the next render runs, replacing any set before. Each runs on the channel
-     * thread just before its frame is produced: frame 0 before the first frame, frame N once N
-     * frames have been produced. Actions for the same frame run in the order given.
-     *
-     * Refused, returning false, unless the channel is idle -- waiting for a consumer, and done
-     * resetting after any previous render. Otherwise the actions would land in a render already
-     * under way, or be thrown away by the reset still to come. Anything a render leaves unrun
-     * is discarded when it finishes. May be called from any thread.
+     * Plan the next render, replacing any earlier plan: it delivers `frames` frames and then
+     * finishes, detaching its consumers, running `actions` along the way. Each action runs on
+     * the channel thread just before its frame is produced -- frame 0 before the first -- and
+     * those for the same frame in the order given. `frames` counts frames delivered, which is
+     * a little behind produced. Refused unless the channel is idle, since the plan would
+     * otherwise land in a render under way or be thrown away by the reset still to come.
      */
-    virtual bool set_schedule(schedule actions) = 0;
+    virtual bool schedule_render(schedule actions, uint64_t frames) = 0;
+
+    /** Forget a planned render that did not start, so the next one does not pick up its plan. */
+    virtual void discard_render() = 0;
 };
 
 /**
@@ -101,8 +104,27 @@ class channel_pacing
      */
     virtual bool keep_waiting() const = 0;
 
+    /**
+     * How long one such wait may go on before the render is given up on. Zero means no limit,
+     * which is what a strategy that never waits reports.
+     */
+    virtual std::chrono::milliseconds producer_wait_timeout() const = 0;
+
+    /**
+     * Give up on the render in progress: it cannot go on, and waiting longer only holds the
+     * channel. The channel then resets as though the render had finished, detaching its
+     * consumers so whatever was recorded is closed off. `reason` is logged. Does nothing if no
+     * render is running.
+     */
+    virtual void abort_render(const std::wstring& reason) = 0;
+
     /** Called on the channel thread at the start of every frame, before it is produced. */
     virtual void begin_frame() = 0;
+
+    /**
+     * A frame has gone to the consumers. Not every tick: the mixer hands them out a tick late.
+     */
+    virtual void frame_delivered() = 0;
 
     /**
      * Block until the next frame is due, then arm the following deadline. Once per tick, from

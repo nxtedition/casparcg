@@ -28,16 +28,21 @@ namespace caspar::core {
 
 struct channel_info
 {
-    channel_info(int channel_index, common::bit_depth depth, color_space color_space)
+    channel_info(int channel_index, common::bit_depth depth, color_space color_space, bool deterministic = false)
         : index(channel_index)
         , depth(depth)
         , default_color_space(color_space)
+        , deterministic(deterministic)
     {
     }
 
     int               index;
     common::bit_depth depth;
     color_space       default_color_space;
+
+    // The channel renders decoupled from the wall clock, so a consumer attached to it must
+    // apply back-pressure rather than drop frames. See core/channel_pacing.h.
+    bool deterministic;
 };
 
 } // namespace caspar::core

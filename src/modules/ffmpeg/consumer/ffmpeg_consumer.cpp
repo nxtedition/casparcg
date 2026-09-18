@@ -426,6 +426,7 @@ struct ffmpeg_consumer : public core::frame_consumer
     std::future<void> offline_timeout_;
 
     common::bit_depth depth_;
+    bool              deterministic_ = false;
 
   public:
     ffmpeg_consumer(std::string path, std::string args, bool realtime, common::bit_depth depth)
@@ -471,9 +472,10 @@ struct ffmpeg_consumer : public core::frame_consumer
             CASPAR_THROW_EXCEPTION(invalid_operation() << msg_info("Cannot reinitialize ffmpeg-consumer."));
         }
 
-        format_desc_  = format_desc;
-        channel_info_ = channel_info;
-        port_index_   = port_index;
+        format_desc_   = format_desc;
+        channel_info_  = channel_info;
+        port_index_    = port_index;
+        deterministic_ = channel_info.deterministic;
 
         graph_->set_text(print());
 
@@ -694,7 +696,20 @@ struct ffmpeg_consumer : public core::frame_consumer
             }
         }
 
-        if (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
+        if (deterministic_) {
+            // Back-pressure: what paces a deterministic channel, which cannot lose a frame.
+            // Not a blocking push(): the writer stops popping once it records an exception, so
+            // that would never return, and the recovery in the next send() never be reached.
+            while (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
+                {
+                    std::lock_guard<std::mutex> lock(exception_mutex_);
+                    if (exception_ != nullptr) {
+                        break; // dropped; the next send() reports it and goes offline
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        } else if (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
             graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
         }
 
@@ -711,6 +726,9 @@ struct ffmpeg_consumer : public core::frame_consumer
     std::wstring name() const override { return L"ffmpeg"; }
 
     bool has_synchronization_clock() const override { return false; }
+
+    // send() blocks until the writer thread accepts the frame, so no frame is ever dropped.
+    bool supports_deterministic_sync() const override { return true; }
 
     int index() const override { return 100000 + channel_info_.index; }
 

@@ -36,6 +36,7 @@
 #include <common/os/filesystem.h>
 #include <common/param.h>
 
+#include <core/channel_pacing.h>
 #include <core/consumer/frame_consumer.h>
 #include <core/consumer/frame_consumer_registry.h>
 #include <core/consumer/output.h>
@@ -57,7 +58,10 @@
 #include <algorithm>
 #include <fstream>
 #include <future>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
 
 #if defined(__GNUC__) && __GNUC__ == 14
 #pragma GCC diagnostic push
@@ -2078,6 +2082,150 @@ std::wstring osc_unsubscribe_command(command_context& ctx)
     return L"202 OSC UNSUBSCRIBE OK\r\n";
 }
 
+namespace {
+
+// A render being described with SCHEDULE <ch> BEGIN ... COMMIT, kept per channel the way
+// MIXER <ch> ... DEFER keeps deferred transforms: BEGIN replaces, COMMIT consumes, and nothing
+// touches the channel until COMMIT. Plain data only: one never committed is destroyed with the
+// map, after main() has returned and what a live consumer needs to shut down is gone.
+struct pending_render
+{
+    core::video_format_desc   format_desc;
+    std::vector<std::wstring> consumer_params;
+    std::optional<uint64_t>   end_frame;
+};
+
+std::mutex                    pending_renders_mutex;
+std::map<int, pending_render> pending_renders;
+
+std::shared_ptr<core::deterministic_controller> deterministic_controller_of(const command_context& ctx)
+{
+    auto controller = ctx.channel.raw_channel->deterministic().lock();
+    if (!controller)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"the channel is not deterministic"));
+    return controller;
+}
+
+spl::shared_ptr<core::frame_consumer> create_render_consumer(const command_context&           ctx,
+                                                             const std::vector<std::wstring>& params)
+{
+    core::diagnostics::scoped_call_context save;
+    core::diagnostics::call_context::for_thread().video_channel = ctx.channel_index + 1;
+
+    return ctx.static_context->consumer_registry->create_consumer(params,
+                                                                  ctx.static_context->format_repository,
+                                                                  get_channels(ctx),
+                                                                  ctx.channel.raw_channel->get_consumer_channel_info());
+}
+
+uint64_t parse_frame_number(const std::wstring& token)
+{
+    uint64_t frame = 0;
+    if (!boost::conversion::try_lexical_convert(token, frame) || boost::starts_with(token, L"-"))
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"invalid frame number: " + token));
+    return frame;
+}
+
+} // namespace
+
+// SCHEDULE <ch> BEGIN <format> ADD <consumer>
+std::wstring schedule_begin_command(command_context& ctx)
+{
+    deterministic_controller_of(ctx);
+
+    if (!boost::iequals(ctx.parameters.at(1), L"ADD"))
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"expected <format> ADD <consumer>"));
+
+    auto format_desc = ctx.static_context->format_repository.find(ctx.parameters.at(0));
+    if (format_desc.format == core::video_format::invalid)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"invalid video format: " + ctx.parameters.at(0)));
+
+    std::vector<std::wstring> consumer_params(ctx.parameters.begin() + 2, ctx.parameters.end());
+    replace_placeholders(L"<CLIENT_IP_ADDRESS>", ctx.client->address(), consumer_params);
+
+    // Built only to reject a bad consumer early; COMMIT builds the one that records.
+    auto consumer = create_render_consumer(ctx, consumer_params);
+    if (!consumer->supports_deterministic_sync())
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"consumer drops frames, so it cannot "
+                                                        L"record a deterministic render: " +
+                                                        consumer->print()));
+
+    std::lock_guard<std::mutex> lock(pending_renders_mutex);
+    pending_renders.insert_or_assign(ctx.channel_index,
+                                     pending_render{format_desc, std::move(consumer_params), std::nullopt});
+
+    return L"202 SCHEDULE BEGIN OK\r\n";
+}
+
+// SCHEDULE <ch> END <frame>
+//   The render stops once <frame> frames have been produced, so the recording holds exactly
+//   that many.
+std::wstring schedule_end_command(command_context& ctx)
+{
+    const auto end_frame = parse_frame_number(ctx.parameters.at(0));
+    if (end_frame < 1)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"a render needs at least one frame"));
+
+    std::lock_guard<std::mutex> lock(pending_renders_mutex);
+
+    auto it = pending_renders.find(ctx.channel_index);
+    if (it == pending_renders.end())
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"no SCHEDULE BEGIN on this channel"));
+
+    it->second.end_frame = end_frame;
+
+    return L"202 SCHEDULE END OK\r\n";
+}
+
+// SCHEDULE <ch> COMMIT
+//   Starts the render. Refused, leaving the render in place to retry, while the previous render
+//   on the channel is still running.
+std::wstring schedule_commit_command(command_context& ctx)
+{
+    auto  controller = deterministic_controller_of(ctx);
+    auto& channel    = *ctx.channel.raw_channel;
+
+    std::optional<pending_render> render;
+    {
+        std::lock_guard<std::mutex> lock(pending_renders_mutex);
+
+        auto it = pending_renders.find(ctx.channel_index);
+        if (it == pending_renders.end())
+            CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"no SCHEDULE BEGIN on this channel"));
+        if (!it->second.end_frame)
+            CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"send SCHEDULE END <frame> before COMMIT"));
+
+        render = it->second;
+    }
+
+    if (!controller->schedule_render({}, *render->end_frame))
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"the channel is still busy with the "
+                                                        L"previous render; retry once it has finished"));
+
+    {
+        std::lock_guard<std::mutex> lock(pending_renders_mutex);
+        pending_renders.erase(ctx.channel_index);
+    }
+
+    try {
+        if (channel.stage()->video_format_desc() != render->format_desc)
+            channel.stage()->video_format_desc(render->format_desc).get();
+
+        // The channel is not producing, so switch the output now rather than lose frame 0 to
+        // the switch.
+        channel.output().change_format(render->format_desc);
+
+        // Attaching the consumer is what starts the render.
+        channel.output().add(create_render_consumer(ctx, render->consumer_params));
+    } catch (...) {
+        // The render never started; its plan must not carry over to whichever render does next.
+        controller->discard_render();
+        throw;
+    }
+
+    return L"202 SCHEDULE COMMIT OK\r\n";
+}
+
 void register_commands(std::shared_ptr<amcp_command_repository_wrapper>& repo)
 {
     repo->register_channel_command(L"Basic Commands", L"LOADBG", loadbg_command, 1);
@@ -2166,5 +2314,9 @@ void register_commands(std::shared_ptr<amcp_command_repository_wrapper>& repo)
 
     repo->register_command(L"Query Commands", L"OSC SUBSCRIBE", osc_subscribe_command, 1);
     repo->register_command(L"Query Commands", L"OSC UNSUBSCRIBE", osc_unsubscribe_command, 1);
+
+    repo->register_channel_command(L"Schedule Commands", L"SCHEDULE BEGIN", schedule_begin_command, 3);
+    repo->register_channel_command(L"Schedule Commands", L"SCHEDULE END", schedule_end_command, 1);
+    repo->register_channel_command(L"Schedule Commands", L"SCHEDULE COMMIT", schedule_commit_command, 0);
 }
 }}} // namespace caspar::protocol::amcp

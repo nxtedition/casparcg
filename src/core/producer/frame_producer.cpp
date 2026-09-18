@@ -74,6 +74,10 @@ const spl::shared_ptr<frame_producer>& frame_producer::empty()
         }
 
         bool is_ready() override { return true; }
+
+        // Always ready, and part of every transition on a fresh layer: were it not waitable,
+        // neither would any transition from it be.
+        bool supports_deterministic_sync() const override { return true; }
     };
 
     static spl::shared_ptr<frame_producer> producer = spl::make_shared<empty_frame_producer>();

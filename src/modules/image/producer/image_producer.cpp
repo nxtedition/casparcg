@@ -92,6 +92,9 @@ struct image_producer : public core::frame_producer
 
     bool is_ready() override { return true; }
 
+    // Always ready, so waiting on it never has to wait.
+    bool supports_deterministic_sync() const override { return true; }
+
     core::draw_frame receive_impl(const core::video_field field, int nb_samples) override { return frame_; }
 
     uint32_t nb_frames() const override { return length_; }

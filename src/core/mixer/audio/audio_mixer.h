@@ -47,6 +47,10 @@ class audio_mixer final : public frame_visitor
     array<const int32_t> operator()(const struct video_format_desc& format_desc, int nb_samples);
     void                 set_master_volume(float volume);
     float                get_master_volume();
+
+    // Forget everything carried from one mix to the next, and restore the default master
+    // volume. Call from the thread that mixes.
+    void                 reset();
     core::monitor::state state() const;
 
     void push(const struct frame_transform& transform) override;

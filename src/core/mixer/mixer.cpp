@@ -106,6 +106,16 @@ struct mixer::impl
     void set_master_volume(float volume) { audio_mixer_.set_master_volume(volume); }
 
     float get_master_volume() { return audio_mixer_.get_master_volume(); }
+
+    void reset()
+    {
+        audio_mixer_.reset();
+
+        // Frames are handed out a tick after they are mixed (see operator()); whatever is still
+        // in flight belongs to what was being mixed before, and would otherwise come out first
+        // afterwards. The image mixer itself composes every frame from scratch.
+        buffer_ = {};
+    }
 };
 
 mixer::mixer(int channel_index, spl::shared_ptr<diagnostics::graph> graph, spl::shared_ptr<image_mixer> image_mixer)
@@ -114,6 +124,7 @@ mixer::mixer(int channel_index, spl::shared_ptr<diagnostics::graph> graph, spl::
 }
 void        mixer::set_master_volume(float volume) { impl_->set_master_volume(volume); }
 float       mixer::get_master_volume() { return impl_->get_master_volume(); }
+void        mixer::reset() { impl_->reset(); }
 const_frame mixer::operator()(std::vector<draw_frame> frames, const video_format_desc& format_desc, int nb_samples)
 {
     return (*impl_)(std::move(frames), format_desc, nb_samples);

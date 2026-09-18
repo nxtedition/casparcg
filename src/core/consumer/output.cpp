@@ -69,37 +69,44 @@ struct output::impl
                                                consumer->print()));
         }
 
-        remove(index);
-
-        consumer->initialize(format_desc_, channel_info_, index);
-
-        size_t count;
+        // Taken out quietly, and reported once the new one is in: losing the last consumer ends
+        // a deterministic render, and a replacement must not look like that for an instant.
+        bool replaced;
         {
             std::lock_guard<std::mutex> lock(consumers_mutex_);
-            consumers_.emplace(index, std::move(consumer));
-            count = consumers_.size();
+            replaced = consumers_.erase(index) > 0;
         }
 
-        pacing_->consumers_changed(count);
+        try {
+            consumer->initialize(format_desc_, channel_info_, index);
+        } catch (...) {
+            if (replaced) {
+                std::lock_guard<std::mutex> lock(consumers_mutex_);
+                report_consumers_locked();
+            }
+            throw;
+        }
+
+        std::lock_guard<std::mutex> lock(consumers_mutex_);
+        consumers_.emplace(index, std::move(consumer));
+        report_consumers_locked();
     }
 
     void add(const spl::shared_ptr<frame_consumer>& consumer) { add(consumer->index(), consumer); }
 
     bool remove(int index)
     {
-        bool   removed;
-        size_t count;
-        {
-            std::lock_guard<std::mutex> lock(consumers_mutex_);
-            removed = consumers_.erase(index) > 0;
-            count   = consumers_.size();
-        }
+        std::lock_guard<std::mutex> lock(consumers_mutex_);
+        if (consumers_.erase(index) == 0)
+            return false;
 
-        if (removed)
-            pacing_->consumers_changed(count);
-
-        return removed;
+        report_consumers_locked();
+        return true;
     }
+
+    // Call with consumers_mutex_ held, so reports reach the strategy in the order the changes
+    // were made: a stale report of zero would end a render that still has a consumer.
+    void report_consumers_locked() { pacing_->consumers_changed(consumers_.size()); }
 
     bool remove(const spl::shared_ptr<frame_consumer>& consumer) { return remove(consumer->index()); }
 
@@ -140,6 +147,7 @@ struct output::impl
                     it = consumers_.erase(it);
                 }
             }
+            report_consumers_locked(); // some may have failed to re-initialize and been dropped
             format_desc_ = format_desc;
             pacing_->reset();
             return;
@@ -180,14 +188,9 @@ struct output::impl
         // Callers stay responsible for the local `consumers` copy, so the iterator handling
         // below is unchanged.
         auto drop_consumer = [this](int index) {
-            size_t count;
-            {
-                std::lock_guard<std::mutex> lock(consumers_mutex_);
-                consumers_.erase(index);
-                count = consumers_.size();
-            }
-
-            pacing_->consumers_changed(count);
+            std::lock_guard<std::mutex> lock(consumers_mutex_);
+            if (consumers_.erase(index) > 0)
+                report_consumers_locked();
         };
 
         auto do_send = [&](core::video_field field, const core::const_frame& frame) {

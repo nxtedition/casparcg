@@ -48,6 +48,11 @@ class mixer final
     void  set_master_volume(float volume);
     float get_master_volume();
 
+    // Forget everything carried from one frame to the next -- including frames mixed but not
+    // yet handed out -- and restore the default master volume, as if the mixer had just been
+    // created. Call from the channel thread.
+    void reset();
+
     mutable_frame create_frame(const void* tag, const pixel_format_desc& desc);
 
     core::monitor::state state() const;

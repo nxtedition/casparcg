@@ -399,6 +399,24 @@ class sting_producer : public frame_producer
     monitor::state state() const override { return state_; }
 
     bool is_ready() override { return dst_producer_->is_ready(); }
+
+    // Only as waitable as its parts, and ready once all it may draw are. Each part gets the
+    // same timeout rather than a split deadline: callers retry, so a partial wait costs a pass.
+
+    bool supports_deterministic_sync() const override
+    {
+        return src_producer_->supports_deterministic_sync() && dst_producer_->supports_deterministic_sync() &&
+               mask_producer_->supports_deterministic_sync() && overlay_producer_->supports_deterministic_sync();
+    }
+
+    bool wait_for_frame(const core::video_field field, std::chrono::milliseconds timeout) override
+    {
+        const bool src     = src_producer_->wait_for_frame(field, timeout);
+        const bool dst     = dst_producer_->wait_for_frame(field, timeout);
+        const bool mask    = mask_producer_->wait_for_frame(field, timeout);
+        const bool overlay = overlay_producer_->wait_for_frame(field, timeout);
+        return src && dst && mask && overlay;
+    }
 };
 
 spl::shared_ptr<frame_producer> create_sting_producer(const frame_producer_dependencies&     dependencies,

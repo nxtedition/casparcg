@@ -22,6 +22,8 @@
 #include "channel_pacing.h"
 
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <optional>
 #include <thread>
 
@@ -51,10 +53,62 @@ class realtime_pacing final : public channel_pacing
     }
 
     void reset() override { deadline_.reset(); }
+
+    // A realtime channel always has a reason to tick: with no consumers attached it still
+    // runs the loop, pacing itself on the empty-frame shortcut in output.
+    bool wait_for_demand() override { return true; }
+    void consumers_changed(size_t /*consumer_count*/) override {}
+    void abort() override {}
+};
+
+class deterministic_pacing final : public channel_pacing
+{
+    std::mutex              mutex_;
+    std::condition_variable cv_;
+    size_t                  consumer_count_ = 0;
+    bool                    aborted_        = false;
+
+  public:
+    // Only produce while something is there to take the frames: without a consumer,
+    // free-running would burn through the render with nothing to show for it.
+    bool wait_for_demand() override
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [this] { return aborted_ || consumer_count_ > 0; });
+        return !aborted_;
+    }
+
+    void consumers_changed(size_t consumer_count) override
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            consumer_count_ = consumer_count;
+        }
+        cv_.notify_all();
+    }
+
+    void abort() override
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            aborted_ = true;
+        }
+        cv_.notify_all();
+    }
+
+    // No wall clock. The channel is throttled by how fast its consumers accept frames,
+    // not by how much time has passed.
+    void tick(const video_format_desc& /*format_desc*/) override {}
+    void reset() override {}
 };
 
 } // namespace
 
 spl::shared_ptr<channel_pacing> create_realtime_pacing() { return spl::make_shared<channel_pacing, realtime_pacing>(); }
+
+spl::shared_ptr<channel_pacing> create_deterministic_pacing()
+{
+    return spl::make_shared<channel_pacing, deterministic_pacing>();
+}
 
 }} // namespace caspar::core

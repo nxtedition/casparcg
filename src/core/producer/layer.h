@@ -28,6 +28,8 @@
 
 #include <common/memory.h>
 
+#include <chrono>
+
 namespace caspar { namespace core {
 
 class layer final
@@ -52,6 +54,19 @@ class layer final
 
     draw_frame receive(const video_field field, int nb_samples);
     draw_frame receive_background(const video_field field, int nb_samples);
+
+    /**
+     * Apply a pending follower swap, so everything asked of the foreground this tick concerns
+     * the producer receive() will pull. receive() does it too, but a deterministic channel
+     * needs it before asking about readiness -- and twice would advance two producers a tick.
+     */
+    void resolve_pending_swap(const video_field field);
+
+    /** True if the foreground producer can be waited on. See frame_producer.h. */
+    bool foreground_supports_deterministic_sync() const;
+
+    /** Wait up to `timeout` for the foreground producer to have a frame ready. */
+    bool wait_for_foreground(const video_field field, std::chrono::milliseconds timeout);
 
     core::monitor::state state() const;
 

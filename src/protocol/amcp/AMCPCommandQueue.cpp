@@ -63,8 +63,12 @@ std::future<bool> exec_cmd(std::shared_ptr<AMCPCommand>                         
             cmd->SendReply(L"404 " + cmd->name() + L" FAILED\r\n", reply_without_req_id);
         } catch (expected_user_error&) {
             cmd->SendReply(L"403 " + cmd->name() + L" FAILED\r\n", reply_without_req_id);
-        } catch (user_error&) {
-            CASPAR_LOG(error) << " Check syntax.";
+        } catch (user_error& e) {
+            // The client only gets the status code, so log the reason.
+            if (auto msg = boost::get_error_info<msg_info_t>(e))
+                CASPAR_LOG(error) << cmd->name() << L": " << u16(*msg);
+            else
+                CASPAR_LOG(error) << " Check syntax.";
             cmd->SendReply(L"403 " + cmd->name() + L" FAILED\r\n", reply_without_req_id);
         } catch (std::out_of_range&) {
             CASPAR_LOG(error) << L"Missing parameter. Check syntax.";

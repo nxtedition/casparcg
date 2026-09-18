@@ -60,6 +60,12 @@ class output final
 
     size_t consumer_count() const;
 
+    /**
+     * Switch now, re-initializing the consumers, rather than on the first frame in the new
+     * format -- which does not survive the switch. For a channel that is not producing.
+     */
+    void change_format(const video_format_desc& format_desc);
+
     core::monitor::state state() const;
 
   private:

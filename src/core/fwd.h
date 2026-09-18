@@ -40,6 +40,7 @@ class draw_frame;
 class mutable_frame;
 class const_frame;
 class video_channel;
+class deterministic_controller;
 struct pixel_format_desc;
 struct frame_transform;
 struct frame_producer_dependencies;

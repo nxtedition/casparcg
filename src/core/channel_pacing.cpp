@@ -21,11 +21,15 @@
 
 #include "channel_pacing.h"
 
+#include <common/log.h>
+
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <vector>
 
 namespace caspar { namespace core {
 
@@ -64,9 +68,13 @@ class realtime_pacing final : public channel_pacing
     // blocking the tick loop on a slow producer would be worse than the dropped frame.
     bool waits_for_producers() const override { return false; }
     bool keep_waiting() const override { return false; }
+
+    void begin_frame() override {}
 };
 
-class deterministic_pacing final : public channel_pacing
+class deterministic_pacing final
+    : public channel_pacing
+    , public deterministic_controller
 {
     mutable std::mutex      mutex_;
     std::condition_variable cv_;
@@ -80,6 +88,17 @@ class deterministic_pacing final : public channel_pacing
     // is reported, so a consumer attached again before the channel looks cannot hide it.
     bool finish_pending_ = false;
 
+    // The channel was told the render finished and is resetting itself; it is done once the
+    // channel thread comes back to wait_for_demand().
+    bool resetting_ = false;
+
+    // Actions by the render frame they run before. A multimap keeps equal keys in insertion
+    // order, which is the order actions for the same frame run in.
+    schedule schedule_;
+
+    // The render frame the next begin_frame() starts.
+    uint64_t next_frame_ = 0;
+
   public:
     // Only produce while something is there to take the frames: without a consumer,
     // free-running would burn through the render with nothing to show for it.
@@ -89,8 +108,17 @@ class deterministic_pacing final : public channel_pacing
 
         if (finish_pending_ && !aborted_) {
             finish_pending_ = false;
+            resetting_      = true;
+
+            // Whatever the render left unrun belongs to it, not to the next one.
+            schedule_.clear();
+            next_frame_ = 0;
+
             return demand::finished;
         }
+
+        // Back after being told the render finished, so the channel has reset itself.
+        resetting_ = false;
 
         cv_.wait(lock, [this] { return aborted_ || consumer_count_ > 0; });
         if (aborted_)
@@ -128,6 +156,42 @@ class deterministic_pacing final : public channel_pacing
     void reset() override {}
 
     bool waits_for_producers() const override { return true; }
+
+    void begin_frame() override
+    {
+        std::vector<std::function<void()>> due;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            const auto end = schedule_.upper_bound(next_frame_);
+            for (auto it = schedule_.begin(); it != end; ++it)
+                due.push_back(std::move(it->second));
+            schedule_.erase(schedule_.begin(), end);
+
+            ++next_frame_;
+        }
+
+        // Outside the lock: an action can run arbitrary work that calls back into this strategy.
+        for (auto& action : due) {
+            try {
+                action();
+            } catch (...) {
+                CASPAR_LOG_CURRENT_EXCEPTION();
+            }
+        }
+    }
+
+    bool set_schedule(schedule actions) override
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        const bool idle = consumer_count_ == 0 && !finish_pending_ && !resetting_;
+        if (!idle)
+            return false;
+
+        schedule_ = std::move(actions);
+        return true;
+    }
 
     bool keep_waiting() const override
     {

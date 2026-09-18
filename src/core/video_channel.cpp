@@ -147,6 +147,9 @@ struct video_channel::impl final
 
                     frame_counter_ += 1;
 
+                    // Before producing, so anything scheduled for this frame is in effect.
+                    pacing_->begin_frame();
+
                     caspar::timer frame_timer;
 
                     // Determine all layers that need a frame from the background producer
@@ -293,5 +296,12 @@ channel_info         video_channel::get_consumer_channel_info() const { return i
 core::monitor::state video_channel::state() const { return impl_->state_; }
 
 std::shared_ptr<route> video_channel::route(int index, route_mode mode) { return impl_->route(index, mode); }
+
+std::weak_ptr<deterministic_controller> video_channel::deterministic() const
+{
+    // The deterministic pacing strategy implements the controller and a realtime one does not,
+    // so the cross-cast comes back empty for a realtime channel.
+    return std::dynamic_pointer_cast<deterministic_controller>(std::shared_ptr<channel_pacing>(impl_->pacing_));
+}
 
 }} // namespace caspar::core

@@ -100,6 +100,9 @@ class video_channel final
 
     std::shared_ptr<core::route> route(int index = -1, route_mode mode = route_mode::foreground);
 
+    /** This channel's render controls, if deterministic; empty otherwise. Does not own them. */
+    std::weak_ptr<deterministic_controller> deterministic() const;
+
   private:
     struct impl;
     spl::unique_ptr<impl> impl_;

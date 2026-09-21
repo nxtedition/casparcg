@@ -54,6 +54,10 @@ struct stage::impl : public std::enable_shared_from_this<impl>
     std::set<int>                         routeSources;
     const spl::shared_ptr<channel_pacing> pacing_;
 
+    // Per layer, the producer last reported as one that cannot be waited on, so the warning is
+    // given once per producer rather than every frame. Only compared, never dereferenced.
+    std::map<int, const frame_producer*> unwaitable_reported_;
+
     mutable std::mutex      format_desc_mutex_;
     core::video_format_desc format_desc_;
 
@@ -195,8 +199,18 @@ struct stage::impl : public std::enable_shared_from_this<impl>
                         // answers and the later receive() all concern the same one.
                         p->second.resolve_pending_swap(field1);
 
-                        if (!p->second.foreground_supports_deterministic_sync())
+                        if (!p->second.foreground_supports_deterministic_sync()) {
+                            // Sampled as it is instead, so the render now depends on its timing.
+                            auto  foreground = p->second.foreground();
+                            auto& reported   = unwaitable_reported_[p->first];
+                            if (reported != foreground.get()) {
+                                reported = foreground.get();
+                                CASPAR_LOG(warning) << L"stage[" << channel_index_ << L"] layer " << p->first << L": "
+                                                    << foreground->print()
+                                                    << L" cannot be waited on, so the render depends on its timing.";
+                            }
                             continue;
+                        }
 
                         wait_for(p->second, field1);
                         if (is_interlaced)
@@ -361,7 +375,10 @@ struct stage::impl : public std::enable_shared_from_this<impl>
 
     std::future<void> clear()
     {
-        return executor_.begin_invoke([=] { layers_.clear(); });
+        return executor_.begin_invoke([=] {
+            layers_.clear();
+            unwaitable_reported_.clear();
+        });
     }
 
     std::future<void> swap_layers(const std::shared_ptr<stage>& other, bool swap_transforms)

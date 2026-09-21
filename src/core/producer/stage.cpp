@@ -54,6 +54,11 @@ struct stage::impl : public std::enable_shared_from_this<impl>
     std::set<int>                         routeSources;
     const spl::shared_ptr<channel_pacing> pacing_;
 
+    // Per layer, the producer last reported as one that cannot be waited on, so the warning is
+    // given once per producer rather than every frame. Weak rather than raw: a new producer
+    // allocated at the address of the one before would otherwise inherit its silence.
+    std::map<int, std::weak_ptr<const frame_producer>> unwaitable_reported_;
+
     mutable std::mutex      format_desc_mutex_;
     core::video_format_desc format_desc_;
 
@@ -216,8 +221,18 @@ struct stage::impl : public std::enable_shared_from_this<impl>
                         // answers and the later receive() all concern the same one.
                         p->second.resolve_pending_swap(field1);
 
-                        if (!p->second.foreground_supports_deterministic_sync())
+                        if (!p->second.foreground_supports_deterministic_sync()) {
+                            // Sampled as it is instead, so the render now depends on its timing.
+                            const std::shared_ptr<const frame_producer> foreground = p->second.foreground();
+                            auto&                                       reported = unwaitable_reported_[p->first];
+                            if (reported.lock() != foreground) {
+                                reported = foreground;
+                                CASPAR_LOG(warning) << L"stage[" << channel_index_ << L"] layer " << p->first << L": "
+                                                    << foreground->print()
+                                                    << L" cannot be waited on, so the render depends on its timing.";
+                            }
                             continue;
+                        }
 
                         wait_for(p->first, p->second, field1);
                         if (is_interlaced)
@@ -345,7 +360,8 @@ struct stage::impl : public std::enable_shared_from_this<impl>
         return executor_.begin_invoke([=, this] { return tweens_[index].fetch(); });
     }
 
-    std::future<void> load(int index, const spl::shared_ptr<frame_producer>& producer, bool preview, bool auto_play, bool live)
+    std::future<void>
+    load(int index, const spl::shared_ptr<frame_producer>& producer, bool preview, bool auto_play, bool live)
     {
         return executor_.begin_invoke([=, this] { get_layer(index).load(producer, preview, auto_play, live); });
     }
@@ -382,7 +398,10 @@ struct stage::impl : public std::enable_shared_from_this<impl>
 
     std::future<void> clear()
     {
-        return executor_.begin_invoke([=, this] { layers_.clear(); });
+        return executor_.begin_invoke([=, this] {
+            layers_.clear();
+            unwaitable_reported_.clear();
+        });
     }
 
     std::future<void> swap_layers(const std::shared_ptr<stage>& other, bool swap_transforms)
@@ -522,7 +541,8 @@ std::future<void> stage::apply_transform(int                                    
 std::future<void>            stage::clear_transforms(int index) { return impl_->clear_transforms(index); }
 std::future<void>            stage::clear_transforms() { return impl_->clear_transforms(); }
 std::future<frame_transform> stage::get_current_transform(int index) { return impl_->get_current_transform(index); }
-std::future<void> stage::load(int index, const spl::shared_ptr<frame_producer>& producer, bool preview, bool auto_play, bool live)
+std::future<void>
+stage::load(int index, const spl::shared_ptr<frame_producer>& producer, bool preview, bool auto_play, bool live)
 {
     return impl_->load(index, producer, preview, auto_play, live);
 }
@@ -614,7 +634,8 @@ std::future<frame_transform> stage_delayed::get_current_transform(int index)
 std::future<void>
 stage_delayed::load(int index, const spl::shared_ptr<frame_producer>& producer, bool preview, bool auto_play, bool live)
 {
-    return executor_.begin_invoke([=, this]() { return stage_->load(index, producer, preview, auto_play, live).get(); });
+    return executor_.begin_invoke(
+        [=, this]() { return stage_->load(index, producer, preview, auto_play, live).get(); });
 }
 std::future<void> stage_delayed::preview(int index)
 {

@@ -236,9 +236,15 @@ struct video_channel::impl final
     ~impl()
     {
         CASPAR_LOG(info) << print() << " Uninitializing.";
+        stop();
+    }
+
+    void stop()
+    {
         abort_request_ = true;
         pacing_->abort(); // the tick loop may be parked in wait_for_demand()
-        thread_.join();
+        if (thread_.joinable())
+            thread_.join();
     }
 
     std::shared_ptr<core::route> route(int index = -1, route_mode mode = route_mode::foreground)
@@ -289,6 +295,7 @@ video_channel::video_channel(int                                       index,
 {
 }
 video_channel::~video_channel() {}
+void                                video_channel::stop() { impl_->stop(); }
 const std::shared_ptr<core::stage>& video_channel::stage() const { return impl_->stage_; }
 std::shared_ptr<core::stage>&       video_channel::stage() { return impl_->stage_; }
 const mixer&                        video_channel::mixer() const { return impl_->mixer_; }

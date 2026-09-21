@@ -204,12 +204,14 @@ std::vector<spl::shared_ptr<core::video_channel>> get_channels(const command_con
 core::frame_producer_dependencies get_producer_dependencies(const std::shared_ptr<core::video_channel>& channel,
                                                             const command_context&                      ctx)
 {
-    return core::frame_producer_dependencies(channel->frame_factory(),
-                                             get_channels(ctx),
-                                             ctx.static_context->format_repository,
-                                             channel->stage()->video_format_desc(),
-                                             ctx.static_context->producer_registry,
-                                             ctx.static_context->cg_registry);
+    auto dependencies          = core::frame_producer_dependencies(channel->frame_factory(),
+                                                          get_channels(ctx),
+                                                          ctx.static_context->format_repository,
+                                                          channel->stage()->video_format_desc(),
+                                                          ctx.static_context->producer_registry,
+                                                          ctx.static_context->cg_registry);
+    dependencies.deterministic = channel->get_consumer_channel_info().deterministic;
+    return dependencies;
 }
 
 bool try_match_sting(const std::vector<std::wstring>& params, sting_info& stingInfo)

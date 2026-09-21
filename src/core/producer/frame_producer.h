@@ -193,6 +193,10 @@ struct frame_producer_dependencies
     spl::shared_ptr<const frame_producer_registry> producer_registry;
     spl::shared_ptr<const cg_producer_registry>    cg_registry;
 
+    // The producer is created for a deterministic channel, which will wait for it rather than
+    // sample it. A producer that has to be driven differently for that can tell from this.
+    bool deterministic = false;
+
     frame_producer_dependencies(const spl::shared_ptr<core::frame_factory>&           frame_factory,
                                 const std::vector<spl::shared_ptr<video_channel>>&    channels,
                                 const video_format_repository&                        format_repository,

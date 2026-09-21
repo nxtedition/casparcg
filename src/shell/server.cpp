@@ -526,6 +526,14 @@ struct server::impl
         }
     }
 
+    size_t active_consumer_count() const
+    {
+        size_t count = 0;
+        for (const auto& channel : *channels_)
+            count += channel.raw_channel->output().consumer_count();
+        return count;
+    }
+
     IO::protocol_strategy_factory<char>::ptr create_protocol(const std::wstring& name,
                                                              const std::wstring& port_description) const
     {
@@ -547,5 +555,6 @@ spl::shared_ptr<protocol::amcp::amcp_command_repository> server::get_amcp_comman
 {
     return spl::make_shared_ptr(impl_->amcp_command_repo_);
 }
+size_t server::active_consumer_count() const { return impl_->active_consumer_count(); }
 
 } // namespace caspar

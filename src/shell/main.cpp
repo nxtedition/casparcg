@@ -54,6 +54,10 @@
 #include <boost/stacktrace.hpp>
 
 #include <atomic>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <thread>
 
 #include <clocale>
@@ -85,6 +89,19 @@ void print_info()
     CASPAR_LOG(info) << L"Starting CasparCG Video and Graphics Playout Server " << env::version();
 }
 
+// The console input thread is detached and outlives run(): stdin stays open after EXIT or a
+// signal, leaving the thread blocked in getline long after everything it used to capture by
+// reference is gone. It shares this instead, and touches nothing without the lock. run() clears
+// `alive` before it unwinds, so the thread can never reach a destroyed io_context or server.
+struct console_state
+{
+    std::mutex                               mutex;
+    bool                                     alive = true;
+    std::function<void(const std::wstring&)> parse;
+    std::function<void()>                    on_exit_command;
+    std::function<void()>                    on_eof;
+};
+
 auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_for_keypress)
 {
     boost::asio::io_context io;
@@ -112,6 +129,32 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
 
     caspar_server->start();
 
+    // With shutdown-on-eof, a script piped in to render to files ends the process once the last
+    // recording is done: no channel has had a consumer for the grace period, which covers ones
+    // that commands sent just before EOF have yet to attach. On the io thread, so it stops with io.
+    const bool shutdown_on_eof = env::properties().get(L"configuration.shutdown-on-eof", false);
+    const auto idle_grace =
+        std::chrono::milliseconds(env::properties().get(L"configuration.shutdown-on-eof-grace-ms", 2000));
+
+    boost::asio::steady_timer             idle_timer(io);
+    std::chrono::steady_clock::time_point last_active;
+    std::function<void()>                 check_idle = [&] {
+        const auto now = std::chrono::steady_clock::now();
+        if (caspar_server->active_consumer_count() > 0) {
+            last_active = now;
+        } else if (now - last_active >= idle_grace) {
+            CASPAR_LOG(info) << L"stdin reached EOF and no channel has a consumer; shutting down.";
+            shutdown(false); // false to not restart
+            return;
+        }
+
+        idle_timer.expires_after(std::chrono::milliseconds(100));
+        idle_timer.async_wait([&](const boost::system::error_code& ec) {
+            if (!ec)
+                check_idle();
+        });
+    };
+
     // Create a dummy client which prints amcp responses to console.
     auto console_client = spl::make_shared<IO::ConsoleClientInfo>();
 
@@ -122,7 +165,25 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
     // Use separate thread for the blocking console input, will be terminated
     // anyway when the main thread terminates.
 
-    std::thread([&]() mutable {
+    auto console = std::make_shared<console_state>();
+
+    console->parse           = [&](const std::wstring& cmd) { amcp->parse(cmd); };
+    console->on_exit_command = [&] {
+        should_wait_for_keypress = true;
+        shutdown(false); // false to not restart
+    };
+    console->on_eof = [&] {
+        if (!shutdown_on_eof)
+            return;
+        // Safe to post: `alive` is only cleared once io.run() has returned, and a handler that
+        // never gets to run is destroyed with the context rather than invoked.
+        boost::asio::post(io, [&] {
+            last_active = std::chrono::steady_clock::now();
+            check_idle();
+        });
+    };
+
+    std::thread([console]() mutable {
         std::wstring wcmd;
         while (true) {
 #ifdef WIN32
@@ -136,6 +197,9 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
             if (!std::getline(std::cin, cmd1)) { // TODO: It's blocking...
                 if (std::cin.eof()) {
                     std::cin.clear();
+                    std::lock_guard<std::mutex> lock(console->mutex);
+                    if (console->alive)
+                        console->on_eof();
                     break;
                 }
                 std::cin.clear();
@@ -145,26 +209,48 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
 #endif
 
             // If the cmd is empty, no point trying to parse it
-            if (!wcmd.empty()) {
-                if (boost::iequals(wcmd, L"EXIT") || boost::iequals(wcmd, L"Q") || boost::iequals(wcmd, L"QUIT") ||
-                    boost::iequals(wcmd, L"BYE")) {
-                    CASPAR_LOG(info) << L"Received message from Console: " << wcmd << L"\\r\\n";
-                    should_wait_for_keypress = true;
-                    shutdown(false); // false to not restart
-                    break;
-                }
+            if (wcmd.empty())
+                continue;
 
-                wcmd += L"\r\n";
-                amcp->parse(wcmd);
+            std::lock_guard<std::mutex> lock(console->mutex);
+            if (!console->alive)
+                break;
+
+            if (boost::iequals(wcmd, L"EXIT") || boost::iequals(wcmd, L"Q") || boost::iequals(wcmd, L"QUIT") ||
+                boost::iequals(wcmd, L"BYE")) {
+                CASPAR_LOG(info) << L"Received message from Console: " << wcmd << L"\\r\\n";
+                console->on_exit_command();
+                break;
             }
+
+            wcmd += L"\r\n";
+            console->parse(wcmd);
         }
     }).detach();
+
+    // Also on the paths out of run() that skip the explicit retire below, such as a throw.
+    struct retire_console
+    {
+        std::shared_ptr<console_state> state;
+        ~retire_console()
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->alive = false;
+        }
+    } retire{console};
 
     // Signal handlers needs to be installed after Cef has been initialized.
     boost::asio::signal_set signals(io, SIGINT, SIGTERM);
     signals.async_wait([&](auto, auto) { io.stop(); });
 
     io.run();
+
+    // Everything the console thread reaches through is about to go; stop it first. It may be
+    // mid-command, in which case this waits for that command to finish.
+    {
+        std::lock_guard<std::mutex> lock(console->mutex);
+        console->alive = false;
+    }
 
     caspar_server.reset();
 

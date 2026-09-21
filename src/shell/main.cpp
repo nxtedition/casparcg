@@ -54,6 +54,8 @@
 #include <boost/stacktrace.hpp>
 
 #include <atomic>
+#include <chrono>
+#include <functional>
 #include <thread>
 
 #include <clocale>
@@ -112,6 +114,32 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
 
     caspar_server->start();
 
+    // With shutdown-on-eof, a script piped in to render to files ends the process once the last
+    // recording is done: no channel has had a consumer for the grace period, which covers ones
+    // that commands sent just before EOF have yet to attach. On the io thread, so it stops with io.
+    const bool shutdown_on_eof = env::properties().get(L"configuration.shutdown-on-eof", false);
+    const auto idle_grace =
+        std::chrono::milliseconds(env::properties().get(L"configuration.shutdown-on-eof-grace-ms", 2000));
+
+    boost::asio::steady_timer             idle_timer(io);
+    std::chrono::steady_clock::time_point last_active;
+    std::function<void()>                 check_idle = [&] {
+        const auto now = std::chrono::steady_clock::now();
+        if (caspar_server->active_consumer_count() > 0) {
+            last_active = now;
+        } else if (now - last_active >= idle_grace) {
+            CASPAR_LOG(info) << L"stdin reached EOF and no channel has a consumer; shutting down.";
+            shutdown(false); // false to not restart
+            return;
+        }
+
+        idle_timer.expires_after(std::chrono::milliseconds(100));
+        idle_timer.async_wait([&](const boost::system::error_code& ec) {
+            if (!ec)
+                check_idle();
+        });
+    };
+
     // Create a dummy client which prints amcp responses to console.
     auto console_client = spl::make_shared<IO::ConsoleClientInfo>();
 
@@ -136,6 +164,12 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
             if (!std::getline(std::cin, cmd1)) { // TODO: It's blocking...
                 if (std::cin.eof()) {
                     std::cin.clear();
+                    if (shutdown_on_eof) {
+                        boost::asio::post(io, [&] {
+                            last_active = std::chrono::steady_clock::now();
+                            check_idle();
+                        });
+                    }
                     break;
                 }
                 std::cin.clear();

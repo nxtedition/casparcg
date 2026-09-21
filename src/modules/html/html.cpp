@@ -190,6 +190,11 @@ class renderer_application
 #if __unix__
         if (getenv("DISPLAY") == nullptr) {
             command_line->AppendSwitchWithValue("ozone-platform", "headless");
+        } else {
+            // With a display, say so explicitly rather than leave it to Chromium's own choice:
+            // BeginFrame control of the compositor, which virtual-time rendering relies on,
+            // needs the x11 platform.
+            command_line->AppendSwitchWithValue("ozone-platform", "x11");
         }
 #endif
 

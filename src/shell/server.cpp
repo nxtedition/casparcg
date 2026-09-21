@@ -158,6 +158,12 @@ struct server::impl
 
     ~impl()
     {
+        // Before anything else: a channel's thread runs whatever its producers, consumers and
+        // scheduled commands do, and those use the AMCP machinery and channel list torn down
+        // below.
+        for (auto& channel : *channels_)
+            channel.raw_channel->stop();
+
         std::weak_ptr<boost::asio::io_context> weak_io_context = io_context_;
         io_context_.reset();
         predefined_osc_subscriptions_.clear();

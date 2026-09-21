@@ -83,6 +83,13 @@ class video_channel final
                            std::function<void(core::monitor::state)> on_tick);
     ~video_channel();
 
+    /**
+     * Stop producing and join the channel's thread. Everything it uses must still be alive
+     * until this returns: the thread runs whatever its producers, consumers and scheduled
+     * commands do. Idempotent; the destructor calls it too.
+     */
+    void stop();
+
     core::monitor::state state() const;
 
     const std::shared_ptr<core::stage>& stage() const;

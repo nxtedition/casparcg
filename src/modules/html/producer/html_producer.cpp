@@ -54,9 +54,14 @@
 #pragma warning(disable : 4458)
 #include <include/cef_app.h>
 #include <include/cef_client.h>
+#include <include/cef_devtools_message_observer.h>
+#include <include/cef_registration.h>
 #include <include/cef_render_handler.h>
+#include <include/cef_values.h>
 #pragma warning(pop)
 
+#include <chrono>
+#include <condition_variable>
 #include <optional>
 #include <queue>
 #include <utility>
@@ -65,6 +70,7 @@
 
 #include "../html.h"
 #include "../util.h"
+#include "virtual_time_driver.h"
 
 namespace caspar { namespace html {
 
@@ -112,6 +118,7 @@ class html_client
     , public CefLifeSpanHandler
     , public CefLoadHandler
     , public CefDisplayHandler
+    , public CefDevToolsMessageObserver
 {
     std::wstring                        url_;
     spl::shared_ptr<diagnostics::graph> graph_;
@@ -125,6 +132,7 @@ class html_client
     spl::shared_ptr<core::frame_factory> frame_factory_;
     core::video_format_desc              format_desc_;
     bool                                 gpu_enabled_;
+    bool                                 wait_for_fp_;
     tbb::concurrent_queue<std::wstring>  javascript_before_load_;
     std::atomic<bool>                    loaded_;
     std::atomic<bool>                    not_found_;
@@ -141,20 +149,37 @@ class html_client
     core::draw_frame   last_frame_;
     std::int_least64_t last_frame_time_;
 
-    CefRefPtr<CefBrowser> browser_;
+    CefRefPtr<CefBrowser>      browser_;
+    CefRefPtr<CefRegistration> cdp_registration_; // keeps DevTools observer alive
+
+    // Readiness for rendering: on load, and on first paint too when waiting for it. Paints
+    // before that are dropped, so an empty page is never captured as the first frame.
+    std::atomic<bool>       first_paint_seen_{false};
+    std::atomic<bool>       ready_to_render_{false};
+    mutable std::mutex      ready_mutex_;
+    std::condition_variable ready_cv_;
+
+    // Renders the page on its virtual clock, a frame per pull. Only on a deterministic channel.
+    std::unique_ptr<virtual_time_driver> vtc_;
 
   public:
     html_client(spl::shared_ptr<core::frame_factory>       frame_factory,
                 const spl::shared_ptr<diagnostics::graph>& graph,
                 core::video_format_desc                    format_desc,
                 bool                                       gpu_enabled,
+                bool                                       vtc_enabled,
+                bool                                       wait_for_fp,
                 std::wstring                               url)
         : url_(std::move(url))
         , graph_(graph)
         , frame_factory_(std::move(frame_factory))
         , format_desc_(std::move(format_desc))
         , gpu_enabled_(gpu_enabled)
+        , wait_for_fp_(wait_for_fp)
     {
+        if (vtc_enabled)
+            vtc_ = std::make_unique<virtual_time_driver>(format_desc_, print());
+
         graph_->set_color("browser-tick-time", diagnostics::color(0.1f, 1.0f, 0.1f));
         graph_->set_color("tick-time", diagnostics::color(0.0f, 0.6f, 0.9f));
         graph_->set_color("dropped-frame", diagnostics::color(0.3f, 0.6f, 0.3f));
@@ -186,11 +211,50 @@ class html_client
     {
         closing_ = true;
 
+        // Wake anything blocked in wait_for_frame so it can observe closing_.
+        ready_cv_.notify_all();
+        if (vtc_)
+            vtc_->abort();
+
         html::invoke([=] {
+            cdp_registration_ = nullptr; // unregister DevTools observer
             if (browser_ != nullptr) {
                 browser_->GetHost()->CloseBrowser(true);
             }
         });
+    }
+
+    bool supports_deterministic_sync() const { return !!vtc_; }
+
+    // Waits for the next frame the channel pulls. True once one is queued for receive().
+    bool wait_for_frame(std::chrono::milliseconds timeout)
+    {
+        if (!vtc_)
+            return is_ready();
+
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+        {
+            std::unique_lock<std::mutex> lock(ready_mutex_);
+            if (!ready_cv_.wait_until(
+                    lock, deadline, [&] { return ready_to_render_.load() || closing_ || not_found_; }))
+                return false;
+
+            // A page that failed to load, or is closing, will never produce a frame: waiting for
+            // one would stall the render for good.
+            if (closing_ || not_found_)
+                return true;
+        }
+
+        // The queue, not is_ready(): that also reports the last frame delivered, which would
+        // leave the render stuck on frame 1.
+        {
+            std::lock_guard<std::mutex> lock(frames_mutex_);
+            if (!frames_.empty())
+                return true;
+        }
+
+        return vtc_->tick(deadline);
     }
 
     bool try_pop(const core::video_field field)
@@ -221,7 +285,7 @@ class html_client
              * The hazard here is that sometimes animations will
              * start a field later than intended.
              */
-            if (field == core::video_field::a && frames_.size() == 1) {
+            if (!vtc_ && field == core::video_field::a && frames_.size() == 1) {
                 auto now_time = now();
 
                 // Make sure there has been a gap before this pop, of at least a couple of frames
@@ -333,11 +397,21 @@ class html_client
         if (closing_ || not_found_)
             return;
 
+        // Drop paints arriving before the page is ready (only when vtc or wait-for-fp
+        // is enabled). Avoids the empty initial frame being captured as the first frame.
+        if ((vtc_ || wait_for_fp_) && !ready_to_render_.load())
+            return;
+
         graph_->set_value("browser-tick-time", paint_timer_.elapsed() * format_desc_.fps * 0.5);
         paint_timer_.restart();
         CASPAR_ASSERT(CefCurrentlyOn(TID_UI));
 
         if (type != PET_VIEW)
+            return;
+
+        // On a virtual-time render, only the paint belonging to the frame in flight is a frame;
+        // the rest are stale or half-composited.
+        if (vtc_ && !vtc_->accept_paint(buffer, width, height))
             return;
 
         core::pixel_format_desc pixel_desc(core::pixel_format::bgra);
@@ -363,6 +437,9 @@ class html_client
 
         graph_->set_value("memcpy", test_timer_.elapsed() * format_desc_.fps * 0.5 * 5);
 
+        if (vtc_)
+            vtc_->erase_marker(dst, width, height);
+
         {
             std::lock_guard<std::mutex> lock(frames_mutex_);
 
@@ -375,6 +452,9 @@ class html_client
             }
             graph_->set_value("buffered-frames", (double)frames_.size() / frames_max_size_);
         }
+
+        if (vtc_)
+            vtc_->frame_queued();
     }
 
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override
@@ -382,6 +462,20 @@ class html_client
         CASPAR_ASSERT(CefCurrentlyOn(TID_UI));
 
         browser_ = std::move(browser);
+
+        if (vtc_)
+            vtc_->attach(browser_);
+
+        if (vtc_ || wait_for_fp_) {
+            cdp_registration_ = browser_->GetHost()->AddDevToolsMessageObserver(this);
+
+            // Page.enable + lifecycle events: needed for firstPaint detection.
+            browser_->GetHost()->ExecuteDevToolsMethod(0, "Page.enable", nullptr);
+
+            auto lc = CefDictionaryValue::Create();
+            lc->SetBool("enabled", true);
+            browser_->GetHost()->ExecuteDevToolsMethod(0, "Page.setLifecycleEventsEnabled", lc);
+        }
     }
 
     void OnBeforeClose(CefRefPtr<CefBrowser> browser) override
@@ -447,6 +541,11 @@ class html_client
             std::lock_guard<std::mutex> lock(state_mutex_);
             state_ = {};
         }
+
+        // Wake anything blocked in wait_for_frame so it can observe not_found_ and bail out.
+        ready_cv_.notify_all();
+        if (vtc_)
+            vtc_->abort();
     }
 
     void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) override
@@ -456,6 +555,32 @@ class html_client
 
         loaded_ = true;
         execute_queued_javascript();
+
+        maybe_arm_ready();
+    }
+
+    // On firstPaint or load: ready once the page is in a state to be pulled from.
+    void maybe_arm_ready()
+    {
+        if (!loaded_.load())
+            return;
+        // Not gated on firstPaint under virtual time: nothing paints until we send a
+        // BeginFrame, and we send none until ready -- it would deadlock.
+        if (wait_for_fp_ && !vtc_ && !first_paint_seen_.load())
+            return;
+        if (ready_to_render_.load())
+            return;
+
+        if (vtc_) {
+            CASPAR_ASSERT(CefCurrentlyOn(TID_UI));
+            vtc_->pause_clock();
+        }
+
+        ready_to_render_ = true;
+        {
+            std::lock_guard<std::mutex> lock(ready_mutex_);
+        }
+        ready_cv_.notify_all();
     }
 
     bool OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser,
@@ -550,6 +675,41 @@ class html_client
                std::to_wstring(format_desc_.square_height) + L" " + std::to_wstring(format_desc_.fps);
     }
 
+    // ── CefDevToolsMessageObserver ─────────────────────────────────────────
+
+    void OnDevToolsEvent(CefRefPtr<CefBrowser> browser,
+                         const CefString&      method,
+                         const void*           message,
+                         size_t                message_size) override
+    {
+        CASPAR_ASSERT(CefCurrentlyOn(TID_UI));
+
+        if (method == "Page.lifecycleEvent") {
+            // Payload: {"frameId":"...","loaderId":"...","name":"firstPaint","timestamp":...}
+            const std::string payload(static_cast<const char*>(message), message_size);
+            if (payload.find("\"firstPaint\"") != std::string::npos) {
+                CASPAR_LOG(info) << print() << L" CDP: firstPaint";
+                first_paint_seen_ = true;
+                maybe_arm_ready();
+            }
+        } else if (method == "Emulation.virtualTimeBudgetExpired") {
+            if (vtc_)
+                vtc_->on_budget_expired();
+        }
+    }
+
+    void OnDevToolsMethodResult(CefRefPtr<CefBrowser> browser,
+                                int                   message_id,
+                                bool                  success,
+                                const void*           message,
+                                size_t                message_size) override
+    {
+        if (!success) {
+            const std::string payload(static_cast<const char*>(message), message_size);
+            CASPAR_LOG(warning) << print() << L" CDP method failed: " << payload;
+        }
+    }
+
     IMPLEMENT_REFCOUNTING(html_client);
 };
 
@@ -558,25 +718,36 @@ class html_producer : public core::frame_producer
     core::video_format_desc             format_desc_;
     const std::wstring                  url_;
     spl::shared_ptr<diagnostics::graph> graph_;
+    bool                                vtc_enabled_ = false;
 
     CefRefPtr<html_client> client_;
 
   public:
     html_producer(const spl::shared_ptr<core::frame_factory>& frame_factory,
                   const core::video_format_desc&              format_desc,
-                  const std::wstring&                         url)
+                  const std::wstring&                         url,
+                  bool                                        deterministic)
         : format_desc_(format_desc)
         , url_(url)
     {
         html::invoke([&] {
             const bool enable_gpu = env::properties().get(L"configuration.html.enable-gpu", false);
 
-            client_ = new html_client(frame_factory, graph_, format_desc, enable_gpu, url_);
+            // Virtual time only on a deterministic channel, which pulls a frame whenever it wants
+            // one. Driven by external BeginFrames, a page paints only when pulled, so on a live
+            // channel -- which samples rather than pulls -- it would never produce a frame.
+            const bool vtc         = deterministic;
+            const bool wait_for_fp = env::properties().get(L"configuration.html.wait-for-fp", false) || vtc;
+
+            vtc_enabled_ = vtc;
+
+            client_ = new html_client(frame_factory, graph_, format_desc, enable_gpu, vtc, wait_for_fp, url_);
 
             CefWindowInfo window_info;
             window_info.bounds.width                 = format_desc.square_width;
             window_info.bounds.height                = format_desc.square_height;
             window_info.windowless_rendering_enabled = true;
+            window_info.external_begin_frame_enabled = vtc;
 
             CefBrowserSettings browser_settings;
             browser_settings.webgl = enable_gpu ? cef_state_t::STATE_ENABLED : cef_state_t::STATE_DISABLED;
@@ -611,6 +782,16 @@ class html_producer : public core::frame_producer
     {
         if (client_ != nullptr) {
             return client_->is_ready();
+        }
+        return false;
+    }
+
+    bool supports_deterministic_sync() const override { return vtc_enabled_; }
+
+    bool wait_for_frame(const core::video_field field, std::chrono::milliseconds timeout) override
+    {
+        if (client_ != nullptr) {
+            return client_->wait_for_frame(timeout);
         }
         return false;
     }
@@ -691,7 +872,7 @@ spl::shared_ptr<core::frame_producer> create_cg_producer(const core::frame_produ
         format_desc.square_height = *height;
     }
 
-    return spl::make_shared<html_producer>(dependencies.frame_factory, format_desc, url);
+    return spl::make_shared<html_producer>(dependencies.frame_factory, format_desc, url, dependencies.deterministic);
 }
 
 spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer_dependencies& dependencies,
@@ -699,5 +880,4 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
 {
     return create_cg_producer(dependencies, params);
 }
-
 }} // namespace caspar::html

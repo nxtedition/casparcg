@@ -23,6 +23,7 @@
 
 #include "../util/av_assert.h"
 #include "../util/av_util.h"
+#include "../util/log_context.h"
 
 #include <common/bit_depth.h>
 #include <common/diagnostics/graph.h>
@@ -102,7 +103,8 @@ struct Stream
            const core::video_format_desc&      format_desc,
            bool                                realtime,
            common::bit_depth                   depth,
-           std::map<std::string, std::string>& options)
+           std::map<std::string, std::string>& options,
+           const log_context_data*             log_ctx)
     {
         std::map<std::string, std::string> stream_options;
 
@@ -297,6 +299,11 @@ struct Stream
             FF_RET(AVERROR(ENOMEM), "avcodec_alloc_context3")
         }
 
+        // Expose the logging context via opaque so the ffmpeg log callback can recover it on
+        // codec-internal (frame/slice threaded) worker threads, where the thread-local is unset.
+        // Set before avcodec_open2 so it is inherited by the per-thread contexts.
+        enc->opaque = const_cast<log_context_data*>(log_ctx);
+
         if (codec->type == AVMEDIA_TYPE_VIDEO) {
             st->time_base = av_inv_q(av_buffersink_get_frame_rate(sink));
 
@@ -412,6 +419,8 @@ struct ffmpeg_consumer : public core::frame_consumer
     std::string path_;
     std::string args_;
 
+    log_context_data log_ctx_;
+
     std::exception_ptr exception_;
     std::mutex         exception_mutex_;
 
@@ -433,6 +442,7 @@ struct ffmpeg_consumer : public core::frame_consumer
         , realtime_(realtime)
         , path_(std::move(path))
         , args_(std::move(args))
+        , log_ctx_{path_}
         , offline_(false)
         , depth_(depth)
     {
@@ -471,6 +481,7 @@ struct ffmpeg_consumer : public core::frame_consumer
         graph_->set_text(print());
 
         frame_thread_ = std::thread([=] {
+            set_thread_log_context(&log_ctx_);
             try {
                 std::map<std::string, std::string> options;
                 {
@@ -522,7 +533,8 @@ struct ffmpeg_consumer : public core::frame_consumer
                     if (oc->oformat->video_codec == AV_CODEC_ID_H264 && options.find("preset:v") == options.end()) {
                         options["preset:v"] = "veryfast";
                     }
-                    video_stream.emplace(oc, ":v", oc->oformat->video_codec, format_desc, realtime_, depth_, options);
+                    video_stream.emplace(
+                        oc, ":v", oc->oformat->video_codec, format_desc, realtime_, depth_, options, &log_ctx_);
 
                     {
                         std::lock_guard<std::mutex> lock(state_mutex_);
@@ -532,7 +544,8 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                 std::optional<Stream> audio_stream;
                 if (oc->oformat->audio_codec != AV_CODEC_ID_NONE) {
-                    audio_stream.emplace(oc, ":a", oc->oformat->audio_codec, format_desc, realtime_, depth_, options);
+                    audio_stream.emplace(
+                        oc, ":a", oc->oformat->audio_codec, format_desc, realtime_, depth_, options, &log_ctx_);
                 }
 
                 if (!(oc->oformat->flags & AVFMT_NOFILE)) {
@@ -559,6 +572,7 @@ struct ffmpeg_consumer : public core::frame_consumer
                 tbb::concurrent_bounded_queue<std::shared_ptr<AVPacket>> packet_buffer;
                 packet_buffer.set_capacity(realtime_ ? 1 : 128);
                 auto packet_thread = std::thread([&] {
+                    set_thread_log_context(&log_ctx_);
                     try {
                         CASPAR_SCOPE_EXIT
                         {
@@ -620,11 +634,13 @@ struct ffmpeg_consumer : public core::frame_consumer
                     caspar::timer frame_timer;
                     tbb::parallel_invoke(
                         [&] {
+                            set_thread_log_context(&log_ctx_);
                             if (video_stream) {
                                 video_stream->send(data, format_desc, packet_cb);
                             }
                         },
                         [&] {
+                            set_thread_log_context(&log_ctx_);
                             if (audio_stream) {
                                 audio_stream->send(data, format_desc, packet_cb);
                             }

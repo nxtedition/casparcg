@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../util/log_context.h"
+
 #include <common/diagnostics/graph.h>
 
 #include <atomic>
@@ -14,8 +16,8 @@
 
 #include <tbb/concurrent_queue.h>
 
-#include <boost/thread.hpp>
 #include <boost/optional.hpp>
+#include <boost/thread.hpp>
 
 struct AVPacket;
 struct AVFormatContext;
@@ -25,7 +27,10 @@ namespace caspar { namespace ffmpeg {
 class Input
 {
   public:
-    Input(const std::string& filename, std::shared_ptr<diagnostics::graph> graph, std::optional<bool> seekable);
+    Input(const std::string&                  filename,
+          std::shared_ptr<diagnostics::graph> graph,
+          std::optional<bool>                 seekable,
+          const log_context_data*             log_ctx = nullptr);
     ~Input();
 
     static int interrupt_cb(void* ctx);
@@ -44,7 +49,8 @@ class Input
   private:
     void internal_reset();
 
-    std::optional<bool> seekable_;
+    const log_context_data* log_ctx_ = nullptr;
+    std::optional<bool>     seekable_;
 
     std::string                         filename_;
     std::shared_ptr<diagnostics::graph> graph_;

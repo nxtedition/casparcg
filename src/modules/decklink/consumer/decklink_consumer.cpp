@@ -40,6 +40,7 @@
 #include <common/diagnostics/graph.h>
 #include <common/except.h>
 #include <common/executor.h>
+#include <common/log_throttle.h>
 #include <common/timer.h>
 
 #include <tbb/parallel_for.h>
@@ -655,6 +656,13 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
     std::atomic<bool>              abort_request_{false};
     std::shared_ptr<decklink_vanc> vanc_;
 
+    log_throttle video_drain_throttle_{0, 10, 5, [this] {
+                                           CASPAR_LOG(warning) << print() << L" Too many warnings. Silencing.";
+                                       }};
+    log_throttle audio_drain_throttle_{0, 10, 5, [this] {
+                                           CASPAR_LOG(warning) << print() << L" Too many warnings. Silencing.";
+                                       }};
+
   public:
     decklink_consumer(const configuration& config, core::video_format_desc channel_format_desc, int channel_index)
         : channel_index_(channel_index)
@@ -935,12 +943,28 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
                 output_->GetBufferedVideoFrameCount(&buffered);
                 graph_->set_value("buffered-video", static_cast<double>(buffered) / config_.buffer_depth());
 
+                if (buffered == 0) {
+                    if (video_drain_throttle_.tick()) {
+                        CASPAR_LOG(warning) << print() << L" No buffered video frames remaining, risk of under-run";
+                    }
+                } else {
+                    video_drain_throttle_.reset();
+                }
+
                 if (config_.embedded_audio) {
                     output_->GetBufferedAudioSampleFrameCount(&buffered);
                     graph_->set_value("buffered-audio",
                                       static_cast<double>(buffered) /
                                           (decklink_format_desc_.audio_cadence[0] * decklink_format_desc_.field_count *
                                            config_.buffer_depth()));
+
+                    if (buffered == 0) {
+                        if (audio_drain_throttle_.tick()) {
+                            CASPAR_LOG(warning) << print() << L" No buffered audio frames remaining, risk of under-run";
+                        }
+                    } else {
+                        audio_drain_throttle_.reset();
+                    }
                 }
             }
 

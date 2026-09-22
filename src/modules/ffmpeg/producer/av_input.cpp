@@ -2,11 +2,13 @@
 
 #include "../util/av_assert.h"
 #include "../util/av_util.h"
+#include "../util/log_context.h"
 
 #include <common/except.h>
 #include <common/os/thread.h>
 #include <common/param.h>
 #include <common/scope_exit.h>
+#include <common/utf.h>
 
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/filesystem.hpp>
@@ -27,8 +29,12 @@ extern "C" {
 
 namespace caspar { namespace ffmpeg {
 
-Input::Input(const std::string& filename, std::shared_ptr<diagnostics::graph> graph, std::optional<bool> seekable)
-    : filename_(filename)
+Input::Input(const std::string&                  filename,
+             std::shared_ptr<diagnostics::graph> graph,
+             std::optional<bool>                 seekable,
+             const log_context_data*             log_ctx)
+    : log_ctx_(log_ctx)
+    , filename_(filename)
     , graph_(graph)
     , seekable_(seekable)
 {
@@ -39,6 +45,7 @@ Input::Input(const std::string& filename, std::shared_ptr<diagnostics::graph> gr
     thread_ = boost::thread([=] {
         try {
             set_thread_name(L"[ffmpeg::av_producer::Input]");
+            set_thread_log_context(log_ctx_);
 
             while (true) {
                 auto packet = alloc_packet();
@@ -77,7 +84,6 @@ Input::Input(const std::string& filename, std::shared_ptr<diagnostics::graph> gr
 
 Input::~Input()
 {
-    graph_         = spl::shared_ptr<diagnostics::graph>();
     abort_request_ = true;
     ic_cond_.notify_all();
 

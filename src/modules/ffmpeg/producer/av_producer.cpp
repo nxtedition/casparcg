@@ -4,6 +4,7 @@
 
 #include "../util/av_assert.h"
 #include "../util/av_util.h"
+#include "../util/log_context.h"
 
 #include <boost/exception/exception.hpp>
 #include <boost/format.hpp>
@@ -18,6 +19,7 @@
 #include <common/env.h>
 #include <common/except.h>
 #include <common/executor.h>
+#include <common/log_throttle.h>
 #include <common/os/thread.h>
 #include <common/scope_exit.h>
 #include <common/timer.h>
@@ -42,7 +44,6 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 #include <libavutil/samplefmt.h>
-#include <libavutil/channel_layout.h>
 }
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -145,13 +146,17 @@ class Decoder
 
     boost::thread thread;
 
+    // ffmpeg logging context for this decoder's thread (owned by the producer).
+    const log_context_data* log_ctx = nullptr;
+
   public:
     std::shared_ptr<AVCodecContext> ctx;
 
     Decoder() = default;
 
-    explicit Decoder(AVStream* stream)
+    explicit Decoder(AVStream* stream, const log_context_data* log_ctx)
         : st(stream)
+        , log_ctx(log_ctx)
     {
         const auto codec = get_decoder(stream->codecpar->codec_id);
 
@@ -167,6 +172,11 @@ class Decoder
         }
 
         FF(avcodec_parameters_to_context(ctx.get(), stream->codecpar));
+
+        // Expose the logging context via opaque so the ffmpeg log callback can recover it on
+        // codec-internal (frame/slice threaded) worker threads, where the thread-local is unset.
+        // Set before avcodec_open2 so it is inherited by the per-thread contexts.
+        ctx->opaque = const_cast<log_context_data*>(log_ctx);
 
         if (stream->metadata != NULL) {
             auto entry = av_dict_get(stream->metadata, "alpha_mode", NULL, AV_DICT_MATCH_CASE);
@@ -188,6 +198,7 @@ class Decoder
         FF(avcodec_open2(ctx.get(), codec, nullptr));
 
         thread = boost::thread([=]() {
+            set_thread_log_context(log_ctx);
             try {
                 while (!thread.interruption_requested()) {
                     auto av_frame = alloc_frame();
@@ -344,6 +355,7 @@ struct Filter
     std::map<int, AVFilterContext*> sources;
     std::shared_ptr<AVFrame>        frame;
     bool                            eof = false;
+    const log_context_data*         log_ctx;
 
     Filter() = default;
 
@@ -352,7 +364,9 @@ struct Filter
            std::map<int, Decoder>&        streams,
            int64_t                        start_time,
            AVMediaType                    media_type,
-           const core::video_format_desc& format_desc)
+           const core::video_format_desc& format_desc,
+           const log_context_data*        log_ctx)
+        : log_ctx(log_ctx)
     {
         if (media_type == AVMEDIA_TYPE_VIDEO) {
             if (filter_spec.empty()) {
@@ -509,7 +523,11 @@ struct Filter
 
                 auto it = streams.find(index);
                 if (it == streams.end()) {
-                    it = streams.emplace(index, input->streams[index]).first;
+                    it = streams
+                             .emplace(std::piecewise_construct,
+                                      std::forward_as_tuple(index),
+                                      std::forward_as_tuple(input->streams[index], log_ctx))
+                             .first;
                 }
 
                 auto st = it->second.ctx;
@@ -601,7 +619,13 @@ struct Filter
                                               AV_PIX_FMT_GBRAP16,
                                               AV_PIX_FMT_NONE};
 #if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100) && LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 36, 100)
-            FF(av_opt_set_array(sink, "pixel_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(pix_fmts) - 1, AV_OPT_TYPE_PIXEL_FMT, pix_fmts));
+            FF(av_opt_set_array(sink,
+                                "pixel_formats",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                FF_ARRAY_ELEMS(pix_fmts) - 1,
+                                AV_OPT_TYPE_PIXEL_FMT,
+                                pix_fmts));
 #else
             FF(av_opt_set_int_list(sink, "pix_fmts", pix_fmts, -1, AV_OPT_SEARCH_CHILDREN));
 #endif
@@ -615,12 +639,24 @@ struct Filter
 #pragma warning(push)
 #pragma warning(disable : 4245)
 #endif
-            const AVSampleFormat sample_fmts[] = {AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_NONE};
-            const int sample_rates[] = {format_desc.audio_sample_rate, -1};
+            const AVSampleFormat sample_fmts[]  = {AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_NONE};
+            const int            sample_rates[] = {format_desc.audio_sample_rate, -1};
 
 #if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100) && LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 36, 100)
-            FF(av_opt_set_array(sink, "sample_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(sample_fmts) - 1, AV_OPT_TYPE_SAMPLE_FMT, sample_fmts));
-            FF(av_opt_set_array(sink, "samplerates", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, FF_ARRAY_ELEMS(sample_rates) - 1, AV_OPT_TYPE_INT, sample_rates));
+            FF(av_opt_set_array(sink,
+                                "sample_formats",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                FF_ARRAY_ELEMS(sample_fmts) - 1,
+                                AV_OPT_TYPE_SAMPLE_FMT,
+                                sample_fmts));
+            FF(av_opt_set_array(sink,
+                                "samplerates",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                FF_ARRAY_ELEMS(sample_rates) - 1,
+                                AV_OPT_TYPE_INT,
+                                sample_rates));
 #else
             FF(av_opt_set_int(sink, "all_channel_counts", 1, AV_OPT_SEARCH_CHILDREN));
             FF(av_opt_set_int_list(sink, "sample_fmts", sample_fmts, -1, AV_OPT_SEARCH_CHILDREN));
@@ -655,7 +691,15 @@ struct Filter
 
         FF(avfilter_graph_config(graph.get(), nullptr));
 
-        CASPAR_LOG(debug) << avfilter_graph_dump(graph.get(), nullptr);
+        {
+            char* graph_dump = avfilter_graph_dump(graph.get(), nullptr);
+            if (graph_dump) {
+                const auto& thread_ctx = thread_log_context();
+                const auto  tag        = thread_ctx ? thread_ctx.str() : std::wstring(L"ffmpeg");
+                CASPAR_LOG_CTX(debug, tag) << graph_dump;
+                av_free(graph_dump);
+            }
+        }
     }
 
     bool operator()(int nb_samples = -1)
@@ -701,6 +745,8 @@ struct AVProducer::Impl
     const std::string                          name_;
     const std::string                          path_;
 
+    log_context_data log_ctx_;
+
     Input                  input_;
     std::map<int, Decoder> decoders_;
     Filter                 video_filter_;
@@ -721,6 +767,7 @@ struct AVProducer::Impl
     core::frame_geometry::scale_mode scale_mode_;
     int64_t                          frame_count_    = 0;
     bool                             frame_flush_    = true;
+    bool                             preloading_     = true;
     int64_t                          frame_time_     = AV_NOPTS_VALUE;
     int64_t                          frame_duration_ = AV_NOPTS_VALUE;
     core::draw_frame                 frame_;
@@ -734,7 +781,7 @@ struct AVProducer::Impl
     std::optional<caspar::executor> video_executor_;
     std::optional<caspar::executor> audio_executor_;
 
-    int latency_ = 0;
+    int latency_ = -1;
 
     boost::thread thread_;
 
@@ -755,7 +802,11 @@ struct AVProducer::Impl
         , format_tb_({format_desc.duration, format_desc.time_scale * format_desc.field_count})
         , name_(name)
         , path_(path)
-        , input_(path, graph_, seekable >= 0 && seekable < 2 ? std::optional<bool>(false) : std::optional<bool>())
+        , log_ctx_{name}
+        , input_(path,
+                 graph_,
+                 seekable >= 0 && seekable < 2 ? std::optional<bool>(false) : std::optional<bool>(),
+                 &log_ctx_)
         , start_(start ? av_rescale_q(*start, format_tb_, TIME_BASE_Q) : AV_NOPTS_VALUE)
         , duration_(duration ? av_rescale_q(*duration, format_tb_, TIME_BASE_Q) : AV_NOPTS_VALUE)
         , loop_(loop)
@@ -779,7 +830,12 @@ struct AVProducer::Impl
 
         CASPAR_LOG(debug) << print() << " seekable: " << seekable_;
 
+        // Tag ffmpeg logs emitted on the filter executor threads with this producer.
+        video_executor_->begin_invoke([this] { set_thread_log_context(&log_ctx_); });
+        audio_executor_->begin_invoke([this] { set_thread_log_context(&log_ctx_); });
+
         thread_ = boost::thread([=] {
+            set_thread_log_context(&log_ctx_);
             try {
                 run(seek);
             } catch (boost::thread_interrupted&) {
@@ -863,9 +919,8 @@ struct AVProducer::Impl
         timer frame_timer;
         timer decode_timer;
 
-        int warning_debounce = 0;
-        uint8_t warning_count    = 0;
-        const uint8_t max_warnings = 5;
+        log_throttle frame_wait_throttle(
+            100, 500, 5, [this] { CASPAR_LOG(warning) << print() << " Too many warnings. Silencing."; });
 
         while (!thread_.interruption_requested()) {
             {
@@ -923,7 +978,7 @@ struct AVProducer::Impl
 
             if ((!video_filter_.frame && !video_filter_.eof) || (!audio_filter_.frame && !audio_filter_.eof)) {
                 if (!progress) {
-                    if (warning_debounce++ % 500 == 100 && warning_count < max_warnings) {
+                    if (frame_wait_throttle.tick()) {
                         if (!video_filter_.frame && !video_filter_.eof) {
                             CASPAR_LOG(warning) << print() << " Waiting for video frame...";
                         } else if (!audio_filter_.frame && !audio_filter_.eof) {
@@ -931,19 +986,15 @@ struct AVProducer::Impl
                         } else {
                             CASPAR_LOG(warning) << print() << " Waiting for frame...";
                         }
-                        warning_count++;
-                        if(warning_count == max_warnings) {
-                            CASPAR_LOG(warning) << print() << " Too many warnings. Silencing.";
-                        }
                     }
 
                     // TODO (perf): Avoid live loop.
-                    std::this_thread::sleep_for(std::chrono::milliseconds(warning_debounce > 25 ? 20 : 5));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(frame_wait_throttle.count() > 25 ? 20 : 5));
                 }
                 continue;
             }
 
-            warning_debounce = warning_count = 0;
+            frame_wait_throttle.reset();
 
             // TODO (fix)
             // if (start_ != AV_NOPTS_VALUE && frame.pts < start_) {
@@ -1032,7 +1083,7 @@ struct AVProducer::Impl
     bool is_ready()
     {
         boost::lock_guard<boost::mutex> lock(buffer_mutex_);
-        return !buffer_.empty() || frame_;
+        return !preloading_ && (!buffer_.empty() || frame_);
     }
 
     core::draw_frame next_frame(const core::video_field field)
@@ -1056,8 +1107,11 @@ struct AVProducer::Impl
                 }
                 return core::draw_frame::still(frame_);
             }
-            graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
-            latency_ += 1;
+
+            if (!preloading_) {
+                graph_->set_tag(diagnostics::tag_severity::WARNING, "underflow");
+                latency_ += 1;
+            }
             return core::draw_frame{};
         }
 
@@ -1080,6 +1134,7 @@ struct AVProducer::Impl
         frame_time_     = buffer_[0].pts;
         frame_duration_ = buffer_[0].duration;
         frame_flush_    = false;
+        preloading_     = false;
 
         buffer_.pop_front();
         buffer_cond_.notify_all();
@@ -1251,8 +1306,8 @@ struct AVProducer::Impl
 
     void reset(int64_t start_time)
     {
-        video_filter_ = Filter(vfilter_, input_, decoders_, start_time, AVMEDIA_TYPE_VIDEO, format_desc_);
-        audio_filter_ = Filter(afilter_, input_, decoders_, start_time, AVMEDIA_TYPE_AUDIO, format_desc_);
+        video_filter_ = Filter(vfilter_, input_, decoders_, start_time, AVMEDIA_TYPE_VIDEO, format_desc_, &log_ctx_);
+        audio_filter_ = Filter(afilter_, input_, decoders_, start_time, AVMEDIA_TYPE_AUDIO, format_desc_, &log_ctx_);
 
         sources_.clear();
         for (auto& p : video_filter_.sources) {

@@ -45,6 +45,7 @@
 #include <core/consumer/output.h>
 #include <core/diagnostics/call_context.h>
 #include <core/diagnostics/osd_graph.h>
+#include <core/diagnostics/snapshot_graph.h>
 #include <core/frame/frame_transform.h>
 #include <core/mixer/mixer.h>
 #include <core/producer/cg_proxy.h>
@@ -1608,6 +1609,20 @@ std::wstring diag_command(command_context& ctx)
     return L"202 DIAG OK\r\n";
 }
 
+std::wstring diag_snapshot_command(command_context& ctx)
+{
+    auto filename = ctx.parameters.empty()
+                        ? boost::posix_time::to_iso_wstring(boost::posix_time::second_clock::local_time()) + L".png"
+                        : ctx.parameters.at(0);
+
+    auto path = env::media_folder() + filename;
+
+    if (!core::diagnostics::snapshot::take_snapshot(path))
+        return L"502 DIAG SNAPSHOT FAILED\r\n";
+
+    return L"201 DIAG SNAPSHOT OK\r\n" + path + L"\r\n";
+}
+
 std::wstring bye_command(command_context& ctx)
 {
     ctx.client->disconnect();
@@ -1801,6 +1816,7 @@ void register_commands(std::shared_ptr<amcp_command_repository_wrapper>& repo)
     repo->register_command(L"Query Commands", L"TLS", tls_command, 0);
     repo->register_command(L"Query Commands", L"VERSION", version_command, 0);
     repo->register_command(L"Query Commands", L"DIAG", diag_command, 0);
+    repo->register_command(L"Query Commands", L"DIAG SNAPSHOT", diag_snapshot_command, 0);
     repo->register_command(L"Query Commands", L"BYE", bye_command, 0);
     repo->register_command(L"Query Commands", L"KILL", kill_command, 0);
     repo->register_command(L"Query Commands", L"RESTART", restart_command, 0);

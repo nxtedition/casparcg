@@ -44,10 +44,11 @@ void amcp_command_repository_wrapper::register_command(std::wstring             
     repo_->register_command(category, name, func, min_num_params);
 }
 
-void amcp_command_repository_wrapper::register_command(std::wstring           category,
-                                                       std::wstring           name,
-                                                       amcp_command_impl_func command,
-                                                       int                    min_num_params)
+void amcp_command_repository_wrapper::register_command(std::wstring             category,
+                                                       std::wstring             name,
+                                                       amcp_command_impl_func   command,
+                                                       int                      min_num_params,
+                                                       command_channel_resolver channel_resolver)
 {
     std::weak_ptr<command_context_factory> weak_context_factory = context_factory_;
     auto                                   func = [weak_context_factory, command](const command_context_simple&                        ctx,
@@ -60,7 +61,7 @@ void amcp_command_repository_wrapper::register_command(std::wstring           ca
         return make_ready_future(command(context));
     };
 
-    repo_->register_command(category, name, func, min_num_params);
+    repo_->register_command(category, name, func, min_num_params, std::move(channel_resolver));
 }
 
 void amcp_command_repository_wrapper::register_channel_command(std::wstring                  category,

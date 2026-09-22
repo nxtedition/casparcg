@@ -66,7 +66,12 @@ class amcp_command_repository_wrapper
                           amcp_command_impl_func_future command,
                           int                           min_num_params);
 
-    void register_command(std::wstring category, std::wstring name, amcp_command_impl_func command, int min_num_params);
+    // `channel_resolver`, if given, derives the command's channel from its parameters.
+    void register_command(std::wstring             category,
+                          std::wstring             name,
+                          amcp_command_impl_func   command,
+                          int                      min_num_params,
+                          command_channel_resolver channel_resolver = nullptr);
 
     void register_channel_command(std::wstring                  category,
                                   std::wstring                  name,

@@ -27,6 +27,9 @@ class channel_context
     const std::wstring                                lifecycle_key_;
 };
 
+// The channel a command belongs to, from its own parameters: 0-based, or -1 for none.
+using command_channel_resolver = std::function<int(const std::vector<std::wstring>& parameters)>;
+
 struct command_context_simple
 {
     const IO::ClientInfoPtr         client;

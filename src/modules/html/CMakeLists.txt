@@ -6,6 +6,8 @@ set(SOURCES
 		producer/html_cg_proxy.h
 		producer/html_producer.cpp
 		producer/html_producer.h
+		producer/virtual_time_driver.cpp
+		producer/virtual_time_driver.h
 
 		html.cpp
 		html.h

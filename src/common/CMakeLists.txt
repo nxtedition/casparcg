@@ -48,6 +48,7 @@ set(HEADERS
 		filesystem.h
 		future.h
 		log.h
+		log_throttle.h
 		memory.h
 		memshfl.h
 		param.h

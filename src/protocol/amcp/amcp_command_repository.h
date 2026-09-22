@@ -27,8 +27,16 @@
 #include <common/memory.h>
 
 #include <functional>
+#include <list>
 
 namespace caspar { namespace protocol { namespace amcp {
+
+// Reads and consumes a leading channel spec -- "1" or "1-10" -- leaving channel_index 0-based.
+// Both indexes are left alone when there is none.
+void parse_channel_id(std::list<std::wstring>& tokens,
+                      std::wstring&            channel_spec,
+                      int&                     channel_index,
+                      int&                     layer_index);
 
 class amcp_command_repository
 {
@@ -41,7 +49,12 @@ class amcp_command_repository
 
     const spl::shared_ptr<std::vector<channel_context>>& channels() const;
 
-    void register_command(std::wstring category, std::wstring name, amcp_command_func command, int min_num_params);
+    // `channel_resolver`, if given, derives the command's channel from its parameters.
+    void register_command(std::wstring             category,
+                          std::wstring             name,
+                          amcp_command_func        command,
+                          int                      min_num_params,
+                          command_channel_resolver channel_resolver = nullptr);
 
     void
     register_channel_command(std::wstring category, std::wstring name, amcp_command_func command, int min_num_params);

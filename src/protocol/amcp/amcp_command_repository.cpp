@@ -32,11 +32,20 @@
 
 namespace caspar { namespace protocol { namespace amcp {
 
+// What to run, how many parameters it needs, and for a command carrying another, how to tell
+// which channel it belongs to.
+struct command_entry
+{
+    amcp_command_func        func;
+    int                      min_num_params;
+    command_channel_resolver channel_resolver;
+};
+
 AMCPCommand::ptr_type make_cmd(amcp_command_func        func,
                                const std::wstring&      name,
                                const std::wstring&      id,
                                IO::ClientInfoPtr        client,
-                               unsigned int             channel_index,
+                               int                      channel_index,
                                int                      layer_index,
                                std::list<std::wstring>& tokens)
 {
@@ -46,13 +55,28 @@ AMCPCommand::ptr_type make_cmd(amcp_command_func        func,
     return std::make_shared<AMCPCommand>(ctx, func, name, id);
 }
 
-AMCPCommand::ptr_type find_command(const std::map<std::wstring, std::pair<amcp_command_func, int>>& commands,
-                                   const std::wstring&                                              name,
-                                   const std::wstring&                                              request_id,
-                                   IO::ClientInfoPtr                                                client,
-                                   int                                                              channel_index,
-                                   int                                                              layer_index,
-                                   std::list<std::wstring>&                                         tokens)
+// Resolves the channel from the parameters when the entry says how, and only to one that
+// exists; anything else keeps the channel it was called with.
+int resolve_channel(const command_entry&           entry,
+                    const std::list<std::wstring>& tokens,
+                    size_t                         channel_count,
+                    int                            channel_index)
+{
+    if (!entry.channel_resolver)
+        return channel_index;
+
+    const int resolved = entry.channel_resolver(std::vector<std::wstring>(tokens.begin(), tokens.end()));
+    return resolved >= 0 && static_cast<size_t>(resolved) < channel_count ? resolved : -1;
+}
+
+AMCPCommand::ptr_type find_command(const std::map<std::wstring, command_entry>& commands,
+                                   const std::wstring&                          name,
+                                   const std::wstring&                          request_id,
+                                   IO::ClientInfoPtr                            client,
+                                   int                                          channel_index,
+                                   int                                          layer_index,
+                                   size_t                                       channel_count,
+                                   std::list<std::wstring>&                     tokens)
 {
     std::wstring subcommand;
 
@@ -67,9 +91,14 @@ AMCPCommand::ptr_type find_command(const std::map<std::wstring, std::pair<amcp_c
         if (subcmd != commands.end()) {
             tokens.pop_front();
 
-            if (tokens.size() >= subcmd->second.second) {
-                return make_cmd(
-                    subcmd->second.first, fullname, request_id, std::move(client), channel_index, layer_index, tokens);
+            if (tokens.size() >= subcmd->second.min_num_params) {
+                return make_cmd(subcmd->second.func,
+                                fullname,
+                                request_id,
+                                std::move(client),
+                                resolve_channel(subcmd->second, tokens, channel_count, channel_index),
+                                layer_index,
+                                tokens);
             }
         }
     }
@@ -77,8 +106,14 @@ AMCPCommand::ptr_type find_command(const std::map<std::wstring, std::pair<amcp_c
     // Resort to ordinary command
     const auto command = commands.find(name);
 
-    if (command != commands.end() && tokens.size() >= command->second.second) {
-        return make_cmd(command->second.first, name, request_id, std::move(client), channel_index, layer_index, tokens);
+    if (command != commands.end() && tokens.size() >= command->second.min_num_params) {
+        return make_cmd(command->second.func,
+                        name,
+                        request_id,
+                        std::move(client),
+                        resolve_channel(command->second, tokens, channel_count, channel_index),
+                        layer_index,
+                        tokens);
     }
 
     return nullptr;
@@ -96,8 +131,7 @@ bool try_lexical_cast(const In& input, Out& result)
     return success;
 }
 
-static void
-parse_channel_id(std::list<std::wstring>& tokens, std::wstring& channel_spec, int& channel_index, int& layer_index)
+void parse_channel_id(std::list<std::wstring>& tokens, std::wstring& channel_spec, int& channel_index, int& layer_index)
 {
     if (!tokens.empty()) {
         channel_spec                            = tokens.front();
@@ -122,8 +156,8 @@ struct amcp_command_repository::impl
 {
     const spl::shared_ptr<std::vector<channel_context>> channels_;
 
-    std::map<std::wstring, std::pair<amcp_command_func, int>> commands{};
-    std::map<std::wstring, std::pair<amcp_command_func, int>> channel_commands{};
+    std::map<std::wstring, command_entry> commands{};
+    std::map<std::wstring, command_entry> channel_commands{};
 
     impl(const spl::shared_ptr<std::vector<channel_context>>& channels)
         : channels_(channels)
@@ -135,7 +169,7 @@ struct amcp_command_repository::impl
                                          IO::ClientInfoPtr        client,
                                          std::list<std::wstring>& tokens) const
     {
-        auto command = find_command(commands, name, id, std::move(client), -1, -1, tokens);
+        auto command = find_command(commands, name, id, std::move(client), -1, -1, channels_->size(), tokens);
 
         if (command)
             return command;
@@ -153,7 +187,8 @@ struct amcp_command_repository::impl
         if (channels_->size() <= channel_index)
             return nullptr;
 
-        auto command = find_command(channel_commands, name, id, std::move(client), channel_index, layer_index, tokens);
+        auto command = find_command(
+            channel_commands, name, id, std::move(client), channel_index, layer_index, channels_->size(), tokens);
 
         if (command)
             return command;
@@ -226,12 +261,14 @@ bool amcp_command_repository::check_channel_lock(IO::ClientInfoPtr client, int c
     return impl_->check_channel_lock(client, channel_index);
 }
 
-void amcp_command_repository::register_command(std::wstring      category,
-                                               std::wstring      name,
-                                               amcp_command_func command,
-                                               int               min_num_params)
+void amcp_command_repository::register_command(std::wstring             category,
+                                               std::wstring             name,
+                                               amcp_command_func        command,
+                                               int                      min_num_params,
+                                               command_channel_resolver channel_resolver)
 {
-    impl_->commands.insert(std::make_pair(std::move(name), std::make_pair(std::move(command), min_num_params)));
+    impl_->commands.insert(std::make_pair(
+        std::move(name), command_entry{std::move(command), min_num_params, std::move(channel_resolver)}));
 }
 
 void amcp_command_repository::register_channel_command(std::wstring      category,
@@ -239,7 +276,8 @@ void amcp_command_repository::register_channel_command(std::wstring      categor
                                                        amcp_command_func command,
                                                        int               min_num_params)
 {
-    impl_->channel_commands.insert(std::make_pair(std::move(name), std::make_pair(std::move(command), min_num_params)));
+    impl_->channel_commands.insert(
+        std::make_pair(std::move(name), command_entry{std::move(command), min_num_params, nullptr}));
 }
 
 }}} // namespace caspar::protocol::amcp

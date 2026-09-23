@@ -2160,6 +2160,15 @@ std::wstring schedule_begin_command(command_context& ctx)
     if (format_desc.format == core::video_format::invalid)
         CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"invalid video format: " + ctx.parameters.at(0)));
 
+    // The stage waits per field, but no producer's wait_for_frame() reads the field it is given,
+    // and the ffmpeg one's predicate leaves out the parity check next_frame() drops a frame on.
+    // So an interlaced render would sample where it means to wait, which is the one thing it
+    // must not do. Refused here rather than rendered wrong.
+    if (format_desc.field_count != 1)
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"a deterministic render cannot use an interlaced "
+                                                        L"video format: " +
+                                                        ctx.parameters.at(0)));
+
     std::vector<std::wstring> consumer_params(ctx.parameters.begin() + 2, ctx.parameters.end());
     replace_placeholders(L"<CLIENT_IP_ADDRESS>", ctx.client->address(), consumer_params);
 

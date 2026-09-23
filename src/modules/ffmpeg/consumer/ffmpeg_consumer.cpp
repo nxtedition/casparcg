@@ -679,6 +679,18 @@ struct ffmpeg_consumer : public core::frame_consumer
                 std::rethrow_exception(exception);
             }
         } catch (...) {
+            if (deterministic_) {
+                // No reconnecting on a deterministic channel. go_offline() discards whatever is
+                // queued and then accepts and drops frames for five seconds, and the retry
+                // reopens the file from frame 0 while the render carries on counting deliveries
+                // -- so the render would report success over a truncated, restarted recording.
+                // Detach instead: losing its last consumer is what ends a render.
+                CASPAR_LOG_CURRENT_EXCEPTION();
+                CASPAR_LOG(error) << print()
+                                  << " Writer failed; aborting the render. The recording is incomplete.";
+                return make_ready_future(false);
+            }
+
             if (!offline_) {
                 CASPAR_LOG_CURRENT_EXCEPTION();
             } else {
@@ -699,12 +711,17 @@ struct ffmpeg_consumer : public core::frame_consumer
         if (deterministic_) {
             // Back-pressure: what paces a deterministic channel, which cannot lose a frame.
             // Not a blocking push(): the writer stops popping once it records an exception, so
-            // that would never return, and the recovery in the next send() never be reached.
+            // that would never return.
             while (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
                 {
                     std::lock_guard<std::mutex> lock(exception_mutex_);
                     if (exception_ != nullptr) {
-                        break; // dropped; the next send() reports it and goes offline
+                        // The writer is gone, so this frame can never be recorded. Detach,
+                        // which ends the render, rather than drop it and let the recording come
+                        // up short in silence.
+                        CASPAR_LOG(error)
+                            << print() << " Writer stopped while a frame waited to be queued; aborting the render.";
+                        return make_ready_future(false);
                     }
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));

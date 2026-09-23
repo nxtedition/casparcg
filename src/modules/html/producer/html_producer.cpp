@@ -170,6 +170,11 @@ class html_client
     mutable std::mutex      ready_mutex_;
     std::condition_variable ready_cv_;
 
+    // When the channel first asked for a frame the page was not ready for, and when that was
+    // last reported. Guarded by ready_mutex_.
+    std::chrono::steady_clock::time_point ready_wait_started_{};
+    std::chrono::steady_clock::time_point ready_wait_reported_{};
+
     // Renders the page on its virtual clock, a frame per pull. Only on a deterministic channel.
     std::unique_ptr<virtual_time_driver> vtc_;
 
@@ -257,9 +262,15 @@ class html_client
 
         {
             std::unique_lock<std::mutex> lock(ready_mutex_);
+
+            if (ready_wait_started_ == std::chrono::steady_clock::time_point{})
+                ready_wait_started_ = std::chrono::steady_clock::now();
+
             if (!ready_cv_.wait_until(
-                    lock, deadline, [&] { return ready_to_render_.load() || closing_ || not_found_; }))
+                    lock, deadline, [&] { return ready_to_render_.load() || closing_ || not_found_; })) {
+                report_not_ready_locked();
                 return false;
+            }
 
             // A page that failed to load, or is closing, will never produce a frame: waiting for
             // one would stall the render for good.
@@ -276,6 +287,28 @@ class html_client
         }
 
         return vtc_->tick(deadline);
+    }
+
+    // A page that never finishes loading stalls the render in the wait above, before the
+    // virtual-time driver -- and its own slow-frame warning -- is ever reached, so this is the
+    // only sign of it. Reports rather than gives up: the stage puts a ceiling on how long it
+    // will wait and ends the render once that is reached, and this says which page was holding
+    // it and how far the page had got. Call with ready_mutex_ held.
+    void report_not_ready_locked()
+    {
+        const auto now = std::chrono::steady_clock::now();
+
+        if (now - ready_wait_started_ < std::chrono::seconds(5))
+            return;
+        if (ready_wait_reported_ != std::chrono::steady_clock::time_point{} &&
+            now - ready_wait_reported_ < std::chrono::seconds(30))
+            return;
+
+        ready_wait_reported_ = now;
+        CASPAR_LOG(warning) << print() << L" not ready to render after "
+                            << std::chrono::duration_cast<std::chrono::seconds>(now - ready_wait_started_).count()
+                            << L"s (loaded=" << loaded_.load() << L", firstPaint=" << first_paint_seen_.load()
+                            << L"); the render is stalled until the page is.";
     }
 
     bool try_pop(const core::video_field field)

@@ -49,7 +49,9 @@ class output final
     ~output();
 
     // Send a frame to the output. If running an interlaced channel, two frames will be provided
-    void operator()(const const_frame& frame, const const_frame& frame2, const video_format_desc& format_desc);
+    // Sends the frame to the consumers, returning whether it actually reached them: a format
+    // change or a malformed frame drops it here.
+    bool operator()(const const_frame& frame, const const_frame& frame2, const video_format_desc& format_desc);
 
     void add(const spl::shared_ptr<frame_consumer>& consumer);
     void add(int index, const spl::shared_ptr<frame_consumer>& consumer);

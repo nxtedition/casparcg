@@ -189,8 +189,9 @@ struct video_channel::impl final
 
                     // Consume
                     caspar::timer consume_timer;
-                    output_(mixed_frame, mixed_frame2, stage_frames.format_desc);
-                    if (mixed_frame)
+                    // Only what output actually sent: it drops a frame on a format change or
+                    // a size mismatch, and a render counting its frames must not count those.
+                    if (output_(mixed_frame, mixed_frame2, stage_frames.format_desc))
                         pacing_->frame_delivered();
                     graph_->set_value("consume-time", consume_timer.elapsed() * stage_frames.format_desc.hz * 0.5);
 

@@ -456,10 +456,26 @@ struct ffmpeg_consumer : public core::frame_consumer
 
     ~ffmpeg_consumer()
     {
-        if (frame_thread_.joinable()) {
-            frame_buffer_.push({core::const_frame{}, -1, -1});
-            frame_thread_.join();
+        if (!frame_thread_.joinable()) {
+            return;
         }
+
+        // The empty frame tells the writer to flush and finish. A blocking push() would never
+        // return if it has already stopped popping after recording an exception, and with the
+        // buffer full that hangs whoever is destroying us -- the channel thread, on the render
+        // reset and shutdown paths. Give up on the sentinel in that case: the writer has left,
+        // and there is nothing it could still flush.
+        while (!frame_buffer_.try_push({core::const_frame{}, -1, -1})) {
+            {
+                std::lock_guard<std::mutex> lock(exception_mutex_);
+                if (exception_ != nullptr) {
+                    break;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        frame_thread_.join();
     }
 
     // frame consumer

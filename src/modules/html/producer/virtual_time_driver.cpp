@@ -64,6 +64,10 @@ struct virtual_time_driver::impl
 
     uint64_t frame_count_ = 0;
 
+    // Frames whose marker never arrived, so the next paint was taken on trust. Each one is a
+    // frame this render cannot claim to be reproducible.
+    uint64_t forced_frames_ = 0;
+
     // Marker state, touched only on the UI thread.
     uint8_t          expected_marker_[3] = {0, 0, 0};
     std::atomic<int> begin_frames_{0}; // diagnostics
@@ -171,13 +175,26 @@ struct virtual_time_driver::impl
         // every frame -- so a paint still arrives for a frame in which the page itself drew
         // nothing, and the caller never has to tell that apart from a frame that is merely late.
         while (std::chrono::steady_clock::now() < deadline) {
+            bool forced_now = false;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 if (paint_received_ || aborted_)
                     return true;
 
-                if (std::chrono::steady_clock::now() >= *sync_deadline_)
+                if (!force_accept_ && std::chrono::steady_clock::now() >= *sync_deadline_) {
                     force_accept_ = true;
+                    ++forced_frames_;
+                    forced_now = true;
+                }
+            }
+
+            // Loud, because it is the only sign that a render has stopped being reproducible.
+            if (forced_now) {
+                CASPAR_LOG(warning) << name_ << L" [vtc] frame " << frame_count_ << L": no paint carried the frame's "
+                                    << L"marker within " << SYNC_TIMEOUT_MS
+                                    << L"ms; taking the next one instead. This frame is not reproducible ("
+                                    << forced_frames_ << L" so far, begin-frames=" << begin_frames_.load()
+                                    << L", paints=" << paints_.load() << L").";
             }
 
             html::begin_invoke([this] {
@@ -285,6 +302,14 @@ struct virtual_time_driver::impl
     {
         aborted_ = true;
         cv_.notify_all();
+    }
+
+    ~impl()
+    {
+        if (forced_frames_ > 0) {
+            CASPAR_LOG(warning) << name_ << L" [vtc] " << forced_frames_ << L" of " << frame_count_
+                                << L" frames were taken without their marker; this render is not reproducible.";
+        }
     }
 };
 

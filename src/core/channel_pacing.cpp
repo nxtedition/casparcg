@@ -37,6 +37,12 @@ namespace {
 
 using time_point_t = std::chrono::high_resolution_clock::time_point;
 
+// How long one producer may keep a deterministic render waiting before the render is given up
+// on. Generous: a producer that can be waited on at all should be ready in far less. Without a
+// ceiling, one that never delivers -- a page that never finishes loading, say -- holds the
+// channel for good, which on a headless render host is a slot lost with nothing to show for it.
+constexpr auto PRODUCER_WAIT_TIMEOUT = std::chrono::seconds(30);
+
 class realtime_pacing final : public channel_pacing
 {
     // The instant the next frame is due. Absent until the first tick(), and dropped
@@ -68,6 +74,10 @@ class realtime_pacing final : public channel_pacing
     // blocking the tick loop on a slow producer would be worse than the dropped frame.
     bool waits_for_producers() const override { return false; }
     bool keep_waiting() const override { return false; }
+
+    // Never waits, so there is nothing to bound and no render to give up on.
+    std::chrono::milliseconds producer_wait_timeout() const override { return std::chrono::milliseconds::zero(); }
+    void                      abort_render(const std::wstring& /*reason*/) override {}
 
     void begin_frame() override {}
     void frame_delivered() override {}
@@ -227,6 +237,28 @@ class deterministic_pacing final
     {
         std::lock_guard<std::mutex> lock(mutex_);
         return !aborted_ && running_;
+    }
+
+    std::chrono::milliseconds producer_wait_timeout() const override
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(PRODUCER_WAIT_TIMEOUT);
+    }
+
+    void abort_render(const std::wstring& reason) override
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_)
+                return; // already over; nothing to give up on
+
+            // Exactly what losing the last consumer does: the channel resets on its next
+            // wait_for_demand(), which detaches the consumers and closes off the recording.
+            running_        = false;
+            finish_pending_ = true;
+        }
+
+        CASPAR_LOG(error) << L"Giving up on the render: " << reason;
+        cv_.notify_all();
     }
 
   private:

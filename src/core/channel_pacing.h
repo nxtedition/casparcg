@@ -22,10 +22,12 @@
 #include <common/memory.h>
 #include <core/video_format.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <string>
 
 namespace caspar { namespace core {
 
@@ -101,6 +103,20 @@ class channel_pacing
      * is shutting down or has no demand: blocked inside the stage, it cannot notice either.
      */
     virtual bool keep_waiting() const = 0;
+
+    /**
+     * How long one such wait may go on before the render is given up on. Zero means no limit,
+     * which is what a strategy that never waits reports.
+     */
+    virtual std::chrono::milliseconds producer_wait_timeout() const = 0;
+
+    /**
+     * Give up on the render in progress: it cannot go on, and waiting longer only holds the
+     * channel. The channel then resets as though the render had finished, detaching its
+     * consumers so whatever was recorded is closed off. `reason` is logged. Does nothing if no
+     * render is running.
+     */
+    virtual void abort_render(const std::wstring& reason) = 0;
 
     /** Called on the channel thread at the start of every frame, before it is produced. */
     virtual void begin_frame() = 0;

@@ -180,10 +180,31 @@ struct stage::impl : public std::enable_shared_from_this<impl>
                     // cannot notice shutdown, or the render being cancelled, by itself.
                     constexpr auto slice = std::chrono::milliseconds(50);
 
-                    auto wait_for = [&](core::layer& layer, video_field field) {
+                    // A producer that never delivers would otherwise hold the channel for
+                    // good. Throwing from here would not help: layer::wait_for_foreground()
+                    // swallows it and receive() then yields an empty frame, so the render would
+                    // carry on recording black at full speed. Ending the render is the only
+                    // thing that actually stops it.
+                    const auto wait_timeout = pacing_->producer_wait_timeout();
+
+                    auto wait_for = [&](int index, core::layer& layer, video_field field) {
+                        const auto give_up_at = std::chrono::steady_clock::now() + wait_timeout;
+
                         while (!layer.wait_for_foreground(field, slice)) {
                             if (!pacing_->keep_waiting())
                                 return;
+
+                            if (wait_timeout > std::chrono::milliseconds::zero() &&
+                                std::chrono::steady_clock::now() >= give_up_at) {
+                                pacing_->abort_render(
+                                    L"stage[" + std::to_wstring(channel_index_) + L"] layer " +
+                                    std::to_wstring(index) + L": " + layer.foreground()->print() +
+                                    L" did not produce a frame within " +
+                                    std::to_wstring(
+                                        std::chrono::duration_cast<std::chrono::seconds>(wait_timeout).count()) +
+                                    L"s");
+                                return;
+                            }
                         }
                     };
 
@@ -212,9 +233,9 @@ struct stage::impl : public std::enable_shared_from_this<impl>
                             continue;
                         }
 
-                        wait_for(p->second, field1);
+                        wait_for(p->first, p->second, field1);
                         if (is_interlaced)
-                            wait_for(p->second, video_field::b);
+                            wait_for(p->first, p->second, video_field::b);
                     }
                 }
 

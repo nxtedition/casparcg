@@ -1036,6 +1036,12 @@ struct AVProducer::Impl
         return core::draw_frame::still(frame_);
     }
 
+    // How many frames next_frame() wants queued before its first delivery after construction
+    // or a seek; with fewer it underflows and every later frame lags a tick. Never more than
+    // the buffer can hold: the writer stops pushing at buffer_capacity_, so a larger target
+    // would leave wait_for_frame() waiting for a fill that can never arrive.
+    size_t prefill_target() const { return static_cast<size_t>(std::min(4, std::max(buffer_capacity_, 1))); }
+
     bool is_ready()
     {
         boost::lock_guard<boost::mutex> lock(buffer_mutex_);
@@ -1046,14 +1052,13 @@ struct AVProducer::Impl
     {
         // Mirrors next_frame()'s underflow check, not is_ready(): is_ready() is also satisfied
         // by the last frame delivered, which would make the wait a no-op, and next_frame() wants
-        // 4 frames queued on the first delivery after construction or a seek -- with fewer it
-        // underflows and every later frame lags a tick. At EOF nothing more is coming, so stop
-        // waiting and let next_frame() serve its still frame.
+        // a prefill on the first delivery after construction or a seek. At EOF nothing more is
+        // coming, so stop waiting and let next_frame() serve its still frame.
         auto ready = [this] {
             if (buffer_eof_.load()) {
                 return true;
             }
-            return !buffer_.empty() && (!frame_flush_ || buffer_.size() >= 4);
+            return !buffer_.empty() && (!frame_flush_ || buffer_.size() >= prefill_target());
         };
 
         boost::unique_lock<boost::mutex> lock(buffer_mutex_);
@@ -1066,7 +1071,7 @@ struct AVProducer::Impl
 
         boost::lock_guard<boost::mutex> lock(buffer_mutex_);
 
-        if (buffer_.empty() || (frame_flush_ && buffer_.size() < 4)) {
+        if (buffer_.empty() || (frame_flush_ && buffer_.size() < prefill_target())) {
             auto start    = start_.load();
             auto duration = duration_.load();
 

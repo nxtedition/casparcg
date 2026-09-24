@@ -155,6 +155,9 @@ void Input::internal_reset()
 
     static const std::set<std::wstring> PROTOCOLS_TREATED_AS_FORMATS = {L"dshow", L"v4l2", L"iec61883"};
 
+    // internal_reset() is also called on seek, so don't modify filename_.
+    auto url = filename_;
+
     const AVInputFormat* input_format = nullptr;
     auto                 url_parts    = caspar::protocol_split(u16(filename_));
     if (url_parts.first == L"http" || url_parts.first == L"https") {
@@ -171,11 +174,11 @@ void Input::internal_reset()
         FF(av_dict_set(&options, "rtmp_live", "live", 0));
     } else if (PROTOCOLS_TREATED_AS_FORMATS.find(url_parts.first) != PROTOCOLS_TREATED_AS_FORMATS.end()) {
         input_format = av_find_input_format(u8(url_parts.first).c_str());
-        filename_    = u8(url_parts.second);
+        url          = u8(url_parts.second);
     }
 
     if (seekable_) {
-        CASPAR_LOG(debug) << "av_input[" + filename_ + "] Disabled seeking";
+        CASPAR_LOG(debug) << "av_input[" + url + "] Disabled seeking";
         FF(av_dict_set(&options, "seekable", *seekable_ ? "1" : "0", 0));
     }
 
@@ -202,7 +205,7 @@ void Input::internal_reset()
             av_dict_set(&options, "cache_timeout", cache_timeout.c_str(), 0);
         }
 
-        filename_ = "shared:" + filename_;
+        url = "shared:" + url;
     }
 
     if (input_format == nullptr) {
@@ -214,11 +217,11 @@ void Input::internal_reset()
     ic->interrupt_callback.callback = Input::interrupt_cb;
     ic->interrupt_callback.opaque   = this;
 
-    FF(avformat_open_input(&ic, filename_.c_str(), input_format, &options));
+    FF(avformat_open_input(&ic, url.c_str(), input_format, &options));
     auto ic2 = std::shared_ptr<AVFormatContext>(ic, [](AVFormatContext* ctx) { avformat_close_input(&ctx); });
 
     for (auto& p : to_map(&options)) {
-        CASPAR_LOG(warning) << "av_input[" + filename_ + "]" << " Unused option " << p.first << "=" << p.second;
+        CASPAR_LOG(warning) << "av_input[" + url + "]" << " Unused option " << p.first << "=" << p.second;
     }
 
     FF(avformat_find_stream_info(ic2.get(), nullptr));

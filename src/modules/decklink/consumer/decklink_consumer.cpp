@@ -797,7 +797,11 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
 
     ~decklink_consumer()
     {
-        abort_request_ = true;
+        {
+            // Set under the lock so pop() can't miss the wakeup between its predicate check and wait
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            abort_request_ = true;
+        }
         buffer_cond_.notify_all();
 
         if (output_ != nullptr) {

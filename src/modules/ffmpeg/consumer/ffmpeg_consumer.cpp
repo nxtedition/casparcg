@@ -432,7 +432,7 @@ struct ffmpeg_consumer : public core::frame_consumer
     // The frame thread polls this on every iteration to exit cleanly.
     std::atomic<bool>                          connected_{true};
     std::atomic<bool>                          packet_thread_failed_{false};
-    std::future<void>                          reconnect_timeout_;
+    std::chrono::steady_clock::time_point      reconnect_at_;
     std::chrono::milliseconds                  reconnect_delay_                     = 1s;
     int                                        reconnect_attempts_at_current_delay_ = 0;
     static constexpr int                       reconnect_attempts_per_level_        = 25;
@@ -726,7 +726,9 @@ struct ffmpeg_consumer : public core::frame_consumer
             reconnect_delay_                     = std::min(reconnect_delay_ * 2, reconnect_max_delay_);
         }
 
-        reconnect_timeout_ = std::async(std::launch::async, [delay] { std::this_thread::sleep_for(delay); });
+        // A deadline, not a std::async sleep: that future blocks in its destructor and on
+        // reassignment until the sleep ends, stalling whichever thread removes the consumer.
+        reconnect_at_ = std::chrono::steady_clock::now() + delay;
 
         CASPAR_LOG(warning) << print() << L" Connection lost. Attempting reconnection in "
                             << std::chrono::duration_cast<std::chrono::milliseconds>(delay).count() << L"ms";
@@ -777,7 +779,7 @@ struct ffmpeg_consumer : public core::frame_consumer
         }
 
         if (!connected_) {
-            if (reconnect_timeout_.valid() && reconnect_timeout_.wait_for(0s) == std::future_status::ready) {
+            if (std::chrono::steady_clock::now() >= reconnect_at_) {
                 try {
                     connect();
                 } catch (...) {

@@ -780,7 +780,9 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
 
             schedule_next_video(image_data, nb_samples, video_scheduled_);
             for (auto& context : secondary_port_contexts_) {
-                context->schedule_next_video(image_data, 0, video_scheduled_);
+                // A secondary port may use a larger format than the primary
+                auto port_data = context->format_strategy_->allocate_frame_data(context->decklink_format_desc_);
+                context->schedule_next_video(port_data, 0, video_scheduled_);
             }
 
             video_scheduled_ += decklink_format_desc_.duration;

@@ -422,6 +422,7 @@ struct ffmpeg_consumer : public core::frame_consumer
 
     tbb::concurrent_bounded_queue<std::tuple<core::const_frame, std::int64_t, std::int64_t>> frame_buffer_;
     std::thread                                                                              frame_thread_;
+    std::atomic<bool> frame_thread_exited_{false};
 
     // Reconnect state. When the frame thread terminates due to a connection loss we
     // disconnect the consumer and periodically try to reinitialize it from send().
@@ -469,7 +470,15 @@ struct ffmpeg_consumer : public core::frame_consumer
     ~ffmpeg_consumer()
     {
         if (frame_thread_.joinable()) {
-            frame_buffer_.push({core::const_frame{}, -1, -1});
+            // The frame thread stops draining frame_buffer_ once it has exited (e.g. after a
+            // failed connection attempt), so a blocking push onto a full buffer never returns.
+            while (!frame_buffer_.try_push({core::const_frame{}, -1, -1})) {
+                if (frame_thread_exited_) {
+                    frame_buffer_.clear();
+                } else {
+                    std::this_thread::sleep_for(1ms);
+                }
+            }
             frame_thread_.join();
         }
     }
@@ -491,7 +500,8 @@ struct ffmpeg_consumer : public core::frame_consumer
 
         graph_->set_text(print());
 
-        frame_thread_ = std::thread([=, this] {
+        frame_thread_exited_ = false;
+        frame_thread_        = std::thread([=, this] {
             try {
                 std::map<std::string, std::string> options;
                 {
@@ -579,7 +589,8 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                 tbb::concurrent_bounded_queue<std::shared_ptr<AVPacket>> packet_buffer;
                 packet_buffer.set_capacity(realtime_ ? 1 : 128);
-                auto packet_thread = std::thread([&] {
+                std::atomic<bool> packet_thread_exited{false};
+                auto              packet_thread = std::thread([&] {
                     try {
                         CASPAR_SCOPE_EXIT
                         {
@@ -617,15 +628,20 @@ struct ffmpeg_consumer : public core::frame_consumer
                         packet_thread_failed_.store(true, std::memory_order_release);
                         packet_buffer.abort();
                     }
+                    packet_thread_exited = true;
                 });
+
+                // Hands the packet thread its end-of-stream marker without blocking forever
+                // on a full buffer if it has already exited after a write error.
+                auto push_eof = [&] {
+                    while (!packet_thread_exited && !packet_buffer.try_push(nullptr)) {
+                        std::this_thread::sleep_for(1ms);
+                    }
+                };
                 CASPAR_SCOPE_EXIT
                 {
                     if (packet_thread.joinable()) {
-                        try {
-                            packet_buffer.push(nullptr);
-                        } catch (...) {
-                        }
-                        packet_buffer.abort();
+                        push_eof();
                         packet_thread.join();
                     }
                 };
@@ -677,7 +693,7 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                     if (!std::get<0>(data)) {
                         if (!packet_thread_failed_.load(std::memory_order_acquire)) {
-                            packet_buffer.push(nullptr);
+                            push_eof();
                         }
                         break;
                     }
@@ -690,6 +706,7 @@ struct ffmpeg_consumer : public core::frame_consumer
                     exception_ = std::current_exception();
                 }
             }
+            frame_thread_exited_ = true;
         });
     }
 

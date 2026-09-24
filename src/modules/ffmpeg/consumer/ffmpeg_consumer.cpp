@@ -422,6 +422,9 @@ struct ffmpeg_consumer : public core::frame_consumer
 
     tbb::concurrent_bounded_queue<std::tuple<core::const_frame, std::int64_t, std::int64_t>> frame_buffer_;
     std::thread                                                                              frame_thread_;
+    std::atomic<bool> frame_thread_exited_{false};
+    // Frame thread of a failed stream, told to stop by disconnect() but not yet joined.
+    std::thread retired_frame_thread_;
 
     // Reconnect state. When the frame thread terminates due to a connection loss we
     // disconnect the consumer and periodically try to reinitialize it from send().
@@ -472,6 +475,9 @@ struct ffmpeg_consumer : public core::frame_consumer
             frame_buffer_.push({core::const_frame{}, -1, -1});
             frame_thread_.join();
         }
+        if (retired_frame_thread_.joinable()) {
+            retired_frame_thread_.join();
+        }
     }
 
     // frame consumer
@@ -484,6 +490,18 @@ struct ffmpeg_consumer : public core::frame_consumer
             CASPAR_THROW_EXCEPTION(invalid_operation() << msg_info("Cannot reinitialize ffmpeg-consumer."));
         }
 
+        // The new frame thread shares frame_buffer_ and the failure state with the retired one.
+        if (retired_frame_thread_.joinable()) {
+            retired_frame_thread_.join();
+            {
+                std::tuple<core::const_frame, std::int64_t, std::int64_t> drain;
+                while (frame_buffer_.try_pop(drain)) {
+                }
+            }
+            std::lock_guard<std::mutex> lock(exception_mutex_);
+            exception_ = nullptr;
+        }
+
         format_desc_       = format_desc;
         channel_index_     = channel_info.index;
         last_channel_info_ = channel_info;
@@ -491,7 +509,8 @@ struct ffmpeg_consumer : public core::frame_consumer
 
         graph_->set_text(print());
 
-        frame_thread_ = std::thread([=, this] {
+        frame_thread_exited_ = false;
+        frame_thread_        = std::thread([=, this] {
             try {
                 std::map<std::string, std::string> options;
                 {
@@ -658,6 +677,12 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                     std::tuple<core::const_frame, std::int64_t, std::int64_t> data;
                     frame_buffer_.pop(data);
+
+                    // Every packet of a failed stream is dropped; don't encode (or flush the
+                    // encoders for) the frame or sentinel that woke us up.
+                    if (packet_thread_failed_.load(std::memory_order_acquire)) {
+                        break;
+                    }
                     graph_->set_value("input",
                                       static_cast<double>(frame_buffer_.size() + 0.001) / frame_buffer_.capacity());
 
@@ -690,6 +715,7 @@ struct ffmpeg_consumer : public core::frame_consumer
                     exception_ = std::current_exception();
                 }
             }
+            frame_thread_exited_ = true;
         });
     }
 
@@ -705,16 +731,13 @@ struct ffmpeg_consumer : public core::frame_consumer
                 }
             }
             frame_buffer_.push({core::const_frame{}, -1, -1});
-            frame_thread_.join();
-        }
-        {
-            std::tuple<core::const_frame, std::int64_t, std::int64_t> drain;
-            while (frame_buffer_.try_pop(drain)) {
+            // Don't join here: this runs on the channel thread, and tearing down the
+            // encoders can take over a second. The next initialize() (at least the reconnect
+            // delay away) or the destructor joins it.
+            if (retired_frame_thread_.joinable()) {
+                retired_frame_thread_.join();
             }
-        }
-        {
-            std::lock_guard<std::mutex> lock(exception_mutex_);
-            exception_ = nullptr;
+            retired_frame_thread_ = std::move(frame_thread_);
         }
 
         connected_ = false;
@@ -746,6 +769,11 @@ struct ffmpeg_consumer : public core::frame_consumer
             // its FFmpeg initialization. Treat it as in progress so later send()
             // calls do not try to initialize the same consumer again.
             connected_ = true;
+            return;
+        }
+        if (retired_frame_thread_.joinable() && !frame_thread_exited_) {
+            // The failed stream's encoders are still being torn down. Retry on the next
+            // frame rather than block the channel thread joining it in initialize().
             return;
         }
         CASPAR_LOG(info) << print() << L" Attempting reconnect...";

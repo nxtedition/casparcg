@@ -184,6 +184,10 @@ void Input::internal_reset()
             u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.path", L"./ffmpeg-cache"));
         av_dict_set(&options, "cache_dir", cache_dir.c_str(), 0);
 
+        // The shared protocol creates the cache files but not the directory.
+        boost::system::error_code ec;
+        boost::filesystem::create_directories(cache_dir, ec);
+
         auto cache_size_max =
             u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.max-size", L""));
         if (!cache_size_max.empty()) {

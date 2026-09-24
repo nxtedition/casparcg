@@ -401,6 +401,38 @@ struct Stream
     }
 };
 
+// One-line reason for the current exception, for the reconnect log lines.
+// CASPAR_LOG_CURRENT_EXCEPTION prints the full multi-line diagnostic information.
+std::wstring current_exception_reason()
+{
+    try {
+        throw;
+    } catch (const ffmpeg_error_t& e) {
+        std::string reason;
+        if (auto func = boost::get_error_info<boost::errinfo_api_function>(e)) {
+            reason = *func;
+            reason = reason.substr(0, reason.find('('));
+        }
+        std::string detail;
+        if (auto msg = boost::get_error_info<msg_info_t>(e)) {
+            detail = *msg;
+        } else if (auto errn = boost::get_error_info<ffmpeg_errn_info>(e)) {
+            char buf[AV_ERROR_MAX_STRING_SIZE] = {};
+            av_strerror(*errn, buf, sizeof(buf));
+            detail = buf;
+        }
+        if (!reason.empty() && !detail.empty()) {
+            reason += ": ";
+        }
+        return u16(reason + detail);
+    } catch (const std::exception& e) {
+        const std::string what = e.what();
+        return u16(what.substr(0, what.find('\n')));
+    } catch (...) {
+        return L"unknown error";
+    }
+}
+
 struct ffmpeg_consumer : public core::frame_consumer
 {
     core::monitor::state    state_;
@@ -431,6 +463,7 @@ struct ffmpeg_consumer : public core::frame_consumer
     // packet_thread_failed_ is set by the packet thread when its writes fail.
     // The frame thread polls this on every iteration to exit cleanly.
     std::atomic<bool>                          connected_{true};
+    std::atomic<bool>                          streaming_{false}; // output opened, not yet failed
     std::atomic<bool>                          packet_thread_failed_{false};
     std::future<void>                          reconnect_timeout_;
     std::chrono::milliseconds                  reconnect_delay_                     = 1s;
@@ -642,6 +675,7 @@ struct ffmpeg_consumer : public core::frame_consumer
                 };
 
                 connected_ = true;
+                streaming_ = true;
                 packet_thread_failed_.store(false, std::memory_order_release);
                 reconnect_delay_                     = 1s;
                 reconnect_attempts_at_current_delay_ = 0;
@@ -694,7 +728,7 @@ struct ffmpeg_consumer : public core::frame_consumer
     }
 
     // Tears down the current frame thread and schedules a reconnect attempt.
-    void disconnect()
+    void disconnect(const std::wstring& reason)
     {
         std::lock_guard<std::mutex> reconnect_lock(reconnect_mutex_);
         if (frame_thread_.joinable()) {
@@ -728,8 +762,10 @@ struct ffmpeg_consumer : public core::frame_consumer
 
         reconnect_timeout_ = std::async(std::launch::async, [delay] { std::this_thread::sleep_for(delay); });
 
-        CASPAR_LOG(warning) << print() << L" Connection lost. Attempting reconnection in "
+        CASPAR_LOG(warning) << print() << (streaming_ ? L" Connection lost: " : L" Connection attempt failed: ")
+                            << reason << L". Attempting reconnection in "
                             << std::chrono::duration_cast<std::chrono::milliseconds>(delay).count() << L"ms";
+        streaming_ = false;
     }
 
     void connect()
@@ -770,10 +806,7 @@ struct ffmpeg_consumer : public core::frame_consumer
             if (!realtime_) {
                 throw;
             }
-            if (!connected_) {
-                CASPAR_LOG(warning) << print() << L" Reconnection attempt failed";
-            }
-            disconnect();
+            disconnect(current_exception_reason());
         }
 
         if (!connected_) {
@@ -781,8 +814,7 @@ struct ffmpeg_consumer : public core::frame_consumer
                 try {
                     connect();
                 } catch (...) {
-                    CASPAR_LOG(warning) << print() << L" Reconnection attempt failed";
-                    disconnect();
+                    disconnect(current_exception_reason());
                 }
             } else {
                 return make_ready_future(true);

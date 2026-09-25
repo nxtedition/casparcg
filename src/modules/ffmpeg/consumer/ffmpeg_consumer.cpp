@@ -482,10 +482,11 @@ struct ffmpeg_consumer : public core::frame_consumer
 
     // Reconnect state. When the frame thread terminates due to a connection loss we
     // disconnect the consumer and periodically try to reinitialize it from send().
-    // Uses a stepped backoff (1s, 2s, 4s, 8s, 16s) with 25 attempts per level,
-    // capped at 30s. The backoff only resets once a connection has stayed up for
-    // reconnect_stable_uptime_, so an endpoint that accepts and immediately drops
-    // the stream still backs off. The backoff state is only touched from send().
+    // Uses a stepped backoff (1s, 2s, 4s, 8s, 16s) with reconnect_attempts_per_level_
+    // attempts per level, capped at 30s. The backoff only resets once a connection has
+    // stayed up for reconnect_stable_uptime_, so an endpoint that accepts and immediately
+    // drops the stream still backs off. The backoff state is only touched from send().
+    // Both limits come from configuration.ffmpeg.consumer.reconnect.
     //
     // packet_thread_failed_ is set by the packet thread when its writes fail.
     // The frame thread polls this on every iteration to exit cleanly.
@@ -496,9 +497,9 @@ struct ffmpeg_consumer : public core::frame_consumer
     std::chrono::steady_clock::time_point              reconnect_at_;
     std::chrono::milliseconds                          reconnect_delay_                     = 1s;
     int                                                reconnect_attempts_at_current_delay_ = 0;
-    static constexpr int                               reconnect_attempts_per_level_        = 25;
-    static constexpr std::chrono::milliseconds         reconnect_max_delay_                 = 30s;
-    static constexpr std::chrono::milliseconds         reconnect_stable_uptime_             = 10s;
+    const int                                          reconnect_attempts_per_level_;
+    static constexpr std::chrono::milliseconds         reconnect_max_delay_ = 30s;
+    const std::chrono::milliseconds                    reconnect_stable_uptime_;
 
     // Stored arguments for reinitialization during reconnect.
     std::optional<core::channel_info> last_channel_info_;
@@ -516,6 +517,10 @@ struct ffmpeg_consumer : public core::frame_consumer
         , realtime_(realtime)
         , path_(std::move(path))
         , args_(std::move(args))
+        , reconnect_attempts_per_level_(std::max(
+              1, env::properties().get(L"configuration.ffmpeg.consumer.reconnect.attempts-per-level", 25)))
+        , reconnect_stable_uptime_(std::chrono::seconds(std::max(
+              0, env::properties().get(L"configuration.ffmpeg.consumer.reconnect.stable-uptime", 10))))
         , depth_(depth)
     {
         state_["file/path"] = u8(path_);

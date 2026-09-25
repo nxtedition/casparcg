@@ -472,6 +472,8 @@ struct Filter
                 switch (type) {
                     case AVMEDIA_TYPE_VIDEO:
                         if (video_streams.empty()) {
+                            // Freeing the graph frees the sources created so far.
+                            sources.clear();
                             graph = nullptr;
                             return;
                         }
@@ -481,6 +483,8 @@ struct Filter
                         break;
                     case AVMEDIA_TYPE_AUDIO:
                         if (audio_streams.empty()) {
+                            // Freeing the graph frees the sources created so far.
+                            sources.clear();
                             graph = nullptr;
                             return;
                         }

@@ -23,10 +23,13 @@
 
 #include <common/except.h>
 
+#include <ffmpeg/util/av_assert.h>
+
 extern "C" {
 #define __STDC_CONSTANT_MACROS
 #define __STDC_LIMIT_MACROS
 #include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 }
@@ -43,7 +46,8 @@ bool is_frame_compatible_with_mixer(const std::shared_ptr<AVFrame>& src)
 
 std::shared_ptr<AVFrame> convert_image_frame(const std::shared_ptr<AVFrame>& src, AVPixelFormat pixFmt)
 {
-    if (src->format == pixFmt)
+    // Callers (image_view, the scroll producer) expect tightly packed rows
+    if (src->format == pixFmt && src->linesize[0] == av_image_get_linesize(pixFmt, src->width, 0))
         return src;
 
     auto sws = std::shared_ptr<SwsContext>(sws_getContext(src->width,
@@ -67,7 +71,7 @@ std::shared_ptr<AVFrame> convert_image_frame(const std::shared_ptr<AVFrame>& src
     dest->height              = src->height;
     dest->format              = pixFmt;
     dest->colorspace          = AVCOL_SPC_BT709;
-    av_frame_get_buffer(dest.get(), 64);
+    FF(av_frame_get_buffer(dest.get(), 1));
 
     sws_scale(sws.get(), src->data, src->linesize, 0, src->height, dest->data, dest->linesize);
 

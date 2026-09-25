@@ -440,6 +440,21 @@ static std::wstring current_exception_reason()
     }
 }
 
+// Whether path is a protocol URL (srt://, rtmp://, udp://, ...) rather than a local file.
+static bool is_url(const std::string& path)
+{
+    static const boost::regex prot_exp("^.+:.*");
+    return boost::regex_match(path, prot_exp);
+}
+
+// Whether path writes a local file. Drive letters (C:\...) and file: URLs pass is_url() too,
+// and avio_open2 truncates them on every reconnect just like a plain path.
+static bool is_local_file(const std::string& path)
+{
+    static const boost::regex local_exp("^([a-z]:|file:).*", boost::regex::icase);
+    return !is_url(path) || boost::regex_match(path, local_exp);
+}
+
 struct ffmpeg_consumer : public core::frame_consumer
 {
     core::monitor::state    state_;
@@ -573,8 +588,7 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                 boost::filesystem::path full_path = path_;
 
-                static boost::regex prot_exp("^.+:.*");
-                if (!boost::regex_match(path_, prot_exp)) {
+                if (!is_url(path_)) {
                     if (!full_path.is_absolute()) {
                         full_path = u8(env::media_folder()) + path_;
                     }
@@ -851,8 +865,9 @@ struct ffmpeg_consumer : public core::frame_consumer
             }
         } catch (...) {
             // For file recordings, propagate the error immediately. Only realtime stream
-            // consumers (SRT/RTMP/...) should transparently reconnect.
-            if (!realtime_) {
+            // consumers (SRT/RTMP/...) should transparently reconnect. A realtime consumer can
+            // also write a local file, and reconnecting would wipe the recording.
+            if (!realtime_ || is_local_file(path_)) {
                 throw;
             }
             disconnect(current_exception_reason());

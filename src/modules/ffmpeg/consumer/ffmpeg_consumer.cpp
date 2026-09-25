@@ -483,18 +483,22 @@ struct ffmpeg_consumer : public core::frame_consumer
     // Reconnect state. When the frame thread terminates due to a connection loss we
     // disconnect the consumer and periodically try to reinitialize it from send().
     // Uses a stepped backoff (1s, 2s, 4s, 8s, 16s) with 25 attempts per level,
-    // capped at 30s.
+    // capped at 30s. The backoff only resets once a connection has stayed up for
+    // reconnect_stable_uptime_, so an endpoint that accepts and immediately drops
+    // the stream still backs off. The backoff state is only touched from send().
     //
     // packet_thread_failed_ is set by the packet thread when its writes fail.
     // The frame thread polls this on every iteration to exit cleanly.
-    std::atomic<bool>                          connected_{true};
-    std::atomic<bool>                          streaming_{false}; // output opened, not yet failed
-    std::atomic<bool>                          packet_thread_failed_{false};
-    std::chrono::steady_clock::time_point      reconnect_at_;
-    std::chrono::milliseconds                  reconnect_delay_                     = 1s;
-    int                                        reconnect_attempts_at_current_delay_ = 0;
-    static constexpr int                       reconnect_attempts_per_level_        = 25;
-    static constexpr std::chrono::milliseconds reconnect_max_delay_                 = 30s;
+    std::atomic<bool>                                  connected_{true};
+    std::atomic<bool>                                  streaming_{false}; // output opened, not yet failed
+    std::atomic<std::chrono::steady_clock::time_point> streaming_since_{};
+    std::atomic<bool>                                  packet_thread_failed_{false};
+    std::chrono::steady_clock::time_point              reconnect_at_;
+    std::chrono::milliseconds                          reconnect_delay_                     = 1s;
+    int                                                reconnect_attempts_at_current_delay_ = 0;
+    static constexpr int                               reconnect_attempts_per_level_        = 25;
+    static constexpr std::chrono::milliseconds         reconnect_max_delay_                 = 30s;
+    static constexpr std::chrono::milliseconds         reconnect_stable_uptime_             = 10s;
 
     // Stored arguments for reinitialization during reconnect.
     std::optional<core::channel_info> last_channel_info_;
@@ -728,11 +732,10 @@ struct ffmpeg_consumer : public core::frame_consumer
                     }
                 };
 
-                connected_ = true;
-                streaming_ = true;
+                connected_       = true;
+                streaming_since_ = std::chrono::steady_clock::now();
+                streaming_       = true;
                 packet_thread_failed_.store(false, std::memory_order_release);
-                reconnect_delay_                     = 1s;
-                reconnect_attempts_at_current_delay_ = 0;
 
                 std::int64_t frame_number = 0;
                 while (true) {
@@ -811,6 +814,12 @@ struct ffmpeg_consumer : public core::frame_consumer
 
         connected_ = false;
 
+        const auto now = std::chrono::steady_clock::now();
+        if (streaming_ && now - streaming_since_.load() >= reconnect_stable_uptime_) {
+            reconnect_delay_                     = 1s;
+            reconnect_attempts_at_current_delay_ = 0;
+        }
+
         const auto delay = reconnect_delay_;
         reconnect_attempts_at_current_delay_ += 1;
         if (reconnect_attempts_at_current_delay_ >= reconnect_attempts_per_level_) {
@@ -818,7 +827,7 @@ struct ffmpeg_consumer : public core::frame_consumer
             reconnect_delay_                     = std::min(reconnect_delay_ * 2, reconnect_max_delay_);
         }
 
-        reconnect_at_ = std::chrono::steady_clock::now() + delay;
+        reconnect_at_ = now + delay;
 
         CASPAR_LOG(warning) << print() << (streaming_ ? L" Connection lost: " : L" Connection attempt failed: ")
                             << reason << L". Attempting reconnection in "

@@ -249,6 +249,11 @@ class Decoder
 
     ~Decoder()
     {
+        // Decoders are destroyed on the producer thread, which ~Impl interrupts. join() is an
+        // interruption point: it would throw right away and ctx would be freed under the
+        // still running decoder thread.
+        boost::this_thread::disable_interruption disable_interruption;
+
         try {
             if (thread.joinable()) {
                 thread.interrupt();

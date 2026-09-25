@@ -702,7 +702,7 @@ class decklink_producer : public IDeckLinkInputCallback
                 auto src    = video_decoder_.decode(video, mode_);
 
                 BMDTimeValue duration;
-                if (SUCCEEDED(video->GetStreamTime(&in_video_pts, &duration, AV_TIME_BASE))) {
+                if (SUCCEEDED(video->GetStreamTime(&in_video_pts, &duration, AV_TIME_BASE)) && src) {
                     src->pts = in_video_pts;
                 }
 

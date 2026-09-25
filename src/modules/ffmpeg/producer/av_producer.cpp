@@ -517,6 +517,7 @@ struct Filter
                         args += (boost::format(":frame_rate=%d/%d") % st->framerate.num % st->framerate.den).str();
                     }
 
+#if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(9, 16, 100) // buffersrc colorspace/range options
                     if (st->colorspace != AVCOL_SPC_UNSPECIFIED) {
                         args += (boost::format(":colorspace=%d") % st->colorspace).str();
                     }
@@ -524,6 +525,7 @@ struct Filter
                     if (st->color_range != AVCOL_RANGE_UNSPECIFIED) {
                         args += (boost::format(":range=%d") % st->color_range).str();
                     }
+#endif
 
                     AVFilterContext* source = nullptr;
                     FF(avfilter_graph_create_filter(

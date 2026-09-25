@@ -65,6 +65,13 @@ struct layer::impl
         }
     }
 
+    void preview()
+    {
+        if (background_ != frame_producer::empty()) {
+            play(true);
+        }
+    }
+
     void play(bool paused = false)
     {
         if (background_ != frame_producer::empty()) {
@@ -180,7 +187,7 @@ void layer::load(spl::shared_ptr<frame_producer> frame_producer, bool preview, b
     return impl_->load(std::move(frame_producer), preview, auto_play, live);
 }
 void       layer::play() { impl_->play(false); }
-void       layer::preview() { impl_->play(true); }
+void       layer::preview() { impl_->preview(); }
 void       layer::pause() { impl_->pause(); }
 void       layer::resume() { impl_->resume(); }
 void       layer::stop() { impl_->stop(); }

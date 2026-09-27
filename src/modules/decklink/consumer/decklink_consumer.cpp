@@ -174,7 +174,8 @@ void set_keyer(const com_iface_ptr<IDeckLinkProfileAttributes>& attributes,
                                                    &supported)) &&
             !supported) {
             CASPAR_LOG(warning) << print << L" Keying is not supported by this device for the current video mode. Disabling keyer.";
-            decklink_keyer->Disable();
+            if (decklink_keyer)
+                decklink_keyer->Disable();
             return;
         }
     }
@@ -183,7 +184,7 @@ void set_keyer(const com_iface_ptr<IDeckLinkProfileAttributes>& attributes,
         BOOL value = true;
         if (SUCCEEDED(attributes->GetFlag(BMDDeckLinkSupportsInternalKeying, &value)) && !value)
             CASPAR_LOG(error) << print << L" Failed to enable internal keyer.";
-        else if (FAILED(decklink_keyer->Enable(FALSE)))
+        else if (!decklink_keyer || FAILED(decklink_keyer->Enable(FALSE)))
             CASPAR_LOG(error) << print << L" Failed to enable internal keyer.";
         else if (FAILED(decklink_keyer->SetLevel(255)))
             CASPAR_LOG(error) << print << L" Failed to set key-level to max.";
@@ -193,7 +194,7 @@ void set_keyer(const com_iface_ptr<IDeckLinkProfileAttributes>& attributes,
         BOOL value = true;
         if (SUCCEEDED(attributes->GetFlag(BMDDeckLinkSupportsExternalKeying, &value)) && !value)
             CASPAR_LOG(error) << print << L" Failed to enable external keyer.";
-        else if (FAILED(decklink_keyer->Enable(TRUE)))
+        else if (!decklink_keyer || FAILED(decklink_keyer->Enable(TRUE)))
             CASPAR_LOG(error) << print << L" Failed to enable external keyer.";
         else if (FAILED(decklink_keyer->SetLevel(255)))
             CASPAR_LOG(error) << print << L" Failed to set key-level to max.";

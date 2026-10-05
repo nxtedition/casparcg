@@ -58,6 +58,9 @@ Documentation
 
 The most up-to-date documentation is always available at https://casparcg.com/docs/wiki
 
+[Deterministic rendering](docs/deterministic-rendering.md) covers rendering to a file off the
+wall clock, and the SCHEDULE commands that drive it.
+
 Ask questions in the forum: https://casparcgforum.org/
 
 Development

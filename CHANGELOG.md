@@ -1,3 +1,26 @@
+CasparCG 2.6.0 Dev
+==========================================
+
+### Core
+##### Improvements
+* Deterministic channels: rendering decoupled from the wall clock, for reproducible faster- or slower-than-realtime rendering to a file. See [deterministic rendering](docs/deterministic-rendering.md)
+* AMCP: Add SCHEDULE BEGIN, SCHEDULE FRAME, SCHEDULE END and SCHEDULE COMMIT to describe and run a deterministic render
+* Add shutdown-on-eof, so a script piped in to render to files ends the process once the last recording is done (Linux only)
+* AMCP: Log why a command was refused, rather than only its status code
+
+### Producers
+##### Improvements
+* HTML: Render on a virtual clock on a deterministic channel, so animations land on the same frames every run
+* FFmpeg: Pull-based readiness, so a deterministic channel can wait for a frame instead of sampling for one
+##### Fixes
+* FFmpeg: Prefill threshold follows the channel frame rate instead of a fixed 4 frames, which could never be met below 16 fps
+
+### Consumers
+##### Fixes
+* FFmpeg: Do not hang tearing down a consumer whose writer has already stopped
+* FFmpeg: End a deterministic render when the writer wedges, not only when it throws
+
+
 CasparCG 2.5.1 Stable
 ==========================================
 

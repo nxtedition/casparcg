@@ -187,6 +187,8 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
         std::wstring wcmd;
         while (true) {
 #ifdef WIN32
+            // No EOF branch, so shutdown-on-eof is Linux-only: a closed stdin leaves this
+            // spinning on a failed read rather than ending the process.
             if (!std::getline(std::wcin, wcmd)) { // TODO: It's blocking...
                 std::wcin.clear();
                 continue;

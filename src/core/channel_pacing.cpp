@@ -21,8 +21,12 @@
 
 #include "channel_pacing.h"
 
+#include <common/env.h>
 #include <common/log.h>
 
+#include <boost/property_tree/ptree.hpp>
+
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <map>
@@ -38,10 +42,20 @@ namespace {
 using time_point_t = std::chrono::high_resolution_clock::time_point;
 
 // How long one producer may keep a deterministic render waiting before the render is given up
-// on. Generous: a producer that can be waited on at all should be ready in far less. Without a
-// ceiling, one that never delivers -- a page that never finishes loading, say -- holds the
-// channel for good, which on a headless render host is a slot lost with nothing to show for it.
-constexpr auto PRODUCER_WAIT_TIMEOUT = std::chrono::seconds(30);
+// on. The default is generous: a producer that can be waited on at all should be ready in far
+// less. Without a ceiling, one that never delivers -- a page that never finishes loading, say
+// -- holds the channel for good, which on a headless render host is a slot lost with nothing
+// to show for it. Configurable because 30s was chosen as comfortably beyond any legitimate
+// wait rather than measured; zero lifts the ceiling. Read once, as the stage asks per frame.
+std::chrono::milliseconds configured_producer_wait_timeout()
+{
+    static const std::chrono::milliseconds timeout = [] {
+        const auto seconds = env::properties().get(L"configuration.deterministic.producer-wait-timeout-s", 30);
+        return std::chrono::seconds(std::max(seconds, 0));
+    }();
+
+    return timeout;
+}
 
 class realtime_pacing final : public channel_pacing
 {
@@ -239,10 +253,7 @@ class deterministic_pacing final
         return !aborted_ && running_;
     }
 
-    std::chrono::milliseconds producer_wait_timeout() const override
-    {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(PRODUCER_WAIT_TIMEOUT);
-    }
+    std::chrono::milliseconds producer_wait_timeout() const override { return configured_producer_wait_timeout(); }
 
     void abort_render(const std::wstring& reason) override
     {

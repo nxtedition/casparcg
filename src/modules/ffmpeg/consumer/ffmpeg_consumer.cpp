@@ -67,6 +67,7 @@ extern "C" {
 #include <tbb/concurrent_queue.h>
 #include <tbb/parallel_invoke.h>
 
+#include <algorithm>
 #include <chrono>
 #include <future>
 #include <memory>
@@ -402,8 +403,15 @@ struct Stream
 
 // How long the writer may refuse a frame before it is treated as gone. Keying only on a
 // recorded exception is not enough: the writer can wedge without recording one, and then a
-// deterministic render would wait on it for good.
-constexpr auto WRITER_STALL_TIMEOUT = std::chrono::seconds(30);
+// deterministic render would wait on it for good. Configurable because the default was chosen
+// as comfortably beyond any legitimate wait rather than measured; zero lifts the ceiling.
+std::chrono::seconds writer_stall_timeout()
+{
+    static const std::chrono::seconds timeout{
+        std::max(env::properties().get(L"configuration.deterministic.writer-stall-timeout-s", 30), 0)};
+
+    return timeout;
+}
 
 struct ffmpeg_consumer : public core::frame_consumer
 {
@@ -470,7 +478,8 @@ struct ffmpeg_consumer : public core::frame_consumer
         // buffer full that hangs whoever is destroying us -- the channel thread, on the render
         // reset and shutdown paths. Give up on the sentinel in that case: the writer has left,
         // and there is nothing it could still flush.
-        const auto give_up_at = std::chrono::steady_clock::now() + WRITER_STALL_TIMEOUT;
+        const auto stall_timeout = writer_stall_timeout();
+        const auto give_up_at    = std::chrono::steady_clock::now() + stall_timeout;
 
         while (!frame_buffer_.try_push({core::const_frame{}, -1, -1})) {
             {
@@ -480,7 +489,7 @@ struct ffmpeg_consumer : public core::frame_consumer
                 }
             }
 
-            if (std::chrono::steady_clock::now() >= give_up_at) {
+            if (stall_timeout > std::chrono::seconds::zero() && std::chrono::steady_clock::now() >= give_up_at) {
                 CASPAR_LOG(warning) << print() << " Writer did not take the closing frame; abandoning the flush.";
                 break;
             }
@@ -763,7 +772,8 @@ struct ffmpeg_consumer : public core::frame_consumer
             // Back-pressure: what paces a deterministic channel, which cannot lose a frame.
             // Not a blocking push(): the writer stops popping once it records an exception, so
             // that would never return.
-            const auto give_up_at = std::chrono::steady_clock::now() + WRITER_STALL_TIMEOUT;
+            const auto stall_timeout = writer_stall_timeout();
+            const auto give_up_at    = std::chrono::steady_clock::now() + stall_timeout;
 
             while (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
                 {
@@ -780,9 +790,8 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                 // Nothing recorded, but nothing moving either: a writer that neither fails nor
                 // drains would otherwise hold the render here for good.
-                if (std::chrono::steady_clock::now() >= give_up_at) {
-                    CASPAR_LOG(error) << print() << " Writer accepted no frame for "
-                                      << std::chrono::duration_cast<std::chrono::seconds>(WRITER_STALL_TIMEOUT).count()
+                if (stall_timeout > std::chrono::seconds::zero() && std::chrono::steady_clock::now() >= give_up_at) {
+                    CASPAR_LOG(error) << print() << " Writer accepted no frame for " << stall_timeout.count()
                                       << "s; aborting the render.";
                     return make_ready_future(false);
                 }

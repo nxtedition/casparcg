@@ -400,6 +400,11 @@ struct Stream
     }
 };
 
+// How long the writer may refuse a frame before it is treated as gone. Keying only on a
+// recorded exception is not enough: the writer can wedge without recording one, and then a
+// deterministic render would wait on it for good.
+constexpr auto WRITER_STALL_TIMEOUT = std::chrono::seconds(30);
+
 struct ffmpeg_consumer : public core::frame_consumer
 {
     core::monitor::state    state_;
@@ -465,6 +470,8 @@ struct ffmpeg_consumer : public core::frame_consumer
         // buffer full that hangs whoever is destroying us -- the channel thread, on the render
         // reset and shutdown paths. Give up on the sentinel in that case: the writer has left,
         // and there is nothing it could still flush.
+        const auto give_up_at = std::chrono::steady_clock::now() + WRITER_STALL_TIMEOUT;
+
         while (!frame_buffer_.try_push({core::const_frame{}, -1, -1})) {
             {
                 std::lock_guard<std::mutex> lock(exception_mutex_);
@@ -472,6 +479,12 @@ struct ffmpeg_consumer : public core::frame_consumer
                     break;
                 }
             }
+
+            if (std::chrono::steady_clock::now() >= give_up_at) {
+                CASPAR_LOG(warning) << print() << " Writer did not take the closing frame; abandoning the flush.";
+                break;
+            }
+
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
@@ -583,6 +596,12 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                 tbb::concurrent_bounded_queue<std::shared_ptr<AVPacket>> packet_buffer;
                 packet_buffer.set_capacity(realtime_ ? 1 : 128);
+
+                // Set when the packet thread gives up, so the frame thread stops feeding a queue
+                // nothing drains any more. abort() alone does not do it: it wakes whoever is
+                // waiting right then, but the next push simply waits again.
+                std::atomic<bool> packet_failed{false};
+
                 auto packet_thread = std::thread([&] {
                     try {
                         CASPAR_SCOPE_EXIT
@@ -614,6 +633,7 @@ struct ffmpeg_consumer : public core::frame_consumer
                     } catch (...) {
                         CASPAR_LOG_CURRENT_EXCEPTION();
                         // TODO
+                        packet_failed = true;
                         packet_buffer.abort();
                     }
                 });
@@ -627,11 +647,26 @@ struct ffmpeg_consumer : public core::frame_consumer
                     }
                 };
 
-                auto packet_cb = [&](std::shared_ptr<AVPacket>&& pkt) { packet_buffer.push(std::move(pkt)); };
+                // Throws rather than blocks once the packet thread has gone, so this thread
+                // unwinds and the catch below records an exception for send() to report. Without
+                // it the push wedges on a full queue, nothing is ever recorded, and the channel
+                // waits on a consumer that will never take another frame.
+                auto packet_cb = [&](std::shared_ptr<AVPacket>&& pkt) {
+                    if (packet_failed) {
+                        CASPAR_THROW_EXCEPTION(invalid_operation()
+                                               << msg_info("ffmpeg-consumer writer stopped; see the error above"));
+                    }
+                    packet_buffer.push(std::move(pkt));
+                };
 
                 offline_                  = false;
                 std::int64_t frame_number = 0;
                 while (true) {
+                    if (packet_failed) {
+                        CASPAR_THROW_EXCEPTION(invalid_operation()
+                                               << msg_info("ffmpeg-consumer writer stopped; see the error above"));
+                    }
+
                     {
                         std::lock_guard<std::mutex> lock(state_mutex_);
                         state_["file/frame"] = frame_number++;
@@ -728,6 +763,8 @@ struct ffmpeg_consumer : public core::frame_consumer
             // Back-pressure: what paces a deterministic channel, which cannot lose a frame.
             // Not a blocking push(): the writer stops popping once it records an exception, so
             // that would never return.
+            const auto give_up_at = std::chrono::steady_clock::now() + WRITER_STALL_TIMEOUT;
+
             while (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
                 {
                     std::lock_guard<std::mutex> lock(exception_mutex_);
@@ -740,6 +777,16 @@ struct ffmpeg_consumer : public core::frame_consumer
                         return make_ready_future(false);
                     }
                 }
+
+                // Nothing recorded, but nothing moving either: a writer that neither fails nor
+                // drains would otherwise hold the render here for good.
+                if (std::chrono::steady_clock::now() >= give_up_at) {
+                    CASPAR_LOG(error) << print() << " Writer accepted no frame for "
+                                      << std::chrono::duration_cast<std::chrono::seconds>(WRITER_STALL_TIMEOUT).count()
+                                      << "s; aborting the render.";
+                    return make_ready_future(false);
+                }
+
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         } else if (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {

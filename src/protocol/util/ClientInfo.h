@@ -22,7 +22,9 @@
 #pragma once
 
 #include <iostream>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "protocol_strategy.h"
@@ -41,11 +43,32 @@ struct ConsoleClientInfo : public client_connection<wchar_t>
     }
     void         disconnect() override {}
     std::wstring address() const override { return L"Console"; }
-    void add_lifecycle_bound_object(const std::wstring& key, const std::shared_ptr<void>& lifecycle_bound) override {}
+
+    // Kept rather than dropped: a caller binds an object here to have it live as long as the
+    // client does, and the console client lives as long as the server. Dropping it ends what
+    // it was bound to the moment it is handed over.
+    void add_lifecycle_bound_object(const std::wstring& key, const std::shared_ptr<void>& lifecycle_bound) override
+    {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        lifecycle_bound_objects_.insert_or_assign(key, lifecycle_bound);
+    }
+
     std::shared_ptr<void> remove_lifecycle_bound_object(const std::wstring& key) override
     {
-        return std::shared_ptr<void>();
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+
+        auto it = lifecycle_bound_objects_.find(key);
+        if (it == lifecycle_bound_objects_.end())
+            return std::shared_ptr<void>();
+
+        auto result = it->second;
+        lifecycle_bound_objects_.erase(it);
+        return result;
     }
+
+  private:
+    std::mutex                                   lifecycle_mutex_;
+    std::map<std::wstring, std::shared_ptr<void>> lifecycle_bound_objects_;
 };
 
 }} // namespace caspar::IO

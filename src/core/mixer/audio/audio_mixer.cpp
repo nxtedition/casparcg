@@ -95,6 +95,16 @@ struct audio_mixer::impl
 
     void set_master_volume(float volume) { master_volume_ = volume; }
 
+    void reset()
+    {
+        // Both maps are keyed by producer address. The producers of whatever was mixed last
+        // are gone, and a new producer allocated at the same address would otherwise inherit
+        // an old one's cadence leftovers and volume ramp.
+        audio_streams_.clear();
+        previous_volumes_.clear();
+        master_volume_ = 1.0f;
+    }
+
     float get_master_volume() { return master_volume_; }
 
     array<const int32_t> mix(const video_format_desc& format_desc, int nb_samples)
@@ -279,6 +289,7 @@ void                 audio_mixer::visit(const const_frame& frame) { impl_->visit
 void                 audio_mixer::pop() { impl_->pop(); }
 void                 audio_mixer::set_master_volume(float volume) { impl_->set_master_volume(volume); }
 float                audio_mixer::get_master_volume() { return impl_->get_master_volume(); }
+void                 audio_mixer::reset() { impl_->reset(); }
 array<const int32_t> audio_mixer::operator()(const video_format_desc& format_desc, int nb_samples)
 {
     return impl_->mix(format_desc, nb_samples);

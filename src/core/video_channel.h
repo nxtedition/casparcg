@@ -71,12 +71,24 @@ class video_channel final
     video_channel& operator=(const video_channel&);
 
   public:
+    /**
+     * `deterministic` takes the channel off the wall clock: frames are produced as fast as its
+     * producers and consumers allow, and only while a consumer is attached. See channel_pacing.h.
+     */
     explicit video_channel(int                                       index,
                            const video_format_desc&                  format_desc,
                            color_space                               default_color_space,
+                           bool                                      deterministic,
                            std::unique_ptr<image_mixer>              image_mixer,
                            std::function<void(core::monitor::state)> on_tick);
     ~video_channel();
+
+    /**
+     * Stop producing and join the channel's thread. Everything it uses must still be alive
+     * until this returns: the thread runs whatever its producers, consumers and scheduled
+     * commands do. Idempotent; the destructor calls it too.
+     */
+    void stop();
 
     core::monitor::state state() const;
 
@@ -94,6 +106,9 @@ class video_channel final
     [[nodiscard]] channel_info get_consumer_channel_info() const;
 
     std::shared_ptr<core::route> route(int index = -1, route_mode mode = route_mode::foreground);
+
+    /** This channel's render controls, if deterministic; empty otherwise. Does not own them. */
+    std::weak_ptr<deterministic_controller> deterministic() const;
 
   private:
     struct impl;

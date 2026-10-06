@@ -30,6 +30,7 @@ set(SOURCES
 		producer/layer.cpp
 		producer/stage.cpp
 
+		channel_pacing.cpp
 		video_channel.cpp
 		video_format.cpp
 )
@@ -73,6 +74,7 @@ set(HEADERS
 		fwd.h
 		module_dependencies.h
 		StdAfx.h
+		channel_pacing.h
 		video_channel.h
 		video_format.h
 		consumer/channel_info.h

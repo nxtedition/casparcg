@@ -26,6 +26,7 @@
 
 #include "video_format.h"
 
+#include "channel_pacing.h"
 #include "consumer/channel_info.h"
 #include "consumer/output.h"
 #include "frame/draw_frame.h"
@@ -61,6 +62,8 @@ struct video_channel::impl final
         core::diagnostics::call_context::for_thread().video_channel = index;
         return spl::make_shared<caspar::diagnostics::graph>();
     }(channel_info_.index);
+
+    const spl::shared_ptr<channel_pacing> pacing_;
 
     caspar::core::output         output_;
     spl::shared_ptr<image_mixer> image_mixer_;
@@ -102,13 +105,15 @@ struct video_channel::impl final
     impl(int                                       index,
          const core::video_format_desc&            format_desc,
          color_space                               default_color_space,
+         bool                                      deterministic,
          std::unique_ptr<image_mixer>              image_mixer,
          std::function<void(core::monitor::state)> tick)
-        : channel_info_(index, image_mixer->depth(), default_color_space)
-        , output_(graph_, format_desc, channel_info_)
+        : channel_info_(index, image_mixer->depth(), default_color_space, deterministic)
+        , pacing_(deterministic ? create_deterministic_pacing() : create_realtime_pacing())
+        , output_(graph_, format_desc, channel_info_, pacing_)
         , image_mixer_(std::move(image_mixer))
         , mixer_(index, graph_, image_mixer_)
-        , stage_(std::make_shared<core::stage>(index, graph_, format_desc))
+        , stage_(std::make_shared<core::stage>(index, graph_, format_desc, pacing_))
         , tick_(std::move(tick))
     {
         graph_->set_color("produce-time", caspar::diagnostics::color(0.0f, 1.0f, 0.0f));
@@ -127,9 +132,23 @@ struct video_channel::impl final
 
             while (!abort_request_) {
                 try {
+                    // Blocks until the channel has a reason to produce a frame. Realtime
+                    // channels always do; a deterministic one waits for a consumer.
+                    const auto demand = pacing_->wait_for_demand();
+                    if (demand == channel_pacing::demand::shutdown)
+                        break;
+
+                    if (demand == channel_pacing::demand::finished) {
+                        reset_for_next_render();
+                        continue;
+                    }
+
                     graph_->set_text(print());
 
                     frame_counter_ += 1;
+
+                    // Before producing, so anything scheduled for this frame is in effect.
+                    pacing_->begin_frame();
 
                     caspar::timer frame_timer;
 
@@ -170,7 +189,10 @@ struct video_channel::impl final
 
                     // Consume
                     caspar::timer consume_timer;
-                    output_(mixed_frame, mixed_frame2, stage_frames.format_desc);
+                    // Only what output actually sent: it drops a frame on a format change or
+                    // a size mismatch, and a render counting its frames must not count those.
+                    if (output_(mixed_frame, mixed_frame2, stage_frames.format_desc))
+                        pacing_->frame_delivered();
                     graph_->set_value("consume-time", consume_timer.elapsed() * stage_frames.format_desc.hz * 0.5);
 
                     graph_->set_value("frame-time", frame_timer.elapsed() * stage_frames.format_desc.hz * 0.5);
@@ -195,11 +217,35 @@ struct video_channel::impl final
         });
     }
 
+    // Back to how the channel booted, so every render starts from the state the first one did:
+    // otherwise the next inherits consumers, layers, transforms, mixer state and audio cadence.
+    // Runs on the channel thread, between ticks.
+    void reset_for_next_render()
+    {
+        CASPAR_LOG(info) << print() << L" Render finished; resetting the channel for the next one.";
+
+        // First, so the render's consumers are gone even if the rest fails: while one is
+        // attached, the channel would carry on producing as though the render were still going.
+        output_.clear();
+
+        frame_counter_ = 0;
+        stage_->clear().get();
+        stage_->clear_transforms().get();
+        mixer_.reset();
+    }
+
     ~impl()
     {
         CASPAR_LOG(info) << print() << " Uninitializing.";
+        stop();
+    }
+
+    void stop()
+    {
         abort_request_ = true;
-        thread_.join();
+        pacing_->abort(); // the tick loop may be parked in wait_for_demand()
+        if (thread_.joinable())
+            thread_.join();
     }
 
     std::shared_ptr<core::route> route(int index = -1, route_mode mode = route_mode::foreground)
@@ -243,12 +289,14 @@ struct video_channel::impl final
 video_channel::video_channel(int                                       index,
                              const core::video_format_desc&            format_desc,
                              color_space                               default_color_space,
+                             bool                                      deterministic,
                              std::unique_ptr<image_mixer>              image_mixer,
                              std::function<void(core::monitor::state)> tick)
-    : impl_(new impl(index, format_desc, default_color_space, std::move(image_mixer), std::move(tick)))
+    : impl_(new impl(index, format_desc, default_color_space, deterministic, std::move(image_mixer), std::move(tick)))
 {
 }
 video_channel::~video_channel() {}
+void                                video_channel::stop() { impl_->stop(); }
 const std::shared_ptr<core::stage>& video_channel::stage() const { return impl_->stage_; }
 std::shared_ptr<core::stage>&       video_channel::stage() { return impl_->stage_; }
 const mixer&                        video_channel::mixer() const { return impl_->mixer_; }
@@ -261,5 +309,12 @@ channel_info         video_channel::get_consumer_channel_info() const { return i
 core::monitor::state video_channel::state() const { return impl_->state_; }
 
 std::shared_ptr<route> video_channel::route(int index, route_mode mode) { return impl_->route(index, mode); }
+
+std::weak_ptr<deterministic_controller> video_channel::deterministic() const
+{
+    // The deterministic pacing strategy implements the controller and a realtime one does not,
+    // so the cross-cast comes back empty for a realtime channel.
+    return std::dynamic_pointer_cast<deterministic_controller>(std::shared_ptr<channel_pacing>(impl_->pacing_));
+}
 
 }} // namespace caspar::core

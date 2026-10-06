@@ -105,11 +105,13 @@ class renderer_application
     std::vector<CefRefPtr<CefV8Context>> contexts_;
     const bool                           enable_gpu_;
     const bool                           shared_texture_;
+    const bool                           virtual_time_;
 
   public:
-    explicit renderer_application(const bool enable_gpu, const bool shared_texture)
+    explicit renderer_application(const bool enable_gpu, const bool shared_texture, const bool virtual_time)
         : enable_gpu_(enable_gpu)
         , shared_texture_(shared_texture)
+        , virtual_time_(virtual_time)
     {
     }
 
@@ -203,6 +205,15 @@ class renderer_application
         command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
         command_line->AppendSwitchWithValue("remote-allow-origins", "*");
 
+        if (virtual_time_) {
+            // Producers on deterministic channels drive their compositor one BeginFrame per
+            // channel frame. Run every compositor stage within the BeginFrame that asked for it,
+            // so a paint cannot lag behind the frame it belongs to, and let the host alone
+            // decide the frame rate. Process-wide: these apply to every browser.
+            command_line->AppendSwitch("run-all-compositor-stages-before-draw");
+            command_line->AppendSwitch("disable-frame-rate-limit");
+        }
+
         if (process_type.empty() && !enable_gpu_) {
             // This gives more performance, but disabled gpu effects. Without it a single 1080p producer cannot be run
             // smoothly
@@ -224,7 +235,33 @@ bool intercept_command_line(int argc, char** argv)
     CefMainArgs main_args(argc, argv);
 #endif
 
-    return CefExecuteProcess(main_args, CefRefPtr<CefApp>(new renderer_application(false, false)), nullptr) >= 0;
+    return CefExecuteProcess(main_args, CefRefPtr<CefApp>(new renderer_application(false, false, false)), nullptr) >= 0;
+}
+
+// Both halves matter: the virtual-time switches are process-wide, so a configuration that mixes
+// deterministic and realtime channels gets them on the realtime ones as well.
+struct channel_determinism
+{
+    bool any_deterministic = false;
+    bool any_realtime      = false;
+};
+
+channel_determinism survey_channel_determinism()
+{
+    channel_determinism result;
+
+    const auto channels = env::properties().get_child_optional(L"configuration.channels");
+    if (!channels)
+        return result;
+
+    for (const auto& channel : *channels) {
+        if (channel.second.get(L"deterministic", false))
+            result.any_deterministic = true;
+        else
+            result.any_realtime = true;
+    }
+
+    return result;
 }
 
 void init(const core::module_dependencies& dependencies)
@@ -254,8 +291,22 @@ void init(const core::module_dependencies& dependencies)
             CefString(&settings.cache_path).FromWString(cache_path);
         }
 
-        return CefInitialize(
-            main_args, settings, CefRefPtr<CefApp>(new renderer_application(gpu.first, gpu.second)), nullptr);
+        // Producers on a deterministic channel render on virtual time, which needs the switches
+        // below, and those can only be given here. Whether any channel is deterministic is all
+        // we can tell at this point: no channel exists yet.
+        const auto determinism  = survey_channel_determinism();
+        const bool virtual_time = determinism.any_deterministic;
+
+        if (virtual_time && determinism.any_realtime) {
+            CASPAR_LOG(warning) << L"[html] run-all-compositor-stages-before-draw and disable-frame-rate-limit are "
+                                   L"switched on for the deterministic channels, but CEF takes them process-wide: "
+                                   L"HTML on this configuration's realtime channels composites under them too.";
+        }
+
+        return CefInitialize(main_args,
+                             settings,
+                             CefRefPtr<CefApp>(new renderer_application(gpu.first, gpu.second, virtual_time)),
+                             nullptr);
     });
 
     if (!result) {

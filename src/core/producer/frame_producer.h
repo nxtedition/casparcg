@@ -30,15 +30,31 @@
 #include <core/frame/draw_frame.h>
 #include <core/video_format.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <future>
 #include <optional>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
 namespace caspar { namespace core {
+
+/**
+ * What is left of a wait that runs until `deadline`, never negative. A composite producer hands
+ * this to each part in turn rather than the whole timeout to every one: the stage slices its
+ * wait to stay cancellable, and a sting that waited four times over would stretch that slice
+ * fourfold, eight times under a separated producer.
+ */
+inline std::chrono::milliseconds time_left_until(std::chrono::steady_clock::time_point deadline)
+{
+    const auto left =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+    return std::max(left, std::chrono::milliseconds::zero());
+}
 
 class frame_producer
 {
@@ -112,6 +128,30 @@ class frame_producer
      * While this returns false, the previous producer will be left running for a limited number of frames.
      */
     virtual bool is_ready() = 0;
+
+    /**
+     * Whether the producer can be paced by us pulling it, so a deterministic channel can wait
+     * for it. Producers on an external clock (decklink, ndi, cross-channel routes) cannot:
+     * waiting would stall the render until their source happened to deliver.
+     */
+    virtual bool supports_deterministic_sync() const { return false; }
+
+    /**
+     * Wait up to `timeout` for the next frame; false means "not yet", since callers retry.
+     * Only called on producers reporting supports_deterministic_sync(). The default polls
+     * is_ready(); a producer that becomes ready later should wait on a condition instead.
+     */
+    virtual bool wait_for_frame(const video_field field, std::chrono::milliseconds timeout)
+    {
+        // Poll rather than answer at once: callers retry, and would otherwise spin.
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (!is_ready()) {
+            if (std::chrono::steady_clock::now() >= deadline)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return true;
+    }
 };
 
 class const_producer : public core::frame_producer
@@ -151,6 +191,9 @@ class const_producer : public core::frame_producer
     }
 
     bool is_ready() override { return true; }
+
+    // Always ready, so the inherited wait_for_frame() never has to wait.
+    bool supports_deterministic_sync() const override { return true; }
 };
 
 class frame_producer_registry;
@@ -163,6 +206,10 @@ struct frame_producer_dependencies
     video_format_desc                              format_desc;
     spl::shared_ptr<const frame_producer_registry> producer_registry;
     spl::shared_ptr<const cg_producer_registry>    cg_registry;
+
+    // The producer is created for a deterministic channel, which will wait for it rather than
+    // sample it. A producer that has to be driven differently for that can tell from this.
+    bool deterministic = false;
 
     frame_producer_dependencies(const spl::shared_ptr<core::frame_factory>&           frame_factory,
                                 const std::vector<spl::shared_ptr<video_channel>>&    channels,

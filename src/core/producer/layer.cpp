@@ -99,12 +99,33 @@ struct layer::impl
         auto_play_  = false;
     }
 
+    void resolve_pending_swap(const video_field field)
+    {
+        if (foreground_->following_producer() != core::frame_producer::empty() && field != video_field::b) {
+            foreground_ = foreground_->following_producer();
+        }
+    }
+
+    bool foreground_supports_deterministic_sync() const { return foreground_->supports_deterministic_sync(); }
+
+    bool wait_for_foreground(const video_field field, std::chrono::milliseconds timeout)
+    {
+        try {
+            // A paused layer repeats its last frame, so there is nothing to wait for.
+            if (paused_) {
+                return true;
+            }
+            return foreground_->wait_for_frame(field, timeout);
+        } catch (...) {
+            CASPAR_LOG_CURRENT_EXCEPTION();
+            return true; // let receive() deal with the broken producer
+        }
+    }
+
     draw_frame receive(const video_field field, int nb_samples)
     {
         try {
-            if (foreground_->following_producer() != core::frame_producer::empty() && field != video_field::b) {
-                foreground_ = foreground_->following_producer();
-            }
+            resolve_pending_swap(field);
 
             int64_t frames_left = 0;
             if (auto_play_) {
@@ -193,4 +214,10 @@ spl::shared_ptr<frame_producer> layer::foreground() const { return impl_->foregr
 spl::shared_ptr<frame_producer> layer::background() const { return impl_->background_; }
 bool                            layer::has_background() const { return impl_->background_ != frame_producer::empty(); }
 core::monitor::state            layer::state() const { return impl_->state_; }
+void layer::resolve_pending_swap(const video_field field) { impl_->resolve_pending_swap(field); }
+bool layer::foreground_supports_deterministic_sync() const { return impl_->foreground_supports_deterministic_sync(); }
+bool layer::wait_for_foreground(const video_field field, std::chrono::milliseconds timeout)
+{
+    return impl_->wait_for_foreground(field, timeout);
+}
 }} // namespace caspar::core

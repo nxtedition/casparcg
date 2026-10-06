@@ -25,6 +25,7 @@
 #include "../monitor/monitor.h"
 
 #include <common/memory.h>
+#include <core/channel_pacing.h>
 #include <core/video_format.h>
 
 #include <memory>
@@ -40,23 +41,35 @@ class output final
   public:
     explicit output(const spl::shared_ptr<diagnostics::graph>& graph,
                     const video_format_desc&                   format_desc,
-                    const core::channel_info&                  channel_info);
+                    const core::channel_info&                  channel_info,
+                    spl::shared_ptr<channel_pacing>            pacing);
 
     output(const output&)            = delete;
     output& operator=(const output&) = delete;
     ~output();
 
     // Send a frame to the output. If running an interlaced channel, two frames will be provided
-    void operator()(const const_frame& frame, const const_frame& frame2, const video_format_desc& format_desc);
+    // Sends the frame to the consumers, returning whether it actually reached them: a format
+    // change or a malformed frame drops it here.
+    bool operator()(const const_frame& frame, const const_frame& frame2, const video_format_desc& format_desc);
 
     void add(const spl::shared_ptr<frame_consumer>& consumer);
     void add(int index, const spl::shared_ptr<frame_consumer>& consumer);
     bool remove(const spl::shared_ptr<frame_consumer>& consumer);
     bool remove(int index);
 
+    // Detach every consumer.
+    void clear();
+
     std::future<bool> call(int index, const std::vector<std::wstring>& params);
 
     size_t consumer_count() const;
+
+    /**
+     * Switch now, re-initializing the consumers, rather than on the first frame in the new
+     * format -- which does not survive the switch. For a channel that is not producing.
+     */
+    void change_format(const video_format_desc& format_desc);
 
     core::monitor::state state() const;
 

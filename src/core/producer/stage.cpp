@@ -36,6 +36,7 @@
 
 #include <boost/range/adaptors.hpp>
 
+#include <chrono>
 #include <functional>
 #include <future>
 #include <map>
@@ -45,12 +46,18 @@ namespace caspar { namespace core {
 
 struct stage::impl : public std::enable_shared_from_this<impl>
 {
-    int                                 channel_index_;
-    spl::shared_ptr<diagnostics::graph> graph_;
-    monitor::state                      state_;
-    std::map<int, layer>                layers_;
-    std::map<int, tweened_transform>    tweens_;
-    std::set<int>                       routeSources;
+    int                                   channel_index_;
+    spl::shared_ptr<diagnostics::graph>   graph_;
+    monitor::state                        state_;
+    std::map<int, layer>                  layers_;
+    std::map<int, tweened_transform>      tweens_;
+    std::set<int>                         routeSources;
+    const spl::shared_ptr<channel_pacing> pacing_;
+
+    // Per layer, the producer last reported as one that cannot be waited on, so the warning is
+    // given once per producer rather than every frame. Weak rather than raw: a new producer
+    // allocated at the address of the one before would otherwise inherit its silence.
+    std::map<int, std::weak_ptr<const frame_producer>> unwaitable_reported_;
 
     mutable std::mutex      format_desc_mutex_;
     core::video_format_desc format_desc_;
@@ -109,9 +116,13 @@ struct stage::impl : public std::enable_shared_from_this<impl>
     }
 
   public:
-    impl(int channel_index, spl::shared_ptr<diagnostics::graph> graph, const core::video_format_desc& format_desc)
+    impl(int                                 channel_index,
+         spl::shared_ptr<diagnostics::graph> graph,
+         const core::video_format_desc&      format_desc,
+         spl::shared_ptr<channel_pacing>     pacing)
         : channel_index_(channel_index)
         , graph_(std::move(graph))
+        , pacing_(std::move(pacing))
         , format_desc_(format_desc)
     {
     }
@@ -160,6 +171,74 @@ struct stage::impl : public std::enable_shared_from_this<impl>
                 // when running interlaced, both fields are be pulled at once.
                 // This will risk some stutter for freshly created producers, but it lets us tick at 25hz and avoids
                 // amcp changes starting on the second field
+
+                // Wait for every waitable foreground before pulling any, so the result depends
+                // on which frame each producer is at, not on how long it took to warm up.
+                // Producers on an external clock are skipped and sampled as they are.
+                if (pacing_->waits_for_producers()) {
+                    // In slices, re-checking with the strategy each time: the channel thread
+                    // is blocked inside this executor invocation for the whole wait and
+                    // cannot notice shutdown, or the render being cancelled, by itself.
+                    constexpr auto slice = std::chrono::milliseconds(50);
+
+                    // A producer that never delivers would otherwise hold the channel for
+                    // good. Throwing from here would not help: layer::wait_for_foreground()
+                    // swallows it and receive() then yields an empty frame, so the render would
+                    // carry on recording black at full speed. Ending the render is the only
+                    // thing that actually stops it.
+                    const auto wait_timeout = pacing_->producer_wait_timeout();
+
+                    auto wait_for = [&](int index, core::layer& layer, video_field field) {
+                        const auto give_up_at = std::chrono::steady_clock::now() + wait_timeout;
+
+                        while (!layer.wait_for_foreground(field, slice)) {
+                            if (!pacing_->keep_waiting())
+                                return;
+
+                            if (wait_timeout > std::chrono::milliseconds::zero() &&
+                                std::chrono::steady_clock::now() >= give_up_at) {
+                                pacing_->abort_render(
+                                    L"stage[" + std::to_wstring(channel_index_) + L"] layer " +
+                                    std::to_wstring(index) + L": " + layer.foreground()->print() +
+                                    L" did not produce a frame within " +
+                                    std::to_wstring(
+                                        std::chrono::duration_cast<std::chrono::seconds>(wait_timeout).count()) +
+                                    L"s");
+                                return;
+                            }
+                        }
+                    };
+
+                    for (auto& l : layerVec) {
+                        if (!l.second)
+                            continue;
+
+                        auto p = layers_.find(l.first);
+                        if (p == layers_.end())
+                            continue;
+
+                        // Settle any pending swap before asking about the producer, so the
+                        // answers and the later receive() all concern the same one.
+                        p->second.resolve_pending_swap(field1);
+
+                        if (!p->second.foreground_supports_deterministic_sync()) {
+                            // Sampled as it is instead, so the render now depends on its timing.
+                            const std::shared_ptr<const frame_producer> foreground = p->second.foreground();
+                            auto&                                       reported = unwaitable_reported_[p->first];
+                            if (reported.lock() != foreground) {
+                                reported = foreground;
+                                CASPAR_LOG(warning) << L"stage[" << channel_index_ << L"] layer " << p->first << L": "
+                                                    << foreground->print()
+                                                    << L" cannot be waited on, so the render depends on its timing.";
+                            }
+                            continue;
+                        }
+
+                        wait_for(p->first, p->second, field1);
+                        if (is_interlaced)
+                            wait_for(p->first, p->second, video_field::b);
+                    }
+                }
 
                 for (auto& l : layerVec) {
                     auto p = layers_.find(l.first);
@@ -281,7 +360,8 @@ struct stage::impl : public std::enable_shared_from_this<impl>
         return executor_.begin_invoke([=, this] { return tweens_[index].fetch(); });
     }
 
-    std::future<void> load(int index, const spl::shared_ptr<frame_producer>& producer, bool preview, bool auto_play, bool live)
+    std::future<void>
+    load(int index, const spl::shared_ptr<frame_producer>& producer, bool preview, bool auto_play, bool live)
     {
         return executor_.begin_invoke([=, this] { get_layer(index).load(producer, preview, auto_play, live); });
     }
@@ -318,7 +398,10 @@ struct stage::impl : public std::enable_shared_from_this<impl>
 
     std::future<void> clear()
     {
-        return executor_.begin_invoke([=, this] { layers_.clear(); });
+        return executor_.begin_invoke([=, this] {
+            layers_.clear();
+            unwaitable_reported_.clear();
+        });
     }
 
     std::future<void> swap_layers(const std::shared_ptr<stage>& other, bool swap_transforms)
@@ -429,8 +512,11 @@ struct stage::impl : public std::enable_shared_from_this<impl>
     }
 };
 
-stage::stage(int channel_index, spl::shared_ptr<diagnostics::graph> graph, const core::video_format_desc& format_desc)
-    : impl_(new impl(channel_index, std::move(graph), format_desc))
+stage::stage(int                                 channel_index,
+             spl::shared_ptr<diagnostics::graph> graph,
+             const core::video_format_desc&      format_desc,
+             spl::shared_ptr<channel_pacing>     pacing)
+    : impl_(new impl(channel_index, std::move(graph), format_desc, std::move(pacing)))
 {
 }
 std::future<std::wstring> stage::call(int index, const std::vector<std::wstring>& params)
@@ -455,7 +541,8 @@ std::future<void> stage::apply_transform(int                                    
 std::future<void>            stage::clear_transforms(int index) { return impl_->clear_transforms(index); }
 std::future<void>            stage::clear_transforms() { return impl_->clear_transforms(); }
 std::future<frame_transform> stage::get_current_transform(int index) { return impl_->get_current_transform(index); }
-std::future<void> stage::load(int index, const spl::shared_ptr<frame_producer>& producer, bool preview, bool auto_play, bool live)
+std::future<void>
+stage::load(int index, const spl::shared_ptr<frame_producer>& producer, bool preview, bool auto_play, bool live)
 {
     return impl_->load(index, producer, preview, auto_play, live);
 }
@@ -547,7 +634,8 @@ std::future<frame_transform> stage_delayed::get_current_transform(int index)
 std::future<void>
 stage_delayed::load(int index, const spl::shared_ptr<frame_producer>& producer, bool preview, bool auto_play, bool live)
 {
-    return executor_.begin_invoke([=, this]() { return stage_->load(index, producer, preview, auto_play, live).get(); });
+    return executor_.begin_invoke(
+        [=, this]() { return stage_->load(index, producer, preview, auto_play, live).get(); });
 }
 std::future<void> stage_delayed::preview(int index)
 {

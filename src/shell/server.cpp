@@ -158,6 +158,12 @@ struct server::impl
 
     ~impl()
     {
+        // Before anything else: a channel's thread runs whatever its producers, consumers and
+        // scheduled commands do, and those use the AMCP machinery and channel list torn down
+        // below.
+        for (auto& channel : *channels_)
+            channel.raw_channel->stop();
+
         std::weak_ptr<boost::asio::io_context> weak_io_context = io_context_;
         io_context_.reset();
         predefined_osc_subscriptions_.clear();
@@ -305,6 +311,35 @@ struct server::impl
             if (format_desc.format == video_format::invalid)
                 CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"Invalid video-mode: " + format_desc_str));
 
+            // A deterministic channel renders decoupled from the wall clock, for
+            // reproducible output. See core/channel_pacing.h.
+            auto deterministic = xml_channel.second.get(L"deterministic", false);
+
+            if (deterministic) {
+                // The render attaches its own consumer and loads its own producers, and must
+                // start from a clean slate. Anything declared here would still be there when
+                // the first render begins, and a consumer would start it ticking at boot.
+                auto declares = [](const auto& node) {
+                    if (!node)
+                        return false;
+                    for (const auto& child : *node) {
+                        if (child.first != L"<xmlcomment>")
+                            return true;
+                    }
+                    return false;
+                };
+
+                if (declares(xml_channel.second.get_child_optional(L"consumers")))
+                    CASPAR_THROW_EXCEPTION(
+                        user_error() << msg_info(L"A deterministic channel cannot declare <consumers>; the render "
+                                                 L"attaches its own."));
+
+                if (declares(xml_channel.second.get_child_optional(L"producers")))
+                    CASPAR_THROW_EXCEPTION(
+                        user_error() << msg_info(L"A deterministic channel cannot declare <producers>; the render "
+                                                 L"loads its own."));
+            }
+
             auto weak_client = std::weak_ptr<osc::client>(osc_client_);
             auto channel_id  = static_cast<int>(channels_->size() + 1);
             auto depth       = color_depth == 16 ? common::bit_depth::bit16 : common::bit_depth::bit8;
@@ -314,6 +349,7 @@ struct server::impl
                 spl::make_shared<video_channel>(channel_id,
                                                 format_desc,
                                                 default_color_space,
+                                                deterministic,
                                                 accelerator_.create_image_mixer(channel_id, depth),
                                                 [channel_id, weak_client](core::monitor::state channel_state) {
                                                     monitor::state state;
@@ -490,6 +526,14 @@ struct server::impl
         }
     }
 
+    size_t active_consumer_count() const
+    {
+        size_t count = 0;
+        for (const auto& channel : *channels_)
+            count += channel.raw_channel->output().consumer_count();
+        return count;
+    }
+
     IO::protocol_strategy_factory<char>::ptr create_protocol(const std::wstring& name,
                                                              const std::wstring& port_description) const
     {
@@ -511,5 +555,6 @@ spl::shared_ptr<protocol::amcp::amcp_command_repository> server::get_amcp_comman
 {
     return spl::make_shared_ptr(impl_->amcp_command_repo_);
 }
+size_t server::active_consumer_count() const { return impl_->active_consumer_count(); }
 
 } // namespace caspar

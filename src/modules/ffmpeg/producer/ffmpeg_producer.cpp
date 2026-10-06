@@ -302,7 +302,14 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
     } else {
         // only consider auto cache if the url includes some protocol, ie. not just a local path
         auto auto_cache_pattern = env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.auto", L"");
-        bool auto_cache = !auto_cache_pattern.empty() && boost::regex_search(path, boost::wregex(auto_cache_pattern));
+        bool auto_cache         = false;
+        try {
+            auto_cache = !auto_cache_pattern.empty() && boost::regex_search(path, boost::wregex(auto_cache_pattern));
+        } catch (const boost::regex_error& e) {
+            // Play uncached rather than fail every network url.
+            CASPAR_LOG(warning) << L"Invalid ffmpeg/producer/cache/auto pattern '" << auto_cache_pattern << L"': "
+                                << u16(e.what());
+        }
 
         cache = cache || auto_cache;
 

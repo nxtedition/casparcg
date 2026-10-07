@@ -37,23 +37,21 @@
 #include <core/frame/frame.h>
 #include <core/video_format.h>
 
+#if defined(__GNUC__) && __GNUC__ == 14
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#endif
 #include <boost/algorithm/string.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/format.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/regex.hpp>
-
-#pragma warning(push)
-#pragma warning(disable : 4244)
-#pragma warning(disable : 4245)
-#pragma warning(disable : 4701)
-#include <boost/crc.hpp>
-#pragma warning(pop)
-
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4244)
+#if defined(__GNUC__) && __GNUC__ == 14
+#pragma GCC diagnostic pop
 #endif
+
+#include <boost/crc.hpp>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavfilter/avfilter.h>
@@ -65,13 +63,11 @@ extern "C" {
 #include <libavutil/pixfmt.h>
 #include <libavutil/samplefmt.h>
 }
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
 
 #include <tbb/concurrent_queue.h>
 #include <tbb/parallel_invoke.h>
 
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <memory>
@@ -212,43 +208,55 @@ struct Stream
         if (codec->type == AVMEDIA_TYPE_VIDEO) {
             sink = FFMEM(avfilter_graph_alloc_filter(graph.get(), avfilter_get_by_name("buffersink"), "out"));
 
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4245)
-#endif
             // TODO codec->profiles
             // TODO FF(av_opt_set_int_list(sink, "framerates", codec->supported_framerates, { 0, 0 },
             // AV_OPT_SEARCH_CHILDREN));
-#if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100) && LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 36, 100)
-            int nb_pix_fmts = 0;
-            for (const auto* p = codec->pix_fmts; *p != AV_PIX_FMT_NONE; ++p, ++nb_pix_fmts)
-                ;
-            FF(av_opt_set_array(sink, "pixel_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, nb_pix_fmts, AV_OPT_TYPE_PIXEL_FMT, codec->pix_fmts));
+#if LIBAVUTIL_VERSION_MAJOR >= 60 // FFmpeg 8
+            const void* pix_fmts;
+            int         nb_pix_fmts = 0;
+            FF(avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0, &pix_fmts, &nb_pix_fmts));
+
+            FF(av_opt_set_array(sink,
+                                "pixel_formats",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                nb_pix_fmts,
+                                AV_OPT_TYPE_PIXEL_FMT,
+                                pix_fmts));
 #else
             FF(av_opt_set_int_list(sink, "pix_fmts", codec->pix_fmts, -1, AV_OPT_SEARCH_CHILDREN));
 #endif
 
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
         } else if (codec->type == AVMEDIA_TYPE_AUDIO) {
             sink = FFMEM(avfilter_graph_alloc_filter(graph.get(), avfilter_get_by_name("abuffersink"), "out"));
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable : 4245)
-#endif
             // TODO codec->profiles
 
-#if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100) && LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(59, 36, 100)
-            int nb_sample_fmts = 0;
-            for (const auto* p = codec->sample_fmts; *p != AV_SAMPLE_FMT_NONE; ++p, ++nb_sample_fmts)
-                ;
-            FF(av_opt_set_array(sink, "sample_formats", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, nb_sample_fmts, AV_OPT_TYPE_SAMPLE_FMT, codec->sample_fmts));
+#if LIBAVUTIL_VERSION_MAJOR >= 60 // FFmpeg 8
+            const void* sample_fmts;
+            int         nb_sample_fmts = 0;
+            FF(avcodec_get_supported_config(
+                nullptr, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, &sample_fmts, &nb_sample_fmts));
 
-            int nb_sample_rates = 0;
-            for (const auto* p = codec->supported_samplerates; p && *p != 0; ++p, ++nb_sample_rates)
-                ;
-            FF(av_opt_set_array(sink, "samplerates", AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE, 0, nb_sample_rates, AV_OPT_TYPE_INT, codec->supported_samplerates));
+            FF(av_opt_set_array(sink,
+                                "sample_formats",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                nb_sample_fmts,
+                                AV_OPT_TYPE_SAMPLE_FMT,
+                                sample_fmts));
+
+            const void* sample_rates;
+            int         nb_sample_rates = 0;
+            FF(avcodec_get_supported_config(
+                nullptr, codec, AV_CODEC_CONFIG_SAMPLE_RATE, 0, &sample_rates, &nb_sample_rates));
+
+            FF(av_opt_set_array(sink,
+                                "samplerates",
+                                AV_OPT_SEARCH_CHILDREN | AV_OPT_ARRAY_REPLACE,
+                                0,
+                                nb_sample_rates,
+                                AV_OPT_TYPE_INT,
+                                sample_rates));
 #else
             FF(av_opt_set_int_list(sink, "sample_fmts", codec->sample_fmts, -1, AV_OPT_SEARCH_CHILDREN));
             FF(av_opt_set_int_list(sink, "sample_rates", codec->supported_samplerates, 0, AV_OPT_SEARCH_CHILDREN));
@@ -257,9 +265,6 @@ struct Stream
             // TODO: need to translate codec->ch_layouts into something that can be passed via av_opt_set_*
             // FF(av_opt_set_chlayout(sink, "ch_layouts", codec->ch_layouts, AV_OPT_SEARCH_CHILDREN));
 
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
         } else {
             CASPAR_THROW_EXCEPTION(ffmpeg_error_t()
                                    << boost::errinfo_errno(EINVAL) << msg_info_t("invalid output media type"));
@@ -396,12 +401,65 @@ struct Stream
     }
 };
 
+// One-line reason for the current exception, for the reconnect log lines.
+// CASPAR_LOG_CURRENT_EXCEPTION prints the full multi-line diagnostic information.
+static std::wstring current_exception_reason()
+{
+    try {
+        throw;
+    } catch (const boost::exception& e) {
+        std::string reason;
+        if (auto func = boost::get_error_info<boost::errinfo_api_function>(e)) {
+            reason = *func;
+            reason = reason.substr(0, reason.find('('));
+        }
+        std::string detail;
+        if (auto msg = boost::get_error_info<msg_info_t>(e)) {
+            detail = *msg;
+        } else if (auto errn = boost::get_error_info<ffmpeg_errn_info>(e)) {
+            char buf[AV_ERROR_MAX_STRING_SIZE] = {};
+            av_strerror(*errn, buf, sizeof(buf));
+            detail = buf;
+        }
+        if (!reason.empty() && !detail.empty()) {
+            reason += ": ";
+        }
+        if (!reason.empty() || !detail.empty()) {
+            return u16(reason + detail);
+        }
+    } catch (...) {
+    }
+
+    try {
+        throw;
+    } catch (const std::exception& e) {
+        const std::string what = e.what();
+        return u16(what.substr(0, what.find('\n')));
+    } catch (...) {
+        return L"unknown error";
+    }
+}
+
+// Whether path is a protocol URL (srt://, rtmp://, udp://, ...) rather than a local file.
+static bool is_url(const std::string& path)
+{
+    static const boost::regex prot_exp("^.+:.*");
+    return boost::regex_match(path, prot_exp);
+}
+
+// Whether path writes a local file. Drive letters (C:\...) and file: URLs pass is_url() too,
+// and avio_open2 truncates them on every reconnect just like a plain path.
+static bool is_local_file(const std::string& path)
+{
+    static const boost::regex local_exp("^([a-z]:|file:).*", boost::regex::icase);
+    return !is_url(path) || boost::regex_match(path, local_exp);
+}
+
 struct ffmpeg_consumer : public core::frame_consumer
 {
     core::monitor::state    state_;
     mutable std::mutex      state_mutex_;
-    core::channel_info      channel_info_;
-    int                     port_index_ = -1;
+    int                     channel_index_ = -1;
     core::video_format_desc format_desc_;
     bool                    realtime_ = false;
     std::int64_t            video_pts = 0;
@@ -414,26 +472,55 @@ struct ffmpeg_consumer : public core::frame_consumer
 
     std::exception_ptr exception_;
     std::mutex         exception_mutex_;
+    std::mutex         reconnect_mutex_;
 
     tbb::concurrent_bounded_queue<std::tuple<core::const_frame, std::int64_t, std::int64_t>> frame_buffer_;
     std::thread                                                                              frame_thread_;
+    std::atomic<bool> frame_thread_exited_{false};
+    // Frame thread of a failed stream, told to stop by disconnect() but not yet joined.
+    std::thread retired_frame_thread_;
 
-    std::atomic<bool> offline_;
-    std::future<void> offline_timeout_;
+    // Reconnect state. When the frame thread terminates due to a connection loss we
+    // disconnect the consumer and periodically try to reinitialize it from send().
+    // Uses a stepped backoff (1s, 2s, 4s, 8s, 16s) with reconnect_attempts_per_level_
+    // attempts per level, capped at 30s. The backoff only resets once a connection has
+    // stayed up for reconnect_stable_uptime_, so an endpoint that accepts and immediately
+    // drops the stream still backs off. The backoff state is only touched from send().
+    // Both limits come from configuration.ffmpeg.consumer.reconnect.
+    //
+    // packet_thread_failed_ is set by the packet thread when its writes fail.
+    // The frame thread polls this on every iteration to exit cleanly.
+    std::atomic<bool>                                  connected_{true};
+    std::atomic<bool>                                  streaming_{false}; // output opened, not yet failed
+    std::atomic<std::chrono::steady_clock::time_point> streaming_since_{};
+    std::atomic<bool>                                  packet_thread_failed_{false};
+    std::chrono::steady_clock::time_point              reconnect_at_;
+    std::chrono::milliseconds                          reconnect_delay_                     = 1s;
+    int                                                reconnect_attempts_at_current_delay_ = 0;
+    const int                                          reconnect_attempts_per_level_;
+    static constexpr std::chrono::milliseconds         reconnect_max_delay_ = 30s;
+    const std::chrono::milliseconds                    reconnect_stable_uptime_;
+
+    // Stored arguments for reinitialization during reconnect.
+    std::optional<core::channel_info> last_channel_info_;
+    int                               last_port_index_ = -1;
 
     common::bit_depth depth_;
 
   public:
     ffmpeg_consumer(std::string path, std::string args, bool realtime, common::bit_depth depth)
-        : channel_info_([&] {
+        : channel_index_([&] {
             boost::crc_16_type result;
             result.process_bytes(path.data(), path.length());
             return result.checksum();
-        }(), depth, caspar::core::color_space::bt709)
+        }())
         , realtime_(realtime)
         , path_(std::move(path))
         , args_(std::move(args))
-        , offline_(false)
+        , reconnect_attempts_per_level_(std::max(
+              1, env::properties().get(L"configuration.ffmpeg.consumer.reconnect.attempts-per-level", 25)))
+        , reconnect_stable_uptime_(std::chrono::seconds(std::max(
+              0, env::properties().get(L"configuration.ffmpeg.consumer.reconnect.stable-uptime", 10))))
         , depth_(depth)
     {
         state_["file/path"] = u8(path_);
@@ -449,8 +536,19 @@ struct ffmpeg_consumer : public core::frame_consumer
     ~ffmpeg_consumer()
     {
         if (frame_thread_.joinable()) {
-            frame_buffer_.push({core::const_frame{}, -1, -1});
+            // The frame thread stops draining frame_buffer_ once it has exited (e.g. after a
+            // failed connection attempt), so a blocking push onto a full buffer never returns.
+            while (!frame_buffer_.try_push({core::const_frame{}, -1, -1})) {
+                if (frame_thread_exited_) {
+                    frame_buffer_.clear();
+                } else {
+                    std::this_thread::sleep_for(1ms);
+                }
+            }
             frame_thread_.join();
+        }
+        if (retired_frame_thread_.joinable()) {
+            retired_frame_thread_.join();
         }
     }
 
@@ -464,13 +562,27 @@ struct ffmpeg_consumer : public core::frame_consumer
             CASPAR_THROW_EXCEPTION(invalid_operation() << msg_info("Cannot reinitialize ffmpeg-consumer."));
         }
 
-        format_desc_   = format_desc;
-        channel_info_ = channel_info;
-        port_index_    = port_index;
+        // The new frame thread shares frame_buffer_ and the failure state with the retired one.
+        if (retired_frame_thread_.joinable()) {
+            retired_frame_thread_.join();
+            {
+                std::tuple<core::const_frame, std::int64_t, std::int64_t> drain;
+                while (frame_buffer_.try_pop(drain)) {
+                }
+            }
+            std::lock_guard<std::mutex> lock(exception_mutex_);
+            exception_ = nullptr;
+        }
+
+        format_desc_       = format_desc;
+        channel_index_     = channel_info.index;
+        last_channel_info_ = channel_info;
+        last_port_index_   = port_index;
 
         graph_->set_text(print());
 
-        frame_thread_ = std::thread([=] {
+        frame_thread_exited_ = false;
+        frame_thread_        = std::thread([=, this] {
             try {
                 std::map<std::string, std::string> options;
                 {
@@ -485,8 +597,7 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                 boost::filesystem::path full_path = path_;
 
-                static boost::regex prot_exp("^.+:.*");
-                if (!boost::regex_match(path_, prot_exp)) {
+                if (!is_url(path_)) {
                     if (!full_path.is_absolute()) {
                         full_path = u8(env::media_folder()) + path_;
                     }
@@ -558,12 +669,13 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                 tbb::concurrent_bounded_queue<std::shared_ptr<AVPacket>> packet_buffer;
                 packet_buffer.set_capacity(realtime_ ? 1 : 128);
-                auto packet_thread = std::thread([&] {
+                std::atomic<bool> packet_thread_exited{false};
+                auto              packet_thread = std::thread([&] {
                     try {
                         CASPAR_SCOPE_EXIT
                         {
                             if (!(oc->oformat->flags & AVFMT_NOFILE)) {
-                                FF(avio_closep(&oc->pb));
+                                avio_closep(&oc->pb);
                             }
                         };
 
@@ -587,26 +699,54 @@ struct ffmpeg_consumer : public core::frame_consumer
                         }
 
                     } catch (...) {
-                        CASPAR_LOG_CURRENT_EXCEPTION();
-                        // TODO
+                        {
+                            std::lock_guard<std::mutex> lock(exception_mutex_);
+                            if (!exception_) {
+                                exception_ = std::current_exception();
+                            }
+                        }
+                        packet_thread_failed_.store(true, std::memory_order_release);
                         packet_buffer.abort();
                     }
+                    packet_thread_exited = true;
                 });
+
+                // Hands the packet thread its end-of-stream marker without blocking forever
+                // on a full buffer if it has already exited after a write error.
+                auto push_eof = [&] {
+                    while (!packet_thread_exited && !packet_buffer.try_push(nullptr)) {
+                        std::this_thread::sleep_for(1ms);
+                    }
+                };
                 CASPAR_SCOPE_EXIT
                 {
                     if (packet_thread.joinable()) {
-                        // TODO Is nullptr needed?
-                        packet_buffer.push(nullptr);
-                        packet_buffer.abort();
+                        push_eof();
                         packet_thread.join();
                     }
                 };
 
-                auto packet_cb = [&](std::shared_ptr<AVPacket>&& pkt) { packet_buffer.push(std::move(pkt)); };
+                // Avoid blocking forever on a full packet buffer after the packet
+                // thread has failed.
+                auto packet_cb = [&](std::shared_ptr<AVPacket>&& pkt) {
+                    while (!packet_thread_failed_.load(std::memory_order_acquire)) {
+                        if (packet_buffer.try_push(pkt)) {
+                            return;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    }
+                };
 
-                offline_                  = false;
+                connected_       = true;
+                streaming_since_ = std::chrono::steady_clock::now();
+                streaming_       = true;
+                packet_thread_failed_.store(false, std::memory_order_release);
+
                 std::int64_t frame_number = 0;
                 while (true) {
+                    if (packet_thread_failed_.load(std::memory_order_acquire)) {
+                        break;
+                    }
                     {
                         std::lock_guard<std::mutex> lock(state_mutex_);
                         state_["file/frame"] = frame_number++;
@@ -614,6 +754,12 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                     std::tuple<core::const_frame, std::int64_t, std::int64_t> data;
                     frame_buffer_.pop(data);
+
+                    // Every packet of a failed stream is dropped; don't encode (or flush the
+                    // encoders for) the frame or sentinel that woke us up.
+                    if (packet_thread_failed_.load(std::memory_order_acquire)) {
+                        break;
+                    }
                     graph_->set_value("input",
                                       static_cast<double>(frame_buffer_.size() + 0.001) / frame_buffer_.capacity());
 
@@ -632,7 +778,9 @@ struct ffmpeg_consumer : public core::frame_consumer
                     graph_->set_value("frame-time", frame_timer.elapsed() * format_desc.fps * 0.5);
 
                     if (!std::get<0>(data)) {
-                        packet_buffer.push(nullptr);
+                        if (!packet_thread_failed_.load(std::memory_order_acquire)) {
+                            push_eof();
+                        }
                         break;
                     }
                 }
@@ -640,23 +788,83 @@ struct ffmpeg_consumer : public core::frame_consumer
                 packet_thread.join();
             } catch (...) {
                 std::lock_guard<std::mutex> lock(exception_mutex_);
-                exception_ = std::current_exception();
+                if (!exception_) {
+                    exception_ = std::current_exception();
+                }
             }
+            frame_thread_exited_ = true;
         });
     }
 
-    void go_offline()
+    // Tears down the current frame thread and schedules a reconnect attempt.
+    void disconnect(const std::wstring& reason)
     {
+        std::lock_guard<std::mutex> reconnect_lock(reconnect_mutex_);
         if (frame_thread_.joinable()) {
-            frame_thread_.join();
+            packet_thread_failed_.store(true, std::memory_order_release);
+            {
+                std::tuple<core::const_frame, std::int64_t, std::int64_t> drain;
+                while (frame_buffer_.try_pop(drain)) {
+                }
+            }
+            frame_buffer_.push({core::const_frame{}, -1, -1});
+            // Don't join here: this runs on the channel thread, and tearing down the
+            // encoders can take over a second. The next initialize() (at least the reconnect
+            // delay away) or the destructor joins it.
+            if (retired_frame_thread_.joinable()) {
+                retired_frame_thread_.join();
+            }
+            retired_frame_thread_ = std::move(frame_thread_);
         }
-        frame_buffer_.clear();
-        offline_         = true;
-        offline_timeout_ = std::async(std::launch::async, []() { std::this_thread::sleep_for(5s); });
-        CASPAR_LOG(info) << print() << " Attempting reconnection in 5s";
+
+        connected_ = false;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (streaming_ && now - streaming_since_.load() >= reconnect_stable_uptime_) {
+            reconnect_delay_                     = 1s;
+            reconnect_attempts_at_current_delay_ = 0;
+        }
+
+        const auto delay = reconnect_delay_;
+        reconnect_attempts_at_current_delay_ += 1;
+        if (reconnect_attempts_at_current_delay_ >= reconnect_attempts_per_level_) {
+            reconnect_attempts_at_current_delay_ = 0;
+            reconnect_delay_                     = std::min(reconnect_delay_ * 2, reconnect_max_delay_);
+        }
+
+        reconnect_at_ = now + delay;
+
+        CASPAR_LOG(warning) << print() << (streaming_ ? L" Connection lost: " : L" Connection attempt failed: ")
+                            << reason << L". Attempting reconnection in "
+                            << std::chrono::duration_cast<std::chrono::milliseconds>(delay).count() << L"ms";
+        streaming_ = false;
     }
 
-    void try_go_online() { initialize(format_desc_, channel_info_, port_index_); }
+    void connect()
+    {
+        std::lock_guard<std::mutex> reconnect_lock(reconnect_mutex_);
+        if (!last_channel_info_) {
+            return;
+        }
+        if (connected_) {
+            return;
+        }
+        if (frame_thread_.joinable()) {
+            // A reconnect attempt has already started but has not yet completed
+            // its FFmpeg initialization. Treat it as in progress so later send()
+            // calls do not try to initialize the same consumer again.
+            connected_ = true;
+            return;
+        }
+        if (retired_frame_thread_.joinable() && !frame_thread_exited_) {
+            // The failed stream's encoders are still being torn down. Retry on the next
+            // frame rather than block the channel thread joining it in initialize().
+            return;
+        }
+        CASPAR_LOG(info) << print() << L" Attempting reconnect...";
+        connected_ = true;
+        initialize(format_desc_, *last_channel_info_, last_port_index_);
+    }
 
     std::future<bool> send(core::video_field field, core::const_frame frame) override
     {
@@ -670,18 +878,22 @@ struct ffmpeg_consumer : public core::frame_consumer
                 std::rethrow_exception(exception);
             }
         } catch (...) {
-            if (!offline_) {
-                CASPAR_LOG_CURRENT_EXCEPTION();
-            } else {
-                CASPAR_LOG(warning) << print() << " Reconnection attempt failed";
+            // For file recordings, propagate the error immediately. Only realtime stream
+            // consumers (SRT/RTMP/...) should transparently reconnect. A realtime consumer can
+            // also write a local file, and reconnecting would wipe the recording.
+            if (!realtime_ || is_local_file(path_)) {
+                throw;
             }
-            go_offline();
+            disconnect(current_exception_reason());
         }
 
-        if (offline_) {
-            auto status = offline_timeout_.wait_for(0s);
-            if (status == std::future_status::ready) {
-                try_go_online();
+        if (!connected_) {
+            if (std::chrono::steady_clock::now() >= reconnect_at_) {
+                try {
+                    connect();
+                } catch (...) {
+                    disconnect(current_exception_reason());
+                }
             } else {
                 return make_ready_future(true);
             }
@@ -705,7 +917,7 @@ struct ffmpeg_consumer : public core::frame_consumer
 
     bool has_synchronization_clock() const override { return false; }
 
-    int index() const override { return 100000 + channel_info_.index; }
+    int index() const override { return 100000 + channel_index_; }
 
     core::monitor::state state() const override
     {

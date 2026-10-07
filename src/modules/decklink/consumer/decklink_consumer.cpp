@@ -151,10 +151,35 @@ void set_duplex(const com_iface_ptr<IDeckLinkAttributes_v10_11>&    attributes,
 }
 
 void set_keyer(const com_iface_ptr<IDeckLinkProfileAttributes>& attributes,
+               const com_iface_ptr<IDeckLinkOutput>&             output,
                const com_iface_ptr<IDeckLinkKeyer>&             decklink_keyer,
                configuration::keyer_t                           keyer,
+               BMDDisplayMode                                   display_mode,
+               BMDPixelFormat                                   pixel_format,
                const std::wstring&                              print)
 {
+    if (keyer == configuration::keyer_t::disabled_keyer) {
+        CASPAR_LOG(info) << print << L" Keyer disabled.";
+        return;
+    }
+
+    if (keyer == configuration::keyer_t::internal_keyer || keyer == configuration::keyer_t::external_keyer) {
+        BMDDisplayMode actualMode = bmdModeUnknown;
+        BOOL           supported  = FALSE;
+        if (SUCCEEDED(output->DoesSupportVideoMode(bmdVideoConnectionUnspecified,
+                                                   display_mode,
+                                                   pixel_format,
+                                                   bmdNoVideoOutputConversion,
+                                                   bmdSupportedVideoModeKeying,
+                                                   &actualMode,
+                                                   &supported)) &&
+            !supported) {
+            CASPAR_LOG(warning) << print << L" Keying is not supported by this device for the current video mode. Disabling keyer.";
+            decklink_keyer->Disable();
+            return;
+        }
+    }
+
     if (keyer == configuration::keyer_t::internal_keyer) {
         BOOL value = true;
         if (SUCCEEDED(attributes->GetFlag(BMDDeckLinkSupportsInternalKeying, &value)) && !value)
@@ -493,7 +518,7 @@ struct decklink_secondary_port final : public IDeckLinkVideoOutputCallback
         }
 
         set_latency(configuration_, config.latency, print);
-        set_keyer(attributes_, keyer_, config.keyer, print);
+        set_keyer(attributes_, output_, keyer_, config.keyer, mode_->GetDisplayMode(), format_strategy_->get_pixel_format(), print);
 
         if (device_sync_group_ > 0 &&
             FAILED(configuration_->SetInt(bmdDeckLinkConfigPlaybackGroup, device_sync_group_))) {
@@ -737,7 +762,7 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
         }
 
         set_latency(configuration_, config.latency, print());
-        set_keyer(attributes_, keyer_, config.keyer, print());
+        set_keyer(attributes_, output_, keyer_, config.keyer, mode_->GetDisplayMode(), format_strategy_->get_pixel_format(), print());
 
         if (config.hdr) {
             BOOL flag = FALSE;
@@ -1128,6 +1153,12 @@ struct decklink_consumer final : public IDeckLinkVideoOutputCallback
 
     bool call(const std::vector<std::wstring>& params)
     {
+        if (!vanc_) {
+            CASPAR_LOG(warning) << print() << L" VANC is not enabled, ignoring: "
+                                << (params.empty() ? L"N/A" : params[0]);
+            return false;
+        }
+
         try {
             bool result = vanc_->try_push_data(params);
             if (!result) {
@@ -1173,7 +1204,7 @@ struct decklink_consumer_proxy : public core::frame_consumer
 
     ~decklink_consumer_proxy() override
     {
-        executor_.invoke([=] {
+        executor_.invoke([=, this] {
             set_thread_realtime_priority();
             consumer_.reset();
             com_uninitialize();
@@ -1185,7 +1216,7 @@ struct decklink_consumer_proxy : public core::frame_consumer
                     int                            port_index) override
     {
         format_desc_ = format_desc;
-        executor_.invoke([=] {
+        executor_.invoke([=, this] {
             consumer_.reset();
             consumer_ = std::make_unique<decklink_consumer>(config_, format_desc, channel_info.index);
         });
@@ -1193,12 +1224,12 @@ struct decklink_consumer_proxy : public core::frame_consumer
 
     std::future<bool> send(core::video_field field, core::const_frame frame) override
     {
-        return executor_.begin_invoke([=] { return consumer_->send(field, frame); });
+        return executor_.begin_invoke([=, this] { return consumer_->send(field, frame); });
     }
 
     std::future<bool> call(const std::vector<std::wstring>& params) override
     {
-        return executor_.begin_invoke([=] { return consumer_->call(params); });
+        return executor_.begin_invoke([=, this] { return consumer_->call(params); });
     }
 
     [[nodiscard]] std::wstring print() const override
@@ -1245,12 +1276,6 @@ create_preconfigured_consumer(const boost::property_tree::wptree&               
     configuration config = parse_xml_config(ptree, format_repository, channel_info);
 
     config.hdr = (channel_info.depth != common::bit_depth::bit8);
-
-    if (config.hdr && (config.primary.dest_x != 0 || config.primary.region_w != 0 || config.primary.region_h != 0)) {
-        CASPAR_THROW_EXCEPTION(caspar_exception()
-                               << msg_info("Decklink consumer does not support hdr in combination with non-zero "
-                                           "dest_x, width or height sub-region properties yet."));
-    }
 
     if (config.hdr && config.primary.key_only) {
         CASPAR_THROW_EXCEPTION(caspar_exception()

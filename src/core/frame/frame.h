@@ -2,6 +2,8 @@
 
 #include <common/array.h>
 
+#include "geometry.h"
+
 #include <any>
 #include <cstddef>
 #include <cstdint>
@@ -74,6 +76,16 @@ class const_frame final
                          std::shared_ptr<core::texture>         texture = nullptr);
     const_frame(const const_frame& other);
     const_frame(mutable_frame&& other);
+
+    // Build a const_frame whose image planes already live on the GPU and are carried out-of-band in
+    // opaque() (e.g. the Vulkan GPU-producer path). There is no host pixel data, so the
+    // planes-vs-image_data invariant of the regular constructor does not apply. `desc` must describe
+    // the GPU texture(s); `opaque` is the accelerator's texture carriage.
+    static const_frame from_textures(const void*                     tag,
+                                     const struct pixel_format_desc& desc,
+                                     std::any                        opaque,
+                                     array<const std::int32_t>       audio    = {},
+                                     class frame_geometry            geometry = frame_geometry::get_default());
 
     ~const_frame();
 

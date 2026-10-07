@@ -5,6 +5,7 @@ join_list("${CASPARCG_MODULE_INCLUDE_STATEMENTS}" "\n" CASPARCG_MODULE_INCLUDE_S
 join_list("${CASPARCG_MODULE_INIT_STATEMENTS}" "\n" CASPARCG_MODULE_INIT_STATEMENTS)
 join_list("${CASPARCG_MODULE_UNINIT_STATEMENTS}" "\n" CASPARCG_MODULE_UNINIT_STATEMENTS)
 join_list("${CASPARCG_MODULE_COMMAND_LINE_ARG_INTERCEPTORS_STATEMENTS}" "\n" CASPARCG_MODULE_COMMAND_LINE_ARG_INTERCEPTORS_STATEMENTS)
+join_list("${CASPARCG_MODULE_VULKAN_REQ_STATEMENTS}" "\n" CASPARCG_MODULE_VULKAN_REQ_STATEMENTS)
 CONFIGURE_FILE ("${PROJECT_SOURCE_DIR}/included_modules.tmpl" "${CMAKE_BINARY_DIR}/generated/included_modules.h")
 
 set(SOURCES
@@ -22,6 +23,11 @@ if (MSVC)
 			resource.h
 			shell.rc
 			windows_specific.cpp
+	)
+elseif(APPLE)
+	list(APPEND SOURCES
+			macos_specific.cpp
+			macos_main_loop.mm
 	)
 else ()
 	list(APPEND SOURCES
@@ -56,8 +62,10 @@ target_link_libraries(casparcg
 
 		TBB::tbb
 		TBB::tbbmalloc
-		GLEW::glew
 )
+if(NOT APPLE)
+    target_link_libraries(casparcg GLEW::glew)
+endif()
 
 if (MSVC)
 	target_link_libraries(casparcg
@@ -82,6 +90,49 @@ if (MSVC)
 		d3d11.lib
 		dxgi.lib
 	)
+elseif(APPLE)
+	target_link_libraries(casparcg
+		${Boost_LIBRARIES}
+		${FFMPEG_LIBRARIES}
+		OpenAL::OpenAL
+		dl
+		pthread
+		"-framework Cocoa"
+	)
+
+	# RPATH needed at runtime for frameworks in the app bundle
+	set_target_properties(casparcg PROPERTIES
+		INSTALL_RPATH "@executable_path/../Frameworks"
+		BUILD_WITH_INSTALL_RPATH TRUE
+	)
+
+	if(ENABLE_HTML)
+		# macos_main_loop.mm hosts CEF on the main thread, so it needs the CEF
+		# headers (CefAppProtocol). ENABLE_HTML gates the CEF-specific code there.
+		target_include_directories(casparcg PRIVATE "${CEF_ROOT}")
+		target_compile_definitions(casparcg PRIVATE ENABLE_HTML)
+	endif()
+
+	# Copy CEF framework to build/Frameworks/ for package.sh to find
+	if(ENABLE_HTML)
+		add_custom_command(TARGET casparcg POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/Frameworks"
+			COMMAND ${CMAKE_COMMAND} -E copy_directory
+				"${CEF_ROOT}/Release/Chromium Embedded Framework.framework"
+				"${CMAKE_BINARY_DIR}/Frameworks/Chromium Embedded Framework.framework"
+			COMMENT "Copying CEF framework to build/Frameworks/"
+		)
+	endif()
+
+	# Copy Vulkan library to build/Frameworks/ for package.sh to find
+	if(ENABLE_VULKAN)
+		add_custom_command(TARGET casparcg POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -E copy
+				"${Vulkan_LIBRARY}"
+				"${CMAKE_BINARY_DIR}/Frameworks/libvulkan.1.dylib"
+			COMMENT "Copying Vulkan library to build/Frameworks/"
+		)
+	endif()
 else ()
 	target_link_libraries(casparcg
 		${Boost_LIBRARIES}
@@ -211,4 +262,15 @@ else ()
         # Looks like a build for a system package manager
         install(FILES casparcg.config DESTINATION "share/${CASPARCG_BINARY_NAME}")
     endif ()
+
+    if(APPLE)
+        install(DIRECTORY "${CMAKE_BINARY_DIR}/Frameworks" DESTINATION ".")
+    endif()
+
+    if(APPLE AND ENABLE_HTML)
+        # CEF in-process GPU loads ANGLE (libGLESv2.dylib etc.) relative to [NSBundle mainBundle],
+        # which for a non-bundle executable resolves to the binary's directory (bin/).
+        install(DIRECTORY "${CMAKE_BINARY_DIR}/Frameworks/Chromium Embedded Framework.framework/Libraries/"
+                DESTINATION "bin")
+    endif()
 endif ()

@@ -23,6 +23,8 @@
 
 #include "vulkan_queue.h"
 
+#include <vector>
+
 namespace caspar { namespace accelerator { namespace vulkan {
 
 command_context::command_context(vk::Device device, std::shared_ptr<vulkan_queue> queue)
@@ -72,7 +74,38 @@ vk::CommandBuffer command_context::acquire_command_buffer()
 
 completion_token command_context::record_and_submit(const std::function<void(vk::CommandBuffer)>& record)
 {
+    return record_and_submit(record, {});
+}
+
+completion_token command_context::record_and_submit(const std::function<void(vk::CommandBuffer)>& record,
+                                                    vk::ArrayProxy<const completion_token>        wait_tokens)
+{
+    return record_and_submit(record, wait_tokens, {});
+}
+
+completion_token command_context::record_and_submit(const std::function<void(vk::CommandBuffer)>& record,
+                                                    vk::ArrayProxy<const completion_token>        wait_tokens,
+                                                    vk::ArrayProxy<const completion_token>        signal_tokens)
+{
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // Cross-queue waits: keep only tokens on a foreign timeline. A token on our own
+    // timeline means the producer ran on this same queue (queue_distance::same_queue),
+    // where submission order plus the producer's barriers already order it before
+    // these commands, so waiting it would be redundant — and self-waiting the value
+    // we are about to signal could deadlock.
+    std::vector<vk::Semaphore>          wait_semaphores;
+    std::vector<uint64_t>               wait_values;
+    std::vector<vk::PipelineStageFlags> wait_stages;
+    for (const auto& token : wait_tokens) {
+        if (!token || token.timeline == timeline_)
+            continue;
+        wait_semaphores.push_back(token.timeline);
+        wait_values.push_back(token.value);
+        // vk::SubmitInfo carries v1 stage flags (not the v2 masks the barriers use);
+        // eAllCommands is the conservative, translation-safe wait scope.
+        wait_stages.push_back(vk::PipelineStageFlagBits::eAllCommands);
+    }
 
     auto cmd = acquire_command_buffer();
 
@@ -82,12 +115,26 @@ completion_token command_context::record_and_submit(const std::function<void(vk:
 
     auto signal_value = ++value_;
 
+    // Our own timeline first, then any foreign ones the caller wants released by
+    // this submit (the two arrays are index-matched, so they are built together).
+    std::vector<vk::Semaphore> signal_semaphores{timeline_};
+    std::vector<uint64_t>      signal_values{signal_value};
+    for (const auto& token : signal_tokens) {
+        if (!token.timeline || token.timeline == timeline_)
+            continue;
+        signal_semaphores.push_back(token.timeline);
+        signal_values.push_back(token.value);
+    }
+
     vk::TimelineSemaphoreSubmitInfo timeline_submit{};
-    timeline_submit.setSignalSemaphoreValues(signal_value);
+    timeline_submit.setWaitSemaphoreValues(wait_values);
+    timeline_submit.setSignalSemaphoreValues(signal_values);
 
     vk::SubmitInfo submit_info{};
     submit_info.setCommandBuffers(cmd);
-    submit_info.setSignalSemaphores(timeline_);
+    submit_info.setWaitSemaphores(wait_semaphores);
+    submit_info.setWaitDstStageMask(wait_stages);
+    submit_info.setSignalSemaphores(signal_semaphores);
     submit_info.pNext = &timeline_submit;
     queue_->submit(submit_info);
 
@@ -105,6 +152,17 @@ bool command_context::wait(const completion_token& token, uint64_t timeout_ns) c
     wait_info.setSemaphores(token.timeline);
     wait_info.setValues(token.value);
     return device_.waitSemaphores(wait_info, timeout_ns) == vk::Result::eSuccess;
+}
+
+bool command_context::wait_idle(uint64_t timeout_ns)
+{
+    return wait(current_completion(), timeout_ns);
+}
+
+completion_token command_context::current_completion()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return completion_token{timeline_, value_}; // value_ is 0 until the first submit
 }
 
 }}} // namespace caspar::accelerator::vulkan

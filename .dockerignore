@@ -11,3 +11,10 @@ casparcg_server
 dist
 build
 src/cmake-build-*
+
+# Local AI workspaces and private scratch files
+**/.claude
+**/.codex
+**/.cursor
+**/.aider*
+**/.*-private

@@ -19,3 +19,10 @@ src/.idea
 # debian build artifacts
 /debian
 /obj-*
+
+# Local AI workspaces and private scratch files
+.claude
+.codex
+.cursor
+.aider*
+.*-private

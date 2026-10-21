@@ -19,8 +19,29 @@
 
 struct AVPacket;
 struct AVFormatContext;
+struct AVDictionary;
+struct AVInputFormat;
 
 namespace caspar { namespace ffmpeg {
+
+enum class cache_mode
+{
+    none,
+    playback,
+    prefetch,
+};
+
+// Fills options with the defaults and configured options for opening filename, and returns the url
+// to open. With caching, the url is wrapped in the shared protocol.
+std::string build_open_options(const std::string&    filename,
+                               cache_mode            cache,
+                               AVDictionary**        options,
+                               const AVInputFormat** input_format);
+
+// The shared protocol's cache_size_max from options.shared, which PREFETCH respects as well; 0 = none.
+int64_t prefetch_size_limit();
+
+std::wstring cache_path();
 
 class Input
 {

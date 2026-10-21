@@ -19,6 +19,7 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/eval.h>
 }
 
 namespace caspar { namespace ffmpeg {
@@ -49,6 +50,84 @@ void set_config_options(AVDictionary** options, const std::wstring& scope)
 }
 
 } // namespace
+
+std::string build_open_options(const std::string&    filename,
+                               cache_mode            cache,
+                               AVDictionary**        options,
+                               const AVInputFormat** input_format)
+{
+    static const std::set<std::wstring> PROTOCOLS_TREATED_AS_FORMATS = {L"dshow", L"v4l2", L"iec61883"};
+
+    auto url       = filename;
+    auto url_parts = caspar::protocol_split(u16(filename));
+    if (url_parts.first == L"http" || url_parts.first == L"https") {
+        FF(av_dict_set(options, "multiple_requests", "1", 0));
+        FF(av_dict_set(options, "reconnect", "1", 0));
+        FF(av_dict_set(options, "reconnect_on_network_error", "1", 0));
+        FF(av_dict_set(options, "reconnect_on_http_error", "5xx,420,429", 0));
+        FF(av_dict_set(options, "reconnect_streamed", "1", 0));
+        FF(av_dict_set(options, "reconnect_delay_max", "120", 0));
+        FF(av_dict_set(options, "short_seek_size", "1M", 0));
+        FF(av_dict_set(options, "user_agent", "caspar/2.2", 0));
+        FF(av_dict_set(options, "referer", filename.c_str(), 0)); // HTTP referer header
+    } else if (url_parts.first == L"rtmp" || url_parts.first == L"rtmps") {
+        FF(av_dict_set(options, "rtmp_live", "live", 0));
+    } else if (PROTOCOLS_TREATED_AS_FORMATS.find(url_parts.first) != PROTOCOLS_TREATED_AS_FORMATS.end()) {
+        *input_format = av_find_input_format(u8(url_parts.first).c_str());
+        url           = u8(url_parts.second);
+    }
+
+    if (cache != cache_mode::none) {
+        FF(av_dict_set(options, "cache_dir", u8(cache_path()).c_str(), 0));
+        url = "shared:" + url;
+    }
+
+    if (*input_format == nullptr) {
+        // TODO (fix) timeout?
+        FF(av_dict_set(options, "rw_timeout", "60000000", 0)); // 60 second IO timeout
+    }
+
+    // Applied last so that user configuration wins over the defaults above.
+    set_config_options(options, L"default");
+    if (!url_parts.first.empty()) {
+        // The TLS variants share their protocol implementation, so they share its scope as well.
+        auto scope = url_parts.first;
+        if (scope == L"https" || scope == L"rtmps") {
+            scope.pop_back();
+        }
+        set_config_options(options, scope);
+    }
+
+    if (cache == cache_mode::playback) {
+        set_config_options(options, L"shared");
+    } else if (cache == cache_mode::prefetch) {
+        // The "shared" scope tunes uninterrupted playback (e.g. ignore_errors). A prefetch must
+        // instead fail loudly unless every block ends up in the cache, so these always win.
+        // Only the cache size limit is shared with playback.
+        FF(av_dict_set(options, "ignore_errors", "0", 0));
+        FF(av_dict_set(options, "cache_read_only", "0", 0));
+        FF(av_dict_set(options, "cache_size_max", std::to_string(prefetch_size_limit()).c_str(), 0));
+        FF(av_dict_set(options, "retry_errors", "1", 0));
+        FF(av_dict_set(options, "retry_corrupt", "1", 0));
+    }
+
+    return url;
+}
+
+int64_t prefetch_size_limit()
+{
+    AVDictionary* shared = nullptr;
+    CASPAR_SCOPE_EXIT { av_dict_free(&shared); };
+    set_config_options(&shared, L"shared");
+    auto entry = av_dict_get(shared, "cache_size_max", nullptr, 0);
+    // av_strtod, like ffmpeg's option parser, accepts suffixes such as 10G.
+    return entry ? std::max<int64_t>(0, static_cast<int64_t>(av_strtod(entry->value, nullptr))) : 0;
+}
+
+std::wstring cache_path()
+{
+    return env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.path", L"./ffmpeg-cache");
+}
 
 Input::Input(const std::string&                  filename,
              std::shared_ptr<diagnostics::graph> graph,
@@ -181,60 +260,14 @@ void Input::internal_reset()
     AVDictionary* options = nullptr;
     CASPAR_SCOPE_EXIT { av_dict_free(&options); };
 
-    static const std::set<std::wstring> PROTOCOLS_TREATED_AS_FORMATS = {L"dshow", L"v4l2", L"iec61883"};
-
-    // Built per call, since internal_reset() runs again on seek/reset.
-    auto                 url          = filename_;
-    const AVInputFormat* input_format = nullptr;
-    auto                 url_parts    = caspar::protocol_split(u16(filename_));
-    if (url_parts.first == L"http" || url_parts.first == L"https") {
-        FF(av_dict_set(&options, "multiple_requests", "1", 0));
-        FF(av_dict_set(&options, "reconnect", "1", 0));
-        FF(av_dict_set(&options, "reconnect_on_network_error", "1", 0));
-        FF(av_dict_set(&options, "reconnect_on_http_error", "5xx,420,429", 0));
-        FF(av_dict_set(&options, "reconnect_streamed", "1", 0));
-        FF(av_dict_set(&options, "reconnect_delay_max", "120", 0));
-        FF(av_dict_set(&options, "short_seek_size", "1M", 0));
-        FF(av_dict_set(&options, "user_agent", "caspar/2.2", 0));
-        FF(av_dict_set(&options, "referer", filename_.c_str(), 0)); // HTTP referer header
-    } else if (url_parts.first == L"rtmp" || url_parts.first == L"rtmps") {
-        FF(av_dict_set(&options, "rtmp_live", "live", 0));
-    } else if (PROTOCOLS_TREATED_AS_FORMATS.find(url_parts.first) != PROTOCOLS_TREATED_AS_FORMATS.end()) {
-        input_format = av_find_input_format(u8(url_parts.first).c_str());
-        url          = u8(url_parts.second);
-    }
-
     if (seekable_) {
         CASPAR_LOG(debug) << "av_input[" + filename_ + "] Disabled seeking";
         FF(av_dict_set(&options, "seekable", *seekable_ ? "1" : "0", 0));
     }
 
-    if (cache_) {
-        auto cache_dir =
-            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.path", L"./ffmpeg-cache"));
-        av_dict_set(&options, "cache_dir", cache_dir.c_str(), 0);
-
-        url = "shared:" + url;
-    }
-
-    if (input_format == nullptr) {
-        // TODO (fix) timeout?
-        FF(av_dict_set(&options, "rw_timeout", "60000000", 0)); // 60 second IO timeout
-    }
-
-    // Applied last so that user configuration wins over the defaults above.
-    set_config_options(&options, L"default");
-    if (!url_parts.first.empty()) {
-        // The TLS variants share their protocol implementation, so they share its scope as well.
-        auto scope = url_parts.first;
-        if (scope == L"https" || scope == L"rtmps") {
-            scope.pop_back();
-        }
-        set_config_options(&options, scope);
-    }
-    if (cache_) {
-        set_config_options(&options, L"shared");
-    }
+    // Built per call, since internal_reset() runs again on seek/reset.
+    const AVInputFormat* input_format = nullptr;
+    auto url = build_open_options(filename_, cache_ ? cache_mode::playback : cache_mode::none, &options, &input_format);
 
     AVFormatContext* ic             = avformat_alloc_context();
     ic->interrupt_callback.callback = Input::interrupt_cb;

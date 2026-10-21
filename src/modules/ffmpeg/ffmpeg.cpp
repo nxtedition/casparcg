@@ -25,10 +25,12 @@
 
 #include "consumer/ffmpeg_consumer.h"
 #include "producer/ffmpeg_producer.h"
+#include "producer/prefetch.h"
 
 #include <common/log.h>
 
 #include <core/module_dependencies.h>
+#include <protocol/amcp/amcp_command_repository_wrapper.h>
 
 #include <mutex>
 
@@ -113,11 +115,14 @@ void init(const core::module_dependencies& dependencies)
     dependencies.consumer_registry->register_preconfigured_consumer_factory(L"ffmpeg", create_preconfigured_consumer);
 
     dependencies.producer_registry->register_producer_factory(L"FFmpeg Producer", create_producer);
+
+    dependencies.command_repository->register_command(L"Media Commands", L"PREFETCH", prefetch_command, 1);
 }
 
 void uninit()
 {
     // avfilter_uninit();
+    prefetch_uninit();
     avformat_network_deinit();
 }
 }} // namespace caspar::ffmpeg

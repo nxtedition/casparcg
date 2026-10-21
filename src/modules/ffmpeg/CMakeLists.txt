@@ -8,6 +8,8 @@ set(SOURCES
 	producer/av_input.h
 	producer/ffmpeg_producer.cpp
 	producer/ffmpeg_producer.h
+	producer/prefetch.cpp
+	producer/prefetch.h
 	consumer/ffmpeg_consumer.cpp
 	consumer/ffmpeg_consumer.h
 

@@ -80,6 +80,9 @@ std::string build_open_options(const std::string&    filename,
     if (cache != cache_mode::none) {
         FF(av_dict_set(options, "cache_dir", u8(cache_path()).c_str(), 0));
         url = "shared:" + url;
+        // Wait this long for a block another reader (e.g. a prefetch) is fetching before fetching it
+        // too. shared's 10 ms default makes concurrent readers download most blocks twice.
+        FF(av_dict_set(options, "cache_timeout", "100000", 0));
     }
 
     if (*input_format == nullptr) {
@@ -109,6 +112,8 @@ std::string build_open_options(const std::string&    filename,
         FF(av_dict_set(options, "cache_size_max", std::to_string(prefetch_size_limit()).c_str(), 0));
         FF(av_dict_set(options, "retry_errors", "1", 0));
         FF(av_dict_set(options, "retry_corrupt", "1", 0));
+        // Nothing waits on a prefetch, so leave pending blocks to whoever is fetching them.
+        FF(av_dict_set(options, "cache_timeout", "30000000", 0));
     }
 
     return url;

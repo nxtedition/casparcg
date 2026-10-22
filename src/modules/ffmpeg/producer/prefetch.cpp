@@ -17,6 +17,7 @@
 #include <boost/filesystem.hpp>
 #include <boost/property_tree/ptree.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <deque>

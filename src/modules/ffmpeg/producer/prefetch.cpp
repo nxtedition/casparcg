@@ -35,13 +35,6 @@ namespace caspar { namespace ffmpeg {
 
 namespace {
 
-std::string error_string(int err)
-{
-    char buf[AV_ERROR_MAX_STRING_SIZE] = {};
-    av_strerror(err, buf, sizeof(buf));
-    return buf;
-}
-
 class prefetcher
 {
     std::mutex               mutex_;

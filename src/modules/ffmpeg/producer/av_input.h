@@ -3,6 +3,7 @@
 #include <common/diagnostics/graph.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <queue>
 #include <string>
+#include <vector>
 
 #include <tbb/concurrent_queue.h>
 
@@ -66,7 +68,12 @@ class Input
     void seek(int64_t ts, bool flush = true);
 
   private:
-    void internal_reset();
+    std::shared_ptr<AVFormatContext> open();
+    void                             internal_reset();
+    AVFormatContext*                 reader() const;
+    void                             deliver(std::shared_ptr<AVPacket> packet);
+    void                             push(std::shared_ptr<AVPacket> packet);
+    bool                             recover(int error);
 
     std::optional<bool> seekable_;
     bool                cache_;
@@ -77,6 +84,21 @@ class Input
     mutable std::mutex               ic_mutex_;
     std::shared_ptr<AVFormatContext> ic_;
     std::condition_variable          ic_cond_;
+
+    // Read-error recovery for cached inputs, see recover(). The reopened context is only read from;
+    // ic_ stays the one decoders and filters were built from, since they keep pointers into it.
+    std::shared_ptr<AVFormatContext> recovered_;
+    int                              seek_generation_ = 0;
+    int64_t                          seek_ts_;
+    std::chrono::seconds             retry_timeout_;
+
+    // Read thread only.
+    int                                                  read_generation_ = 0;
+    std::vector<int64_t>                                 delivered_dts_;
+    std::vector<int64_t>                                 resume_dts_;
+    std::shared_ptr<AVPacket>                            held_;
+    std::optional<std::chrono::steady_clock::time_point> failing_since_;
+    int                                                  retries_ = 0;
 
     tbb::concurrent_bounded_queue<std::shared_ptr<AVPacket>> buffer_;
 

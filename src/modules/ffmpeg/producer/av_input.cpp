@@ -14,11 +14,13 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/regex.hpp>
 
+#include <algorithm>
 #include <set>
 
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/eval.h>
 }
 
 namespace caspar { namespace ffmpeg {
@@ -50,6 +52,92 @@ void set_config_options(AVDictionary** options, const std::wstring& scope)
 
 } // namespace
 
+std::string build_open_options(const std::string&    filename,
+                               cache_mode            cache,
+                               AVDictionary**        options,
+                               const AVInputFormat** input_format)
+{
+    static const std::set<std::wstring> PROTOCOLS_TREATED_AS_FORMATS = {L"dshow", L"v4l2", L"iec61883"};
+
+    auto url       = filename;
+    auto url_parts = caspar::protocol_split(u16(filename));
+    if (url_parts.first == L"http" || url_parts.first == L"https") {
+        FF(av_dict_set(options, "multiple_requests", "1", 0));
+        FF(av_dict_set(options, "reconnect", "1", 0));
+        FF(av_dict_set(options, "reconnect_on_http_error", "404,408,416,429,500,502,503,504", 0));
+        FF(av_dict_set(options, "reconnect_streamed", "1", 0));
+        FF(av_dict_set(options, "reconnect_delay_max", "120", 0));
+        FF(av_dict_set(options, "user_agent", "caspar/3", 0));
+        FF(av_dict_set(options, "referer", filename.c_str(), 0)); // HTTP referer header
+        FF(av_dict_set(options, "prefer_libcurl", "1", 0));
+        FF(av_dict_set(options, "initial_request_size", "32k", 0));
+        FF(av_dict_set(options, "short_seek_size", "512k", 0));
+        FF(av_dict_set(options, "max_retries", "32", 0));
+
+    } else if (url_parts.first == L"rtmp" || url_parts.first == L"rtmps") {
+        FF(av_dict_set(options, "rtmp_live", "live", 0));
+    } else if (PROTOCOLS_TREATED_AS_FORMATS.find(url_parts.first) != PROTOCOLS_TREATED_AS_FORMATS.end()) {
+        *input_format = av_find_input_format(u8(url_parts.first).c_str());
+        url           = u8(url_parts.second);
+    }
+
+    if (cache != cache_mode::none) {
+        FF(av_dict_set(options, "cache_dir", u8(cache_path()).c_str(), 0));
+        url = "shared:" + url;
+        // Wait this long for a block another reader (e.g. a prefetch) is fetching before fetching it
+        // too. shared's 10 ms default makes concurrent readers download most blocks twice.
+        FF(av_dict_set(options, "cache_timeout", "100000", 0));
+    }
+
+    if (*input_format == nullptr) {
+        // TODO (fix) timeout?
+        FF(av_dict_set(options, "rw_timeout", "60000000", 0)); // 60 second IO timeout
+    }
+
+    // Applied last so that user configuration wins over the defaults above.
+    set_config_options(options, L"default");
+    if (!url_parts.first.empty()) {
+        // The TLS variants share their protocol implementation, so they share its scope as well.
+        auto scope = url_parts.first;
+        if (scope == L"https" || scope == L"rtmps") {
+            scope.pop_back();
+        }
+        set_config_options(options, scope);
+    }
+
+    if (cache == cache_mode::playback) {
+        set_config_options(options, L"shared");
+    } else if (cache == cache_mode::prefetch) {
+        // The "shared" scope tunes uninterrupted playback (e.g. ignore_errors). A prefetch must
+        // instead fail loudly unless every block ends up in the cache, so these always win.
+        // Only the cache size limit is shared with playback.
+        FF(av_dict_set(options, "ignore_errors", "0", 0));
+        FF(av_dict_set(options, "cache_read_only", "0", 0));
+        FF(av_dict_set(options, "cache_size_max", std::to_string(prefetch_size_limit()).c_str(), 0));
+        FF(av_dict_set(options, "retry_errors", "1", 0));
+        FF(av_dict_set(options, "retry_corrupt", "1", 0));
+        // Nothing waits on a prefetch, so leave pending blocks to whoever is fetching them.
+        FF(av_dict_set(options, "cache_timeout", "30000000", 0));
+    }
+
+    return url;
+}
+
+int64_t prefetch_size_limit()
+{
+    AVDictionary* shared = nullptr;
+    CASPAR_SCOPE_EXIT { av_dict_free(&shared); };
+    set_config_options(&shared, L"shared");
+    auto entry = av_dict_get(shared, "cache_size_max", nullptr, 0);
+    // av_strtod, like ffmpeg's option parser, accepts suffixes such as 10G.
+    return entry ? std::max<int64_t>(0, static_cast<int64_t>(av_strtod(entry->value, nullptr))) : 0;
+}
+
+std::wstring cache_path()
+{
+    return env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.path", L"./ffmpeg-cache");
+}
+
 Input::Input(const std::string&                  filename,
              std::shared_ptr<diagnostics::graph> graph,
              std::optional<bool>                 seekable,
@@ -58,6 +146,8 @@ Input::Input(const std::string&                  filename,
     , graph_(graph)
     , seekable_(seekable)
     , cache_(cache)
+    , seek_ts_(AV_NOPTS_VALUE)
+    , retry_timeout_(env::properties().get(L"configuration.ffmpeg.producer.cache.read-retry-timeout", 60))
 {
     graph_->set_color("seek", diagnostics::color(1.0f, 0.5f, 0.0f));
     graph_->set_color("input", diagnostics::color(0.7f, 0.4f, 0.4f));
@@ -70,8 +160,9 @@ Input::Input(const std::string&                  filename,
             int consecutive_enomem = 0;
 
             while (true) {
-                auto packet = alloc_packet();
-                int  ret    = 0;
+                auto packet     = alloc_packet();
+                int  ret        = 0;
+                int  generation = 0;
 
                 {
                     std::unique_lock<std::mutex> lock(ic_mutex_);
@@ -81,12 +172,23 @@ Input::Input(const std::string&                  filename,
                         break;
                     }
 
+                    generation = seek_generation_;
                     // TODO (perf) Non blocking av_read_frame when possible.
-                    ret = av_read_frame(ic_.get(), packet.get());
+                    ret = av_read_frame(reader(), packet.get());
                 }
 
                 if (abort_request_) {
                     break;
+                }
+
+                if (generation != read_generation_) {
+                    // Seeked: forget the recovery state of the old position.
+                    read_generation_ = generation;
+                    delivered_dts_.clear();
+                    resume_dts_.clear();
+                    held_.reset();
+                    failing_since_.reset();
+                    retries_ = 0;
                 }
 
                 if (ret == AVERROR_EXIT) {
@@ -116,14 +218,23 @@ Input::Input(const std::string&                  filename,
                     }
                     boost::this_thread::sleep_for(boost::chrono::milliseconds(5));
                     continue;
+                } else if (ret < 0 && cache_ && seekable_.value_or(true)) {
+                    // Missing data in the cache: the packet held back before the error is truncated.
+                    held_.reset();
+                    if (!recover(ret)) {
+                        // Pretend we reached EOF, to avoid the producer stalling expecting more packets
+                        eof_ = true;
+                        buffer_.push(nullptr);
+                        break;
+                    }
+                    continue;
                 } else {
                     consecutive_enomem = 0;
                     FF_RET(ret, "av_read_frame");
                 }
 
                 consecutive_enomem = 0;
-                buffer_.push(std::move(packet));
-                graph_->set_value("input", (static_cast<double>(buffer_.size()) / buffer_.capacity()));
+                deliver(std::move(packet));
             }
         } catch (...) {
             CASPAR_LOG_CURRENT_EXCEPTION();
@@ -176,65 +287,19 @@ void Input::reset()
     internal_reset();
 }
 
-void Input::internal_reset()
+std::shared_ptr<AVFormatContext> Input::open()
 {
     AVDictionary* options = nullptr;
     CASPAR_SCOPE_EXIT { av_dict_free(&options); };
-
-    static const std::set<std::wstring> PROTOCOLS_TREATED_AS_FORMATS = {L"dshow", L"v4l2", L"iec61883"};
-
-    // Built per call, since internal_reset() runs again on seek/reset.
-    auto                 url          = filename_;
-    const AVInputFormat* input_format = nullptr;
-    auto                 url_parts    = caspar::protocol_split(u16(filename_));
-    if (url_parts.first == L"http" || url_parts.first == L"https") {
-        FF(av_dict_set(&options, "multiple_requests", "1", 0));
-        FF(av_dict_set(&options, "reconnect", "1", 0));
-        FF(av_dict_set(&options, "reconnect_on_network_error", "1", 0));
-        FF(av_dict_set(&options, "reconnect_on_http_error", "5xx,420,429", 0));
-        FF(av_dict_set(&options, "reconnect_streamed", "1", 0));
-        FF(av_dict_set(&options, "reconnect_delay_max", "120", 0));
-        FF(av_dict_set(&options, "short_seek_size", "1M", 0));
-        FF(av_dict_set(&options, "user_agent", "caspar/2.2", 0));
-        FF(av_dict_set(&options, "referer", filename_.c_str(), 0)); // HTTP referer header
-    } else if (url_parts.first == L"rtmp" || url_parts.first == L"rtmps") {
-        FF(av_dict_set(&options, "rtmp_live", "live", 0));
-    } else if (PROTOCOLS_TREATED_AS_FORMATS.find(url_parts.first) != PROTOCOLS_TREATED_AS_FORMATS.end()) {
-        input_format = av_find_input_format(u8(url_parts.first).c_str());
-        url          = u8(url_parts.second);
-    }
 
     if (seekable_) {
         CASPAR_LOG(debug) << "av_input[" + filename_ + "] Disabled seeking";
         FF(av_dict_set(&options, "seekable", *seekable_ ? "1" : "0", 0));
     }
 
-    if (cache_) {
-        auto cache_dir =
-            u8(env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.path", L"./ffmpeg-cache"));
-        av_dict_set(&options, "cache_dir", cache_dir.c_str(), 0);
-
-        url = "shared:" + url;
-    }
-
-    if (input_format == nullptr) {
-        // TODO (fix) timeout?
-        FF(av_dict_set(&options, "rw_timeout", "60000000", 0)); // 60 second IO timeout
-    }
-
-    // Applied last so that user configuration wins over the defaults above.
-    set_config_options(&options, L"default");
-    if (!url_parts.first.empty()) {
-        // The TLS variants share their protocol implementation, so they share its scope as well.
-        auto scope = url_parts.first;
-        if (scope == L"https" || scope == L"rtmps") {
-            scope.pop_back();
-        }
-        set_config_options(&options, scope);
-    }
-    if (cache_) {
-        set_config_options(&options, L"shared");
-    }
+    // Built per call, since internal_reset() runs again on seek/reset.
+    const AVInputFormat* input_format = nullptr;
+    auto url = build_open_options(filename_, cache_ ? cache_mode::playback : cache_mode::none, &options, &input_format);
 
     AVFormatContext* ic             = avformat_alloc_context();
     ic->interrupt_callback.callback = Input::interrupt_cb;
@@ -248,8 +313,142 @@ void Input::internal_reset()
     }
 
     FF(avformat_find_stream_info(ic2.get(), nullptr));
-    ic_ = std::move(ic2);
+    return ic2;
+}
+
+void Input::internal_reset()
+{
+    ic_ = open();
+    recovered_.reset();
+    ++seek_generation_;
+    seek_ts_ = AV_NOPTS_VALUE;
     ic_cond_.notify_all();
+}
+
+AVFormatContext* Input::reader() const { return recovered_ ? recovered_.get() : ic_.get(); }
+
+void Input::deliver(std::shared_ptr<AVPacket> packet)
+{
+    if (cache_ && packet && (packet->flags & AV_PKT_FLAG_CORRUPT)) {
+        // Hold it back for one read: if that read fails, it was cut short by missing data.
+        std::swap(held_, packet);
+        if (!packet) {
+            return;
+        }
+    } else if (held_) {
+        push(std::move(held_));
+    }
+    push(std::move(packet));
+}
+
+void Input::push(std::shared_ptr<AVPacket> packet)
+{
+    if (cache_ && packet && packet->dts != AV_NOPTS_VALUE) {
+        const auto index = static_cast<size_t>(packet->stream_index);
+        if (delivered_dts_.size() <= index) {
+            delivered_dts_.resize(index + 1, AV_NOPTS_VALUE);
+        }
+        if (index < resume_dts_.size() && resume_dts_[index] != AV_NOPTS_VALUE) {
+            if (packet->dts <= resume_dts_[index]) {
+                return; // delivered before the reopen
+            }
+            resume_dts_[index] = AV_NOPTS_VALUE;
+        }
+        delivered_dts_[index] = packet->dts;
+
+        if (failing_since_) {
+            CASPAR_LOG(info) << "av_input[" << filename_ << "] Recovered after "
+                             << std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() -
+                                                                                 *failing_since_)
+                                    .count()
+                             << " s";
+            failing_since_.reset();
+            retries_ = 0;
+        }
+    }
+
+    buffer_.push(std::move(packet));
+    graph_->set_value("input", (static_cast<double>(buffer_.size()) / buffer_.capacity()));
+}
+
+// Data missing from the cache: reopen (retrying the source) and seek back, since reading on would
+// skip the failed packet. Returns false to give up.
+bool Input::recover(int error)
+{
+    using namespace std::chrono;
+
+    if (!failing_since_) {
+        CASPAR_LOG(warning) << "av_input[" << filename_ << "] Read failed: " << error_string(error)
+                            << ". Reopening to retry.";
+        graph_->set_tag(diagnostics::tag_severity::WARNING, "read-retry");
+        failing_since_ = steady_clock::now();
+    }
+
+    while (true) {
+        if (retry_timeout_.count() > 0 && steady_clock::now() - *failing_since_ >= retry_timeout_) {
+            CASPAR_LOG(error) << "av_input[" << filename_ << "] Giving up after " << retry_timeout_.count()
+                              << " s of read errors: " << error_string(error);
+            return false;
+        }
+
+        int     generation = 0;
+        int64_t target     = AV_NOPTS_VALUE;
+        {
+            std::unique_lock<std::mutex> lock(ic_mutex_);
+            generation = seek_generation_;
+            auto delay = steady_clock::duration(milliseconds(1000 << std::min(retries_++, 3)));
+            if (retry_timeout_.count() > 0) {
+                // The last retry happens right at the deadline.
+                delay = std::min(delay, *failing_since_ + retry_timeout_ - steady_clock::now());
+            }
+            if (ic_cond_.wait_for(lock, delay, [&] { return abort_request_ || seek_generation_ != generation; })) {
+                return true; // the read loop handles abort and seek
+            }
+
+            // Back to the keyframe before the earliest packet any stream still needs.
+            for (size_t n = 0; n < delivered_dts_.size() && n < ic_->nb_streams; ++n) {
+                if (delivered_dts_[n] != AV_NOPTS_VALUE) {
+                    const auto ts = av_rescale_q(delivered_dts_[n], ic_->streams[n]->time_base, AV_TIME_BASE_Q);
+                    target        = target == AV_NOPTS_VALUE ? ts : std::min(target, ts);
+                }
+            }
+            if (target == AV_NOPTS_VALUE) {
+                target = seek_ts_;
+            }
+        }
+
+        try {
+            // Opened without the lock: with the source unreachable this can take a while.
+            auto ctx = open();
+            if (target != AV_NOPTS_VALUE) {
+                FF(avformat_seek_file(ctx.get(), -1, INT64_MIN, target, target, 0));
+            }
+
+            std::unique_lock<std::mutex> lock(ic_mutex_);
+            if (seek_generation_ != generation) {
+                return true;
+            }
+            if (ctx->nb_streams != ic_->nb_streams) {
+                CASPAR_LOG(error) << "av_input[" << filename_ << "] Reopened with different streams";
+                return false;
+            }
+            for (unsigned n = 0; n < ctx->nb_streams; ++n) {
+                if (ctx->streams[n]->codecpar->codec_id != ic_->streams[n]->codecpar->codec_id) {
+                    CASPAR_LOG(error) << "av_input[" << filename_ << "] Reopened with different streams";
+                    return false;
+                }
+            }
+            recovered_  = std::move(ctx);
+            resume_dts_ = delivered_dts_;
+            CASPAR_LOG(debug) << "av_input[" << filename_ << "] Reopened, retry " << retries_;
+            return true;
+        } catch (...) {
+            if (abort_request_) {
+                return true;
+            }
+            CASPAR_LOG(debug) << "av_input[" << filename_ << "] Reopen failed, retry " << retries_;
+        }
+    }
 }
 
 bool Input::eof() const { return eof_; }
@@ -259,7 +458,10 @@ void Input::seek(int64_t ts, bool flush)
     std::unique_lock<std::mutex> lock(ic_mutex_);
 
     if (ic_ && ts != ic_->start_time && ts != AV_NOPTS_VALUE) {
-        FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
+        FF(avformat_seek_file(reader(), -1, INT64_MIN, ts, ts, 0));
+        ++seek_generation_;
+        seek_ts_ = ts;
+        ic_cond_.notify_all();
     } else {
         internal_reset();
     }

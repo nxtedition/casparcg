@@ -25,10 +25,21 @@
 
 #include <core/fwd.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace caspar { namespace ffmpeg {
+
+struct resolved_path
+{
+    std::wstring path;
+    bool         cache;
+};
+
+// Resolves a producer name (e.g. "shared:https://host/clip.mov" or "clip") to the path ffmpeg opens.
+// Empty if the name is not something the ffmpeg producer plays.
+std::optional<resolved_path> resolve_path(const std::wstring& name);
 
 spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer_dependencies& dependencies,
                                                       const std::vector<std::wstring>&         params);

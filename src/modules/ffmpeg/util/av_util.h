@@ -12,6 +12,7 @@ extern "C" {
 
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 struct AVFrame;
@@ -47,5 +48,7 @@ AVDictionary*                      to_dict(std::map<std::string, std::string>&& 
 std::map<std::string, std::string> to_map(AVDictionary** dict);
 
 uint64_t get_channel_layout_mask_for_channels(int channel_count);
+
+std::string error_string(int err);
 
 }} // namespace caspar::ffmpeg

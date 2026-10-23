@@ -69,8 +69,13 @@ std::string build_open_options(const std::string&    filename,
         FF(av_dict_set(options, "reconnect_streamed", "1", 0));
         FF(av_dict_set(options, "reconnect_delay_max", "120", 0));
         FF(av_dict_set(options, "short_seek_size", "1M", 0));
-        FF(av_dict_set(options, "user_agent", "caspar/2.2", 0));
+        FF(av_dict_set(options, "user_agent", "caspar/3", 0));
         FF(av_dict_set(options, "referer", filename.c_str(), 0)); // HTTP referer header
+        FF(av_dict_set(options, "prefer_libcurl", "1", 0));
+        FF(av_dict_set(options, "initial_request_size", "32k", 0));
+        FF(av_dict_set(options, "short_seek_size", "512k", 0));
+        FF(av_dict_set(options, "max_retries", "32", 0));
+        
     } else if (url_parts.first == L"rtmp" || url_parts.first == L"rtmps") {
         FF(av_dict_set(options, "rtmp_live", "live", 0));
     } else if (PROTOCOLS_TREATED_AS_FORMATS.find(url_parts.first) != PROTOCOLS_TREATED_AS_FORMATS.end()) {

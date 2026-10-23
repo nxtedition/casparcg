@@ -65,7 +65,7 @@ std::string build_open_options(const std::string&    filename,
         FF(av_dict_set(options, "multiple_requests", "1", 0));
         FF(av_dict_set(options, "reconnect", "1", 0));
         FF(av_dict_set(options, "reconnect_on_network_error", "1", 0));
-        FF(av_dict_set(options, "reconnect_on_http_error", "5xx,420,429", 0));
+        FF(av_dict_set(options, "reconnect_on_http_error", "404,408,416,429,500,502,503,504", 0));
         FF(av_dict_set(options, "reconnect_streamed", "1", 0));
         FF(av_dict_set(options, "reconnect_delay_max", "120", 0));
         FF(av_dict_set(options, "short_seek_size", "1M", 0));

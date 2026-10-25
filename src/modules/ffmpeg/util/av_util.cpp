@@ -414,4 +414,11 @@ uint64_t get_channel_layout_mask_for_channels(int channel_count)
     return channel_layout;
 }
 
+std::string error_string(int err)
+{
+    char buf[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(err, buf, sizeof(buf));
+    return buf;
+}
+
 }} // namespace caspar::ffmpeg

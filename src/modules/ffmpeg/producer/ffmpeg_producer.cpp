@@ -277,17 +277,15 @@ bool is_valid_file(const boost::filesystem::path& filename)
     return av_probe_input_format2(&pb, true, &score) != nullptr;
 }
 
-spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer_dependencies& dependencies,
-                                                      const std::vector<std::wstring>&         params)
+std::optional<resolved_path> resolve_path(const std::wstring& name)
 {
-    auto name  = params.at(0);
-    auto path  = name;
-    bool cache = false;
+    resolved_path result{name, false};
+    auto&         path = result.path;
 
     auto shared_prefix = std::wstring(L"shared:");
     if (boost::starts_with(path, shared_prefix)) {
-        path  = path.substr(shared_prefix.size());
-        cache = true;
+        path         = path.substr(shared_prefix.size());
+        result.cache = true;
     }
 
     if (!boost::contains(path, L"://")) {
@@ -295,16 +293,16 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
         if (fullMediaPath) {
             path = fullMediaPath->wstring();
         } else {
-            return core::frame_producer::empty();
+            return {};
         }
     } else if (!has_valid_extension(path) || has_invalid_protocol(path)) {
-        return core::frame_producer::empty();
+        return {};
     } else {
         // only consider auto cache if the url includes some protocol, ie. not just a local path
         auto auto_cache_pattern = env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.auto", L"");
         bool auto_cache = !auto_cache_pattern.empty() && boost::regex_search(path, boost::wregex(auto_cache_pattern));
 
-        cache = cache || auto_cache;
+        result.cache = result.cache || auto_cache;
 
         if (auto_cache) {
             CASPAR_LOG(debug) << L"ffmpeg[" + path + L"]: auto cache enabled";
@@ -312,8 +310,22 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
     }
 
     if (path.empty()) {
+        return {};
+    }
+
+    return result;
+}
+
+spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer_dependencies& dependencies,
+                                                      const std::vector<std::wstring>&         params)
+{
+    auto name     = params.at(0);
+    auto resolved = resolve_path(name);
+    if (!resolved) {
         return core::frame_producer::empty();
     }
+    auto path  = resolved->path;
+    bool cache = resolved->cache;
 
     auto seekable = get_param(L"SEEKABLE", params, static_cast<int>(2));
 

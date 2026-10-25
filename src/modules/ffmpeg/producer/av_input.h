@@ -3,6 +3,7 @@
 #include <common/diagnostics/graph.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <queue>
 #include <string>
+#include <vector>
 
 #include <tbb/concurrent_queue.h>
 
@@ -19,8 +21,29 @@
 
 struct AVPacket;
 struct AVFormatContext;
+struct AVDictionary;
+struct AVInputFormat;
 
 namespace caspar { namespace ffmpeg {
+
+enum class cache_mode
+{
+    none,
+    playback,
+    prefetch,
+};
+
+// Fills options with the defaults and configured options for opening filename, and returns the url
+// to open. With caching, the url is wrapped in the shared protocol.
+std::string build_open_options(const std::string&    filename,
+                               cache_mode            cache,
+                               AVDictionary**        options,
+                               const AVInputFormat** input_format);
+
+// The shared protocol's cache_size_max from options.shared, which PREFETCH respects as well; 0 = none.
+int64_t prefetch_size_limit();
+
+std::wstring cache_path();
 
 class Input
 {
@@ -45,7 +68,12 @@ class Input
     void seek(int64_t ts, bool flush = true);
 
   private:
-    void internal_reset();
+    std::shared_ptr<AVFormatContext> open();
+    void                             internal_reset();
+    AVFormatContext*                 reader() const;
+    void                             deliver(std::shared_ptr<AVPacket> packet);
+    void                             push(std::shared_ptr<AVPacket> packet);
+    bool                             recover(int error);
 
     std::optional<bool> seekable_;
     bool                cache_;
@@ -56,6 +84,21 @@ class Input
     mutable std::mutex               ic_mutex_;
     std::shared_ptr<AVFormatContext> ic_;
     std::condition_variable          ic_cond_;
+
+    // Read-error recovery for cached inputs, see recover(). The reopened context is only read from;
+    // ic_ stays the one decoders and filters were built from, since they keep pointers into it.
+    std::shared_ptr<AVFormatContext> recovered_;
+    int                              seek_generation_ = 0;
+    int64_t                          seek_ts_;
+    std::chrono::seconds             retry_timeout_;
+
+    // Read thread only.
+    int                                                  read_generation_ = 0;
+    std::vector<int64_t>                                 delivered_dts_;
+    std::vector<int64_t>                                 resume_dts_;
+    std::shared_ptr<AVPacket>                            held_;
+    std::optional<std::chrono::steady_clock::time_point> failing_since_;
+    int                                                  retries_ = 0;
 
     tbb::concurrent_bounded_queue<std::shared_ptr<AVPacket>> buffer_;
 

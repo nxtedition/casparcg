@@ -817,7 +817,10 @@ struct AVProducer::Impl
     {
         std::vector<int> audio_cadence = format_desc_.audio_cadence;
 
-        input_.reset();
+        // Seeked on open, or the read thread reads from the start until the first seek. With a partial
+        // cache and the source offline, that read fails.
+        const auto firstStart = firstSeek ? av_rescale_q(*firstSeek, format_tb_, TIME_BASE_Q) : start_.load();
+        input_.reset(seekable_ && firstStart != AV_NOPTS_VALUE ? std::optional<int64_t>(firstStart) : std::nullopt);
         {
             core::monitor::state streams;
             for (auto n = 0UL; n < input_->nb_streams; ++n) {
@@ -844,9 +847,8 @@ struct AVProducer::Impl
                 }
             }
 
-            const auto firstStart = firstSeek ? av_rescale_q(*firstSeek, format_tb_, TIME_BASE_Q) : start;
             if (firstStart != AV_NOPTS_VALUE) {
-                seek_internal(firstStart);
+                seek_internal(firstStart, false); // the input is already there
             } else {
                 reset(input_->start_time != AV_NOPTS_VALUE ? input_->start_time : 0);
             }
@@ -1227,13 +1229,13 @@ struct AVProducer::Impl
         return result;
     }
 
-    void seek_internal(int64_t time)
+    void seek_internal(int64_t time, bool seek_input = true)
     {
         time = time != AV_NOPTS_VALUE ? time : 0;
         time = time + (input_->start_time != AV_NOPTS_VALUE ? input_->start_time : 0);
 
         // TODO (fix) Dont seek if time is close future.
-        if (seekable_) {
+        if (seekable_ && seek_input) {
             input_.seek(time);
         }
         frame_flush_ = true;

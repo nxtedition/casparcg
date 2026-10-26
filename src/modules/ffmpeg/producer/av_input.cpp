@@ -281,10 +281,17 @@ void Input::abort()
         ;
 }
 
-void Input::reset()
+void Input::reset(std::optional<int64_t> time)
 {
     std::unique_lock<std::mutex> lock(ic_mutex_);
     internal_reset();
+
+    if (time) {
+        const auto ts = *time + (ic_->start_time != AV_NOPTS_VALUE ? ic_->start_time : 0);
+        if (ts != ic_->start_time) {
+            FF(avformat_seek_file(ic_.get(), -1, INT64_MIN, ts, ts, 0));
+        }
+    }
 }
 
 std::shared_ptr<AVFormatContext> open_input(const std::string&     filename,

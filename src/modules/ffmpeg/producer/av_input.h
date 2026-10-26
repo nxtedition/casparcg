@@ -72,7 +72,9 @@ class Input
 
     AVFormatContext* const operator->() const;
 
-    void reset();
+    // With a time (relative to the start of the input), it is seeked there before the read thread
+    // reads anything.
+    void reset(std::optional<int64_t> time = {});
     void abort();
     bool eof() const;
     void seek(int64_t ts, bool flush = true);

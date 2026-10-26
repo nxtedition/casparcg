@@ -113,13 +113,19 @@ class prefetcher
         try {
             CASPAR_LOG(info) << "ffmpeg[" << filename << "] Prefetch started";
 
-            boost::filesystem::create_directories(cache_path());
-
             AVDictionary* options = nullptr;
             CASPAR_SCOPE_EXIT { av_dict_free(&options); };
 
             const AVInputFormat* input_format = nullptr;
             auto                 url = build_open_options(filename, cache_mode::prefetch, &options, &input_format);
+
+            // Shared options may override the cache path and keep metadata in a separate directory.
+            for (const auto* name : {"cache_dir", "metadata_dir"}) {
+                auto entry = av_dict_get(options, name, nullptr, 0);
+                if (entry && entry->value[0]) {
+                    boost::filesystem::create_directories(u16(entry->value));
+                }
+            }
 
             AVIOInterruptCB cb{interrupt_cb, this};
             AVIOContext*    io = nullptr;

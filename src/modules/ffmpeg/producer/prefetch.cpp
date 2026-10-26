@@ -159,8 +159,8 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx)
 {
     auto params = ctx.parameters;
 
-    // The channel is only needed for the duration of a frame. Like LOCK, PREFETCH is a global command that
-    // reads the channel itself, so that a locked channel doesn't block it.
+    // The channel is only needed for values in frames. Like LOCK, PREFETCH is a global command that reads the
+    // channel itself, so that a locked channel doesn't block it.
     static const boost::wregex             channel_exp(L"(\\d{1,9})(-\\d+)?");
     boost::wsmatch                         match;
     std::optional<core::video_format_desc> format_desc;
@@ -185,14 +185,20 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx)
 
     auto has_range = contains_param(L"SEEK", params) || contains_param(L"IN", params) ||
                      contains_param(L"LENGTH", params) || contains_param(L"OUT", params);
-    if (has_range && !format_desc) {
-        CASPAR_LOG(error) << L"ffmpeg[" << resolved->path << L"] Cannot prefetch, SEEK, IN, LENGTH and OUT need a "
-                          << L"channel: PREFETCH 1 url ...";
+    std::optional<play_range> range;
+    try {
+        if (has_range) {
+            range = parse_play_range(params, format_desc ? &*format_desc : nullptr);
+        }
+    } catch (user_error& e) {
+        auto msg = boost::get_error_info<msg_info_t>(e);
+        CASPAR_LOG(error) << L"ffmpeg[" << resolved->path << L"] Cannot prefetch, "
+                          << (msg ? u16(*msg) : L"invalid SEEK, IN, LENGTH or OUT");
         return L"403 PREFETCH FAILED\r\n";
     }
 
-    auto strategy = has_range ? create_range_prefetch(u8(resolved->path), parse_play_range(params), *format_desc)
-                              : create_whole_file_prefetch(u8(resolved->path));
+    auto strategy =
+        range ? create_range_prefetch(u8(resolved->path), *range) : create_whole_file_prefetch(u8(resolved->path));
 
     std::lock_guard<std::mutex> lock(instance_mutex);
     if (!instance) {

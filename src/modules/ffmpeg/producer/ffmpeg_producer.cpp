@@ -25,6 +25,8 @@
 
 #include "av_producer.h"
 
+#include "../util/time_param.h"
+
 #include <common/env.h>
 #include <common/os/filesystem.h>
 #include <common/param.h>
@@ -54,6 +56,18 @@ extern "C" {
 namespace caspar { namespace ffmpeg {
 
 using namespace std::chrono_literals;
+
+namespace {
+
+const AVRational TIME_BASE_Q = {1, AV_TIME_BASE};
+
+// The channel's frames as av_producer counts them, i.e. fields when interlaced.
+AVRational frame_time_base(const core::video_format_desc& format_desc)
+{
+    return {format_desc.duration, format_desc.time_scale * format_desc.field_count};
+}
+
+} // namespace
 
 struct ffmpeg_producer : public core::frame_producer
 {
@@ -116,15 +130,34 @@ struct ffmpeg_producer : public core::frame_producer
         return producer_->next_frame(field);
     }
 
+    // AVProducer counts in AV_TIME_BASE units, CALL and the frame counts in frames of the channel.
+    int64_t frames(int64_t time) const { return av_rescale_q(time, TIME_BASE_Q, frame_time_base(format_desc_)); }
+
+    int64_t time(const std::wstring& value) const
+    {
+        if (auto time = parse_time(value)) {
+            return *time;
+        }
+        return av_rescale_q(boost::lexical_cast<int64_t>(value), frame_time_base(format_desc_), TIME_BASE_Q);
+    }
+
+    int64_t start_frames() const { return frames(producer_->start()); }
+
+    int64_t duration_frames() const
+    {
+        const auto duration = producer_->duration();
+        return duration ? frames(*duration) : std::numeric_limits<int64_t>::max();
+    }
+
     std::uint32_t frame_number() const override
     {
-        return static_cast<std::uint32_t>(producer_->time() - producer_->start());
+        return static_cast<std::uint32_t>(frames(producer_->time()) - start_frames());
     }
 
     std::uint32_t nb_frames() const override
     {
         return producer_->loop() ? std::numeric_limits<std::uint32_t>::max()
-                                 : static_cast<std::uint32_t>(producer_->duration());
+                                 : static_cast<std::uint32_t>(duration_frames());
     }
 
     bool is_ready() override { return producer_->is_ready(); }
@@ -147,43 +180,47 @@ struct ffmpeg_producer : public core::frame_producer
             result = std::to_wstring(producer_->loop());
         } else if (boost::iequals(cmd, L"in") || boost::iequals(cmd, L"start")) {
             if (!value.empty()) {
-                producer_->start(boost::lexical_cast<int64_t>(value));
+                producer_->start(time(value));
             }
 
-            result = std::to_wstring(producer_->start());
+            result = std::to_wstring(start_frames());
         } else if (boost::iequals(cmd, L"out")) {
             if (!value.empty()) {
-                producer_->duration(boost::lexical_cast<int64_t>(value) - producer_->start());
+                producer_->duration(time(value) - producer_->start());
             }
 
-            result = std::to_wstring(producer_->start() + producer_->duration());
+            result = std::to_wstring(start_frames() + duration_frames());
         } else if (boost::iequals(cmd, L"length")) {
             if (!value.empty()) {
-                producer_->duration(boost::lexical_cast<std::int64_t>(value));
+                producer_->duration(time(value));
             }
 
-            result = std::to_wstring(producer_->duration());
+            result = std::to_wstring(duration_frames());
         } else if (boost::iequals(cmd, L"seek") && !value.empty()) {
-            int64_t seek;
+            std::optional<int64_t> seek;
             if (boost::iequals(value, L"rel")) {
                 seek = producer_->time();
             } else if (boost::iequals(value, L"in")) {
                 seek = producer_->start();
             } else if (boost::iequals(value, L"out")) {
-                seek = producer_->start() + producer_->duration();
+                if (auto duration = producer_->duration()) {
+                    seek = producer_->start() + *duration;
+                }
             } else if (boost::iequals(value, L"end")) {
                 seek = producer_->duration();
             } else {
-                seek = boost::lexical_cast<int64_t>(value);
+                seek = time(value);
             }
 
-            if (params.size() > 2) {
-                seek += boost::lexical_cast<int64_t>(params.at(2));
+            // Without a duration (e.g. a live stream) there is no OUT or END to seek to.
+            if (seek) {
+                if (params.size() > 2) {
+                    *seek += time(params.at(2));
+                }
+                producer_->seek(*seek);
             }
 
-            producer_->seek(seek);
-
-            result = std::to_wstring(seek);
+            result = seek ? std::to_wstring(frames(*seek)) : std::to_wstring(std::numeric_limits<int64_t>::max());
         } else {
             CASPAR_THROW_EXCEPTION(invalid_argument());
         }
@@ -195,9 +232,9 @@ struct ffmpeg_producer : public core::frame_producer
 
     std::wstring print() const override
     {
-        const int64_t position = std::max(producer_->time() - producer_->start(), INT64_C(0));
-        return L"ffmpeg[" + filename_ + L"|" + std::to_wstring(position) + L"/" +
-               std::to_wstring(producer_->duration()) + L"]";
+        const int64_t position = std::max(frames(producer_->time()) - start_frames(), INT64_C(0));
+        return L"ffmpeg[" + filename_ + L"|" + std::to_wstring(position) + L"/" + std::to_wstring(duration_frames()) +
+               L"]";
     }
 
     std::wstring name() const override { return L"ffmpeg"; }
@@ -316,32 +353,68 @@ std::optional<resolved_path> resolve_path(const std::wstring& name)
     return result;
 }
 
-play_range parse_play_range(const std::vector<std::wstring>& params)
+play_range parse_play_range(const std::vector<std::wstring>& params, const core::video_format_desc* format_desc)
 {
-    auto seek = get_param(L"SEEK", params, static_cast<uint32_t>(0));
-    auto in   = get_param(L"IN", params, seek);
+    struct value
+    {
+        int64_t                 time = 0;
+        std::optional<uint32_t> frames;
+    };
 
-    if (!contains_param(L"SEEK", params)) {
-        // Default to the same when only one is defined
-        seek = in;
-    }
+    // Frames are kept as well, so that ranges given in frames come out exactly as when they were counted in
+    // frames only.
+    auto param = [&](const std::wstring& name) -> std::optional<value> {
+        if (!contains_param(name, params)) {
+            return {};
+        }
+        const auto str = get_param(name, params);
+        try {
+            if (auto time = parse_time(str)) {
+                if (*time < 0) {
+                    throw std::invalid_argument("negative time");
+                }
+                return value{*time};
+            }
+        } catch (...) {
+            CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"Failed to parse param " + name)
+                                                << nested_exception(std::current_exception()));
+        }
+        if (!format_desc) {
+            CASPAR_THROW_EXCEPTION(user_error() << msg_info(name + L" in frames needs a channel"));
+        }
+        const auto frames = get_param(name, params, static_cast<uint32_t>(0));
+        return value{av_rescale_q(frames, frame_time_base(*format_desc), TIME_BASE_Q), frames};
+    };
 
-    auto out = get_param(L"LENGTH", params, std::numeric_limits<uint32_t>::max());
-    if (out < std::numeric_limits<uint32_t>::max() - in)
-        out += in;
-    else
-        out = std::numeric_limits<uint32_t>::max();
-    out = get_param(L"OUT", params, out);
+    const auto seek_param = param(L"SEEK");
+    const auto in_param   = param(L"IN");
+    const auto out        = param(L"OUT");
+    const auto length     = param(L"LENGTH");
+
+    // Default to the same when only one is defined
+    const auto in   = in_param ? *in_param : seek_param ? *seek_param : value{0, 0};
+    const auto seek = seek_param ? *seek_param : in;
+
+    constexpr auto no_out = std::numeric_limits<uint32_t>::max();
 
     play_range range;
-    if (in != 0) {
-        range.start = in;
+    if (in.time != 0) {
+        range.start = in.time;
     }
-    if (seek != 0) {
-        range.seek = seek;
+    if (seek.time != 0) {
+        range.seek = seek.time;
     }
-    if (out != std::numeric_limits<uint32_t>::max()) {
-        range.duration = out - in;
+    // OUT before IN, and the largest frame number, play to the end.
+    if (out && out->frames && in.frames) {
+        if (*out->frames != no_out && *out->frames >= *in.frames) {
+            range.duration = av_rescale_q(*out->frames - *in.frames, frame_time_base(*format_desc), TIME_BASE_Q);
+        }
+    } else if (out) {
+        if (out->time >= in.time) {
+            range.duration = out->time - in.time;
+        }
+    } else if (length && !(length->frames && in.frames && *length->frames >= no_out - *in.frames)) {
+        range.duration = length->time;
     }
     return range;
 }
@@ -361,7 +434,7 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
 
     auto loop = contains_param(L"LOOP", params);
 
-    auto range = parse_play_range(params);
+    auto range = parse_play_range(params, &dependencies.format_desc);
 
     auto filter_str = get_param(L"FILTER", params, L"");
 

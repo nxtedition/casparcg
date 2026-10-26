@@ -21,6 +21,8 @@ set(SOURCES
 	util/audio_resampler.cpp
 	util/audio_resampler.h
 	util/av_assert.h
+	util/time_param.cpp
+	util/time_param.h
 
 	ffmpeg.cpp
 	ffmpeg.h

@@ -4,8 +4,6 @@
 
 #include <common/memory.h>
 
-#include <core/fwd.h>
-
 #include <cstdint>
 #include <string>
 
@@ -43,8 +41,7 @@ void check_size_limit(int64_t bytes, int64_t limit);
 
 spl::shared_ptr<prefetch_strategy> create_whole_file_prefetch(std::string url);
 
-// The part of url that PLAY with the same range on a channel of format_desc reads.
-spl::shared_ptr<prefetch_strategy>
-create_range_prefetch(std::string url, const play_range& range, const core::video_format_desc& format_desc);
+// The part of url that PLAY with the same range reads.
+spl::shared_ptr<prefetch_strategy> create_range_prefetch(std::string url, const play_range& range);
 
 }} // namespace caspar::ffmpeg

@@ -753,8 +753,8 @@ struct AVProducer::Impl
                  graph_,
                  seekable >= 0 && seekable < 2 ? std::optional<bool>(false) : std::optional<bool>(),
                  cache)
-        , start_(start ? av_rescale_q(*start, format_tb_, TIME_BASE_Q) : AV_NOPTS_VALUE)
-        , duration_(duration ? av_rescale_q(*duration, format_tb_, TIME_BASE_Q) : AV_NOPTS_VALUE)
+        , start_(start.value_or(AV_NOPTS_VALUE))
+        , duration_(duration.value_or(AV_NOPTS_VALUE))
         , loop_(loop)
         , afilter_(afilter)
         , vfilter_(vfilter)
@@ -819,7 +819,7 @@ struct AVProducer::Impl
 
         // Seeked on open, or the read thread reads from the start until the first seek. With a partial
         // cache and the source offline, that read fails.
-        const auto firstStart = firstSeek ? av_rescale_q(*firstSeek, format_tb_, TIME_BASE_Q) : start_.load();
+        const auto firstStart = firstSeek ? *firstSeek : start_.load();
         input_.reset(seekable_ && firstStart != AV_NOPTS_VALUE ? std::optional<int64_t>(firstStart) : std::nullopt);
         {
             core::monitor::state streams;
@@ -1091,7 +1091,7 @@ struct AVProducer::Impl
     {
         CASPAR_SCOPE_EXIT { update_state(); };
 
-        seek_ = av_rescale_q(time, format_tb_, TIME_BASE_Q);
+        seek_ = time;
 
         {
             boost::lock_guard<boost::mutex> lock(buffer_mutex_);
@@ -1123,7 +1123,7 @@ struct AVProducer::Impl
     void start(int64_t start)
     {
         CASPAR_SCOPE_EXIT { update_state(); };
-        start_ = av_rescale_q(start, format_tb_, TIME_BASE_Q);
+        start_ = start;
     }
 
     std::optional<int64_t> start() const
@@ -1136,7 +1136,7 @@ struct AVProducer::Impl
     {
         CASPAR_SCOPE_EXIT { update_state(); };
 
-        duration_ = av_rescale_q(duration, format_tb_, TIME_BASE_Q);
+        duration_ = duration;
     }
 
     std::optional<int64_t> duration() const
@@ -1339,9 +1339,17 @@ AVProducer& AVProducer::start(int64_t start)
     return *this;
 }
 
-int64_t AVProducer::time() const { return impl_->time(); }
+int64_t AVProducer::time() const
+{
+    const auto time = impl_->frame_time_;
+    return time != AV_NOPTS_VALUE ? time : 0;
+}
 
-int64_t AVProducer::start() const { return impl_->start().value_or(0); }
+int64_t AVProducer::start() const
+{
+    const auto start = impl_->start_.load();
+    return start != AV_NOPTS_VALUE ? start : 0;
+}
 
 AVProducer& AVProducer::duration(int64_t duration)
 {
@@ -1349,7 +1357,11 @@ AVProducer& AVProducer::duration(int64_t duration)
     return *this;
 }
 
-int64_t AVProducer::duration() const { return impl_->duration().value_or(std::numeric_limits<int64_t>::max()); }
+std::optional<int64_t> AVProducer::duration() const
+{
+    const auto duration = impl_->duration_.load();
+    return duration != AV_NOPTS_VALUE ? std::optional<int64_t>(duration) : std::nullopt;
+}
 
 core::monitor::state AVProducer::state() const
 {

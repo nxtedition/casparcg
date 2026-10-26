@@ -7,8 +7,6 @@
 
 #include <common/env.h>
 
-#include <core/video_format.h>
-
 #include <boost/property_tree/ptree.hpp>
 
 #include <algorithm>
@@ -43,16 +41,13 @@ class range_prefetch : public prefetch_strategy
     std::optional<int64_t> end_;
 
   public:
-    range_prefetch(std::string url, const play_range& range, const core::video_format_desc& format_desc)
+    range_prefetch(std::string url, const play_range& range)
         : url_(std::move(url))
+        , start_(range.start.value_or(0))
+        , seek_(range.seek.value_or(start_))
     {
-        // Frames are converted exactly as av_producer does it.
-        const AVRational format_tb{format_desc.duration, format_desc.time_scale * format_desc.field_count};
-
-        start_ = range.start ? av_rescale_q(*range.start, format_tb, TIME_BASE_Q) : 0;
-        seek_  = range.seek ? av_rescale_q(*range.seek, format_tb, TIME_BASE_Q) : start_;
         if (range.duration) {
-            end_ = start_ + av_rescale_q(*range.duration, format_tb, TIME_BASE_Q);
+            end_ = start_ + *range.duration;
         }
     }
 
@@ -141,10 +136,9 @@ class range_prefetch : public prefetch_strategy
 
 } // namespace
 
-spl::shared_ptr<prefetch_strategy>
-create_range_prefetch(std::string url, const play_range& range, const core::video_format_desc& format_desc)
+spl::shared_ptr<prefetch_strategy> create_range_prefetch(std::string url, const play_range& range)
 {
-    return spl::make_shared<range_prefetch>(std::move(url), range, format_desc);
+    return spl::make_shared<range_prefetch>(std::move(url), range);
 }
 
 }} // namespace caspar::ffmpeg

@@ -105,12 +105,12 @@ std::string build_open_options(const std::string&    filename,
         set_config_options(options, scope);
     }
 
-    if (cache == cache_mode::playback) {
+    if (cache != cache_mode::none) {
         set_config_options(options, L"shared");
-    } else if (cache == cache_mode::prefetch) {
-        // The "shared" scope tunes uninterrupted playback (e.g. ignore_errors). A prefetch must
-        // instead fail loudly unless every block ends up in the cache, so these always win.
-        // Only the cache size limit is shared with playback.
+    }
+    if (cache == cache_mode::prefetch) {
+        // Share cache locations and protocol options with playback, but require every block to
+        // end up in the cache. These prefetch safety options always win over user configuration.
         FF(av_dict_set(options, "ignore_errors", "0", 0));
         FF(av_dict_set(options, "cache_read_only", "0", 0));
         FF(av_dict_set(options, "cache_size_max", std::to_string(prefetch_size_limit()).c_str(), 0));

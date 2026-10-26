@@ -25,6 +25,7 @@
 
 #include <core/fwd.h>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -40,6 +41,16 @@ struct resolved_path
 // Resolves a producer name (e.g. "shared:https://host/clip.mov" or "clip") to the path ffmpeg opens.
 // Empty if the name is not something the ffmpeg producer plays.
 std::optional<resolved_path> resolve_path(const std::wstring& name);
+
+// PLAY's SEEK, IN, LENGTH and OUT, in frames of the channel.
+struct play_range
+{
+    std::optional<int64_t> start;
+    std::optional<int64_t> seek;
+    std::optional<int64_t> duration;
+};
+
+play_range parse_play_range(const std::vector<std::wstring>& params);
 
 spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer_dependencies& dependencies,
                                                       const std::vector<std::wstring>&         params);

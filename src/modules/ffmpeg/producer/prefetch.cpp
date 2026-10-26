@@ -2,6 +2,7 @@
 
 #include "av_input.h"
 #include "ffmpeg_producer.h"
+#include "prefetch_strategy.h"
 
 #include "../util/av_assert.h"
 #include "../util/av_util.h"
@@ -9,7 +10,6 @@
 #include <common/env.h>
 #include <common/log.h>
 #include <common/os/thread.h>
-#include <common/scope_exit.h>
 #include <common/timer.h>
 #include <common/utf.h>
 
@@ -24,6 +24,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -40,8 +41,8 @@ class prefetcher
 {
     std::mutex               mutex_;
     std::condition_variable  cond_;
-    std::deque<std::string>  queue_;
-    std::set<std::string>    pending_; // queued or running
+    std::deque<spl::shared_ptr<prefetch_strategy>> queue_;
+    std::set<std::string>                          pending_; // queued or running
     std::vector<std::thread> workers_;
     std::atomic<bool>        abort_{false};
 
@@ -58,15 +59,15 @@ class prefetcher
         }
     }
 
-    // Returns false if the url is already queued or running.
-    bool enqueue(const std::string& filename)
+    // Returns false if the same prefetch is already queued or running.
+    bool enqueue(spl::shared_ptr<prefetch_strategy> strategy)
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
-        if (!pending_.insert(filename).second) {
+        if (!pending_.insert(strategy->describe()).second) {
             return false;
         }
-        queue_.push_back(filename);
+        queue_.push_back(std::move(strategy));
 
         // Workers are started lazily so that servers which never prefetch don't pay for them.
         auto concurrency =
@@ -87,99 +88,57 @@ class prefetcher
         set_thread_name(L"[ffmpeg::prefetch]");
 
         while (true) {
-            std::string filename;
+            std::shared_ptr<prefetch_strategy> strategy;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 cond_.wait(lock, [&] { return abort_ || !queue_.empty(); });
                 if (abort_) {
                     return;
                 }
-                filename = std::move(queue_.front());
+                strategy = std::move(queue_.front());
                 queue_.pop_front();
             }
 
-            prefetch(filename);
+            prefetch(*strategy);
 
             std::lock_guard<std::mutex> lock(mutex_);
-            pending_.erase(filename);
+            pending_.erase(strategy->describe());
         }
     }
 
-    void prefetch(const std::string& filename)
+    void prefetch(prefetch_strategy& strategy)
     {
-        caspar::timer timer;
-        int64_t       total = 0;
+        caspar::timer     timer;
+        prefetch_progress progress;
+        const auto        name = strategy.describe();
 
         try {
-            CASPAR_LOG(info) << "ffmpeg[" << filename << "] Prefetch started";
+            CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch started";
 
             boost::filesystem::create_directories(cache_path());
 
-            AVDictionary* options = nullptr;
-            CASPAR_SCOPE_EXIT { av_dict_free(&options); };
+            strategy.fill(AVIOInterruptCB{interrupt_cb, this}, progress);
 
-            const AVInputFormat* input_format = nullptr;
-            auto                 url = build_open_options(filename, cache_mode::prefetch, &options, &input_format);
-
-            AVIOInterruptCB cb{interrupt_cb, this};
-            AVIOContext*    io = nullptr;
-            FF(avio_open2(&io, url.c_str(), AVIO_FLAG_READ, &cb, &options));
-            CASPAR_SCOPE_EXIT { avio_closep(&io); };
-
-            for (auto& p : to_map(&options)) {
-                CASPAR_LOG(warning) << "ffmpeg[" << filename << "] Prefetch unused option " << p.first << "="
-                                    << p.second;
+            if (progress.size > progress.bytes) {
+                CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch done (" << progress.bytes << " of "
+                                 << progress.size << " bytes in " << timer.elapsed() << "s)";
+            } else {
+                CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch done (" << progress.bytes << " bytes in "
+                                 << timer.elapsed() << "s)";
             }
-
-            // Past cache_size_max shared stops caching and would only download the rest for nothing.
-            auto limit     = prefetch_size_limit();
-            auto too_large = [&](int64_t bytes) {
-                if (limit > 0 && bytes > limit) {
-                    CASPAR_LOG(error) << "ffmpeg[" << filename << "] Prefetch failed: larger than cache_size_max ("
-                                      << limit << " bytes)";
-                    return true;
-                }
-                return false;
-            };
-
-            auto size = avio_size(io);
-            if (too_large(size)) {
-                return;
-            }
-
-            // Reading through the shared protocol is what fills the cache, so the data itself is dropped.
-            std::vector<unsigned char> buf(1 << 20);
-            while (true) {
-                auto ret = avio_read(io, buf.data(), static_cast<int>(buf.size()));
-                if (ret == AVERROR_EOF || ret == 0) {
-                    break;
-                }
-                FF_RET(ret, "avio_read");
-                total += ret;
-                if (too_large(total)) {
-                    return;
-                }
-            }
-
-            if (size > 0 && total != size) {
-                CASPAR_LOG(error) << "ffmpeg[" << filename << "] Prefetch failed: read " << total << " of " << size
-                                  << " bytes";
-                return;
-            }
-
-            CASPAR_LOG(info) << "ffmpeg[" << filename << "] Prefetch done (" << total << " bytes in " << timer.elapsed()
-                             << "s)";
         } catch (ffmpeg_error_t& e) {
             auto err = boost::get_error_info<ffmpeg_errn_info>(e);
             if (err && *err == AVERROR_EXIT) {
-                CASPAR_LOG(info) << "ffmpeg[" << filename << "] Prefetch aborted";
+                CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch aborted";
             } else {
-                CASPAR_LOG(error) << "ffmpeg[" << filename << "] Prefetch failed after " << total
+                CASPAR_LOG(error) << "ffmpeg[" << name << "] Prefetch failed after " << progress.bytes
                                   << " bytes: " << (err ? error_string(*err) : std::string("unknown error"));
             }
+        } catch (std::runtime_error& e) {
+            CASPAR_LOG(error) << "ffmpeg[" << name << "] Prefetch failed: " << e.what();
         } catch (...) {
             CASPAR_LOG_CURRENT_EXCEPTION();
-            CASPAR_LOG(error) << "ffmpeg[" << filename << "] Prefetch failed";
+            CASPAR_LOG(error) << "ffmpeg[" << name << "] Prefetch failed";
         }
     }
 };
@@ -204,11 +163,18 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx)
     if (!instance) {
         instance = std::make_unique<prefetcher>();
     }
-    if (!instance->enqueue(u8(resolved->path))) {
+    if (!instance->enqueue(create_whole_file_prefetch(u8(resolved->path)))) {
         CASPAR_LOG(info) << L"ffmpeg[" << resolved->path << L"] Prefetch already in progress";
     }
 
     return L"202 PREFETCH OK\r\n";
+}
+
+void check_size_limit(int64_t bytes, int64_t limit)
+{
+    if (limit > 0 && bytes > limit) {
+        throw std::runtime_error("larger than cache_size_max (" + std::to_string(limit) + " bytes)");
+    }
 }
 
 void prefetch_uninit()

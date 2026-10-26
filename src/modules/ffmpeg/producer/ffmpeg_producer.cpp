@@ -316,21 +316,8 @@ std::optional<resolved_path> resolve_path(const std::wstring& name)
     return result;
 }
 
-spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer_dependencies& dependencies,
-                                                      const std::vector<std::wstring>&         params)
+play_range parse_play_range(const std::vector<std::wstring>& params)
 {
-    auto name     = params.at(0);
-    auto resolved = resolve_path(name);
-    if (!resolved) {
-        return core::frame_producer::empty();
-    }
-    auto path  = resolved->path;
-    bool cache = resolved->cache;
-
-    auto seekable = get_param(L"SEEKABLE", params, static_cast<int>(2));
-
-    auto loop = contains_param(L"LOOP", params);
-
     auto seek = get_param(L"SEEK", params, static_cast<uint32_t>(0));
     auto in   = get_param(L"IN", params, seek);
 
@@ -346,24 +333,39 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
         out = std::numeric_limits<uint32_t>::max();
     out = get_param(L"OUT", params, out);
 
+    play_range range;
+    if (in != 0) {
+        range.start = in;
+    }
+    if (seek != 0) {
+        range.seek = seek;
+    }
+    if (out != std::numeric_limits<uint32_t>::max()) {
+        range.duration = out - in;
+    }
+    return range;
+}
+
+spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer_dependencies& dependencies,
+                                                      const std::vector<std::wstring>&         params)
+{
+    auto name     = params.at(0);
+    auto resolved = resolve_path(name);
+    if (!resolved) {
+        return core::frame_producer::empty();
+    }
+    auto path  = resolved->path;
+    bool cache = resolved->cache;
+
+    auto seekable = get_param(L"SEEKABLE", params, static_cast<int>(2));
+
+    auto loop = contains_param(L"LOOP", params);
+
+    auto range = parse_play_range(params);
+
     auto filter_str = get_param(L"FILTER", params, L"");
 
     auto scale_mode = core::scale_mode_from_string(get_param(L"SCALE_MODE", params, L"STRETCH"));
-
-    std::optional<std::int64_t> start;
-    std::optional<std::int64_t> seek2;
-    std::optional<std::int64_t> duration;
-
-    if (in != 0) {
-        start = in;
-    }
-    if (seek != 0) {
-        seek2 = seek;
-    }
-
-    if (out != std::numeric_limits<uint32_t>::max()) {
-        duration = out - in;
-    }
 
     auto vfilter = get_param(L"VF", params, filter_str);
     auto afilter = get_param(L"AF", params, filter_str);
@@ -375,9 +377,9 @@ spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer
                                                  path,
                                                  vfilter,
                                                  afilter,
-                                                 start,
-                                                 seek2,
-                                                 duration,
+                                                 range.start,
+                                                 range.seek,
+                                                 range.duration,
                                                  loop,
                                                  seekable,
                                                  scale_mode,

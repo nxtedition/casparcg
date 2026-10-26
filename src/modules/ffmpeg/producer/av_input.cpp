@@ -152,7 +152,7 @@ Input::Input(const std::string&                  filename,
     graph_->set_color("seek", diagnostics::color(1.0f, 0.5f, 0.0f));
     graph_->set_color("input", diagnostics::color(0.7f, 0.4f, 0.4f));
 
-    buffer_.set_capacity(256);
+    buffer_.set_capacity(input_buffer_capacity);
     thread_ = boost::thread([this] {
         try {
             set_thread_name(L"[ffmpeg::av_producer::Input]");
@@ -287,33 +287,40 @@ void Input::reset()
     internal_reset();
 }
 
-std::shared_ptr<AVFormatContext> Input::open()
+std::shared_ptr<AVFormatContext> open_input(const std::string&     filename,
+                                            cache_mode             cache,
+                                            std::optional<bool>    seekable,
+                                            const AVIOInterruptCB& interrupt)
 {
     AVDictionary* options = nullptr;
     CASPAR_SCOPE_EXIT { av_dict_free(&options); };
 
-    if (seekable_) {
-        CASPAR_LOG(debug) << "av_input[" + filename_ + "] Disabled seeking";
-        FF(av_dict_set(&options, "seekable", *seekable_ ? "1" : "0", 0));
+    if (seekable) {
+        CASPAR_LOG(debug) << "av_input[" + filename + "] Disabled seeking";
+        FF(av_dict_set(&options, "seekable", *seekable ? "1" : "0", 0));
     }
 
-    // Built per call, since internal_reset() runs again on seek/reset.
     const AVInputFormat* input_format = nullptr;
-    auto url = build_open_options(filename_, cache_ ? cache_mode::playback : cache_mode::none, &options, &input_format);
+    auto                 url          = build_open_options(filename, cache, &options, &input_format);
 
-    AVFormatContext* ic             = avformat_alloc_context();
-    ic->interrupt_callback.callback = Input::interrupt_cb;
-    ic->interrupt_callback.opaque   = this;
+    AVFormatContext* ic    = avformat_alloc_context();
+    ic->interrupt_callback = interrupt;
 
     FF(avformat_open_input(&ic, url.c_str(), input_format, &options));
     auto ic2 = std::shared_ptr<AVFormatContext>(ic, [](AVFormatContext* ctx) { avformat_close_input(&ctx); });
 
     for (auto& p : to_map(&options)) {
-        CASPAR_LOG(warning) << "av_input[" + filename_ + "]" << " Unused option " << p.first << "=" << p.second;
+        CASPAR_LOG(warning) << "av_input[" + filename + "]" << " Unused option " << p.first << "=" << p.second;
     }
 
     FF(avformat_find_stream_info(ic2.get(), nullptr));
     return ic2;
+}
+
+std::shared_ptr<AVFormatContext> Input::open()
+{
+    return open_input(
+        filename_, cache_ ? cache_mode::playback : cache_mode::none, seekable_, AVIOInterruptCB{Input::interrupt_cb, this});
 }
 
 void Input::internal_reset()

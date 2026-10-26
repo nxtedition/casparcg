@@ -23,6 +23,7 @@ struct AVPacket;
 struct AVFormatContext;
 struct AVDictionary;
 struct AVInputFormat;
+struct AVIOInterruptCB;
 
 namespace caspar { namespace ffmpeg {
 
@@ -44,6 +45,15 @@ std::string build_open_options(const std::string&    filename,
 int64_t prefetch_size_limit();
 
 std::wstring cache_path();
+
+// Opens filename the way the producer does, including avformat_find_stream_info.
+std::shared_ptr<AVFormatContext> open_input(const std::string&     filename,
+                                            cache_mode             cache,
+                                            std::optional<bool>    seekable,
+                                            const AVIOInterruptCB& interrupt);
+
+// How many packets Input reads ahead of the decoders.
+constexpr int input_buffer_capacity = 256;
 
 class Input
 {

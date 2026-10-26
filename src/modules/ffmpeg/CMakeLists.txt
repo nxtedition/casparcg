@@ -10,6 +10,8 @@ set(SOURCES
 	producer/ffmpeg_producer.h
 	producer/prefetch.cpp
 	producer/prefetch.h
+	producer/prefetch_strategy.h
+	producer/prefetch_whole_file.cpp
 	consumer/ffmpeg_consumer.cpp
 	consumer/ffmpeg_consumer.h
 

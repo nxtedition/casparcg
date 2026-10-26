@@ -67,9 +67,19 @@ struct output::impl
     {
         remove(index);
 
-        consumer->initialize(format_desc_, channel_info_, index);
+        video_format_desc format_desc;
+        {
+            std::lock_guard<std::mutex> lock(consumers_mutex_);
+            format_desc = format_desc_;
+        }
+
+        consumer->initialize(format_desc, channel_info_, index);
 
         std::lock_guard<std::mutex> lock(consumers_mutex_);
+        // The channel may have changed format while the consumer was initializing.
+        if (format_desc_ != format_desc) {
+            consumer->initialize(format_desc_, channel_info_, index);
+        }
         consumers_.emplace(index, std::move(consumer));
     }
 

@@ -133,6 +133,22 @@ int64_t prefetch_size_limit()
     return entry ? std::max<int64_t>(0, static_cast<int64_t>(av_strtod(entry->value, nullptr))) : 0;
 }
 
+void create_cache_directories()
+{
+    AVDictionary* shared = nullptr;
+    CASPAR_SCOPE_EXIT { av_dict_free(&shared); };
+    FF(av_dict_set(&shared, "cache_dir", u8(cache_path()).c_str(), 0));
+    set_config_options(&shared, L"default");
+    set_config_options(&shared, L"shared");
+
+    for (const auto* name : {"cache_dir", "metadata_dir"}) {
+        auto entry = av_dict_get(shared, name, nullptr, 0);
+        if (entry && entry->value[0]) {
+            boost::filesystem::create_directories(u16(entry->value));
+        }
+    }
+}
+
 std::wstring cache_path()
 {
     return env::properties().get<std::wstring>(L"configuration.ffmpeg.producer.cache.path", L"./ffmpeg-cache");
@@ -326,8 +342,10 @@ std::shared_ptr<AVFormatContext> open_input(const std::string&     filename,
 
 std::shared_ptr<AVFormatContext> Input::open()
 {
-    return open_input(
-        filename_, cache_ ? cache_mode::playback : cache_mode::none, seekable_, AVIOInterruptCB{Input::interrupt_cb, this});
+    return open_input(filename_,
+                      cache_ ? cache_mode::playback : cache_mode::none,
+                      seekable_,
+                      AVIOInterruptCB{Input::interrupt_cb, this});
 }
 
 void Input::internal_reset()

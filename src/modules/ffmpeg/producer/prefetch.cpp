@@ -122,8 +122,7 @@ class prefetcher
         try {
             CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch started";
 
-            boost::filesystem::create_directories(cache_path());
-
+            create_cache_directories();
             strategy.fill(AVIOInterruptCB{interrupt_cb, this}, progress);
 
             if (progress.size > progress.bytes) {

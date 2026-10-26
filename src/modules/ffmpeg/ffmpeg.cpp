@@ -116,6 +116,8 @@ void init(const core::module_dependencies& dependencies)
 
     dependencies.producer_registry->register_producer_factory(L"FFmpeg Producer", create_producer);
 
+    // Not a channel command, see prefetch_command. A channel command named PREFETCH would take over
+    // "PREFETCH 1 url".
     dependencies.command_repository->register_command(L"Media Commands", L"PREFETCH", prefetch_command, 1);
 }
 

@@ -10,12 +10,18 @@
 #include <common/env.h>
 #include <common/log.h>
 #include <common/os/thread.h>
+#include <common/param.h>
 #include <common/timer.h>
 #include <common/utf.h>
+
+#include <core/producer/stage.h>
+#include <core/video_channel.h>
+#include <core/video_format.h>
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <boost/regex.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -23,6 +29,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -39,12 +46,12 @@ namespace {
 
 class prefetcher
 {
-    std::mutex               mutex_;
-    std::condition_variable  cond_;
+    std::mutex                                     mutex_;
+    std::condition_variable                        cond_;
     std::deque<spl::shared_ptr<prefetch_strategy>> queue_;
     std::set<std::string>                          pending_; // queued or running
-    std::vector<std::thread> workers_;
-    std::atomic<bool>        abort_{false};
+    std::vector<std::thread>                       workers_;
+    std::atomic<bool>                              abort_{false};
 
   public:
     ~prefetcher()
@@ -150,21 +157,49 @@ std::unique_ptr<prefetcher> instance;
 
 std::wstring prefetch_command(protocol::amcp::command_context& ctx)
 {
-    auto resolved = resolve_path(ctx.parameters.at(0));
+    auto params = ctx.parameters;
+
+    // The channel is only needed for the duration of a frame. Like LOCK, PREFETCH is a global command that
+    // reads the channel itself, so that a locked channel doesn't block it.
+    static const boost::wregex             channel_exp(L"(\\d{1,9})(-\\d+)?");
+    boost::wsmatch                         match;
+    std::optional<core::video_format_desc> format_desc;
+    if (params.size() > 1 && boost::regex_match(params.at(0), match, channel_exp)) {
+        auto channel = std::stoi(match[1].str());
+        if (channel < 1 || channel > static_cast<int>(ctx.channels->size())) {
+            CASPAR_LOG(error) << L"PREFETCH: no channel " << params.at(0);
+            return L"403 PREFETCH FAILED\r\n";
+        }
+        format_desc = ctx.channels->at(channel - 1).raw_channel->stage()->video_format_desc();
+        params.erase(params.begin());
+    }
+
+    auto resolved = resolve_path(params.at(0));
 
     // Local files have nothing to cache, and only real protocols go through the shared protocol.
     if (!resolved || !boost::contains(resolved->path, L"://") ||
         avio_find_protocol_name(u8(resolved->path).c_str()) == nullptr) {
-        CASPAR_LOG(error) << L"ffmpeg[" << ctx.parameters.at(0) << L"] Cannot prefetch, not a supported url";
+        CASPAR_LOG(error) << L"ffmpeg[" << params.at(0) << L"] Cannot prefetch, not a supported url";
         return L"403 PREFETCH FAILED\r\n";
     }
+
+    auto has_range = contains_param(L"SEEK", params) || contains_param(L"IN", params) ||
+                     contains_param(L"LENGTH", params) || contains_param(L"OUT", params);
+    if (has_range && !format_desc) {
+        CASPAR_LOG(error) << L"ffmpeg[" << resolved->path << L"] Cannot prefetch, SEEK, IN, LENGTH and OUT need a "
+                          << L"channel: PREFETCH 1 url ...";
+        return L"403 PREFETCH FAILED\r\n";
+    }
+
+    auto strategy = has_range ? create_range_prefetch(u8(resolved->path), parse_play_range(params), *format_desc)
+                              : create_whole_file_prefetch(u8(resolved->path));
 
     std::lock_guard<std::mutex> lock(instance_mutex);
     if (!instance) {
         instance = std::make_unique<prefetcher>();
     }
-    if (!instance->enqueue(create_whole_file_prefetch(u8(resolved->path)))) {
-        CASPAR_LOG(info) << L"ffmpeg[" << resolved->path << L"] Prefetch already in progress";
+    if (!instance->enqueue(strategy)) {
+        CASPAR_LOG(info) << L"ffmpeg[" << u16(strategy->describe()) << L"] Prefetch already in progress";
     }
 
     return L"202 PREFETCH OK\r\n";

@@ -10,6 +10,9 @@ set(SOURCES
 	producer/ffmpeg_producer.h
 	producer/prefetch.cpp
 	producer/prefetch.h
+	producer/prefetch_range.cpp
+	producer/prefetch_strategy.h
+	producer/prefetch_whole_file.cpp
 	consumer/ffmpeg_consumer.cpp
 	consumer/ffmpeg_consumer.h
 
@@ -18,6 +21,8 @@ set(SOURCES
 	util/audio_resampler.cpp
 	util/audio_resampler.h
 	util/av_assert.h
+	util/time_param.cpp
+	util/time_param.h
 
 	ffmpeg.cpp
 	ffmpeg.h

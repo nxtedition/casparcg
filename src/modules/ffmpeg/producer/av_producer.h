@@ -12,6 +12,7 @@
 
 namespace caspar { namespace ffmpeg {
 
+// Times are in AV_TIME_BASE units, relative to the start of the clip.
 class AVProducer
 {
   public:
@@ -42,8 +43,8 @@ class AVProducer
     AVProducer& start(int64_t start);
     int64_t     start() const;
 
-    AVProducer& duration(int64_t duration);
-    int64_t     duration() const;
+    AVProducer&            duration(int64_t duration);
+    std::optional<int64_t> duration() const;
 
     caspar::core::monitor::state state() const;
 

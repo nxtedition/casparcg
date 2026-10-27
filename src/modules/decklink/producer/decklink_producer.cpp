@@ -489,6 +489,7 @@ class decklink_producer : public IDeckLinkInputCallback
     mutable std::mutex                                         buffer_mutex_;
 
     std::exception_ptr exception_;
+    std::mutex         exception_mutex_;
 
     com_ptr<IDeckLinkDisplayMode> mode_;
 
@@ -642,6 +643,7 @@ class decklink_producer : public IDeckLinkInputCallback
             }
             return S_OK;
         } catch (...) {
+            std::lock_guard<std::mutex> lock(exception_mutex_);
             exception_ = std::current_exception();
             return E_FAIL;
         }
@@ -836,6 +838,7 @@ class decklink_producer : public IDeckLinkInputCallback
                 boost::range::rotate(audio_cadence_, std::end(audio_cadence_) - 1);
             }
         } catch (...) {
+            std::lock_guard<std::mutex> lock(exception_mutex_);
             exception_ = std::current_exception();
             return E_FAIL;
         }
@@ -845,8 +848,11 @@ class decklink_producer : public IDeckLinkInputCallback
 
     core::draw_frame get_frame(const core::video_field field, bool use_last_frame)
     {
-        if (exception_ != nullptr) {
-            std::rethrow_exception(exception_);
+        {
+            std::lock_guard<std::mutex> lock(exception_mutex_);
+            if (exception_ != nullptr) {
+                std::rethrow_exception(exception_);
+            }
         }
 
         core::draw_frame frame;

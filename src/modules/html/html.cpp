@@ -156,6 +156,7 @@ class renderer_application
             boost::remove_if(contexts_, [&](const CefRefPtr<CefV8Context>& c) { return c->IsSame(context); });
 
         if (removed != contexts_.end()) {
+            contexts_.erase(removed, contexts_.end());
             caspar_log(browser,
                        boost::log::trivial::trace,
                        "context for frame " + frame->GetIdentifier().ToString() + " released");

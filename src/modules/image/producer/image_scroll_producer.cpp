@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 
@@ -379,13 +380,15 @@ struct image_scroll_producer : public core::frame_producer
 
     uint32_t nb_frames() const override
     {
-        if (width_ == format_desc_.width) {
-            auto length = (height_ + format_desc_.height * 2);
-            return static_cast<uint32_t>(length / std::abs(speed_.fetch())); // + length % std::abs(delta_));
-        } else {
-            auto length = (width_ + format_desc_.width * 2);
-            return static_cast<uint32_t>(length / std::abs(speed_.fetch())); // + length % std::abs(delta_));
-        }
+        auto length =
+            width_ == format_desc_.width ? height_ + format_desc_.height * 2 : width_ + format_desc_.width * 2;
+        auto frames = length / std::abs(speed_.fetch());
+
+        // A stopped (SPEED 0) scroll never ends, and the cast below is undefined for out of range values
+        if (!(frames < std::numeric_limits<uint32_t>::max()))
+            return std::numeric_limits<uint32_t>::max();
+
+        return static_cast<uint32_t>(frames);
     }
 
     core::monitor::state state() const override { return state_; }

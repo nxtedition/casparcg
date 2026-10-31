@@ -514,9 +514,16 @@ class html_client
                      const CefString&      errorText,
                      const CefString&      failedUrl) override
     {
-        not_found_ = true;
         CASPAR_LOG(warning) << "[html_producer] " << errorText.ToString() << " while loading url: \""
                             << failedUrl.ToString() << "\"";
+
+        // A failing iframe or a navigation replaced by another one (ERR_ABORTED, e.g. a reload
+        // while loading) doesn't mean the page failed to load.
+        if (!frame->IsMain() || errorCode == ERR_ABORTED) {
+            return;
+        }
+
+        not_found_ = true;
 
         // Stop producing if the page fails to load
         {

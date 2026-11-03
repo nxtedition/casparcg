@@ -28,6 +28,8 @@ class prefetch_strategy
 
     prefetch_strategy(const prefetch_strategy&) = delete;
 
+    virtual const std::string& url() const = 0;
+
     // The url and the part of it to prefetch. Identical requests are only run once.
     virtual std::string describe() const = 0;
 

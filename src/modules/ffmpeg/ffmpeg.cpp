@@ -121,6 +121,7 @@ void init(const core::module_dependencies& dependencies)
     dependencies.command_repository->register_command(L"Media Commands", L"PREFETCH", prefetch_command, 1);
     dependencies.command_repository->register_command(
         L"Media Commands", L"PREFETCH CANCEL", prefetch_cancel_command, 1);
+    dependencies.command_repository->register_command(L"Media Commands", L"PREFETCH LIST", prefetch_list_command, 0);
 }
 
 void uninit()

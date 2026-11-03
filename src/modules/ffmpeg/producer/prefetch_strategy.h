@@ -4,6 +4,7 @@
 
 #include <common/memory.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -11,10 +12,11 @@ struct AVIOInterruptCB;
 
 namespace caspar { namespace ffmpeg {
 
+// Atomic, since PREFETCH LIST reads it while a worker writes it.
 struct prefetch_progress
 {
-    int64_t bytes = 0;
-    int64_t size  = -1; // of the whole resource, if known
+    std::atomic<int64_t> bytes{0};
+    std::atomic<int64_t> size{-1}; // of the whole resource, if known
 };
 
 class prefetch_strategy

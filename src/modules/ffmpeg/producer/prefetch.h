@@ -18,6 +18,10 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx);
 // prefetch with that range, or without a range all prefetches of url. What's cached stays cached.
 std::wstring prefetch_cancel_command(protocol::amcp::command_context& ctx);
 
+// PREFETCH LIST: a line per queued or running prefetch, "RUNNING|QUEUED priority bytes size key", running
+// first, then in the order they will run. size is -1 until known.
+std::wstring prefetch_list_command(protocol::amcp::command_context& ctx);
+
 void prefetch_uninit();
 
 }} // namespace caspar::ffmpeg

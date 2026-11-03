@@ -26,11 +26,11 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
-#include <deque>
+#include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -46,14 +46,36 @@ namespace {
 
 class prefetcher
 {
-    std::mutex                                     mutex_;
-    std::condition_variable                        cond_;
-    std::deque<spl::shared_ptr<prefetch_strategy>> queue_;
-    std::set<std::string>                          pending_; // queued or running
-    std::vector<std::thread>                       workers_;
-    std::atomic<bool>                              abort_{false};
+    struct job
+    {
+        spl::shared_ptr<prefetch_strategy> strategy;
+        std::string                        key; // strategy->describe()
+        int                                priority;
+        uint64_t                           seq;
+    };
+
+    std::mutex                                  mutex_;
+    std::condition_variable                     cond_;
+    std::vector<std::shared_ptr<job>>           queue_;
+    std::map<std::string, std::shared_ptr<job>> pending_; // queued or running, by key
+    std::vector<std::thread>                    workers_;
+    std::atomic<bool>                           abort_{false};
+    uint64_t                                    next_seq_ = 0;
+
+    // Higher priority first, then in the order they were queued.
+    static bool runs_before(const std::shared_ptr<job>& a, const std::shared_ptr<job>& b)
+    {
+        return a->priority != b->priority ? a->priority > b->priority : a->seq < b->seq;
+    }
 
   public:
+    enum class enqueue_result
+    {
+        queued,
+        reprioritised,
+        already_pending,
+    };
+
     ~prefetcher()
     {
         {
@@ -66,15 +88,24 @@ class prefetcher
         }
     }
 
-    // Returns false if the same prefetch is already queued or running.
-    bool enqueue(spl::shared_ptr<prefetch_strategy> strategy)
+    enqueue_result enqueue(spl::shared_ptr<prefetch_strategy> strategy, int priority)
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
-        if (!pending_.insert(strategy->describe()).second) {
-            return false;
+        auto key = strategy->describe();
+        auto it  = pending_.find(key);
+        if (it != pending_.end()) {
+            auto& existing = it->second;
+            if (existing->priority == priority || std::find(queue_.begin(), queue_.end(), existing) == queue_.end()) {
+                return enqueue_result::already_pending;
+            }
+            existing->priority = priority;
+            return enqueue_result::reprioritised;
         }
-        queue_.push_back(std::move(strategy));
+
+        auto j = std::make_shared<job>(job{std::move(strategy), key, priority, next_seq_++});
+        pending_.emplace(std::move(key), j);
+        queue_.push_back(std::move(j));
 
         // Workers are started lazily so that servers which never prefetch don't pay for them.
         auto concurrency =
@@ -84,7 +115,7 @@ class prefetcher
         }
 
         cond_.notify_one();
-        return true;
+        return enqueue_result::queued;
     }
 
   private:
@@ -95,21 +126,22 @@ class prefetcher
         set_thread_name(L"[ffmpeg::prefetch]");
 
         while (true) {
-            std::shared_ptr<prefetch_strategy> strategy;
+            std::shared_ptr<job> j;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 cond_.wait(lock, [&] { return abort_ || !queue_.empty(); });
                 if (abort_) {
                     return;
                 }
-                strategy = std::move(queue_.front());
-                queue_.pop_front();
+                auto next = std::min_element(queue_.begin(), queue_.end(), runs_before);
+                j         = std::move(*next);
+                queue_.erase(next);
             }
 
-            prefetch(*strategy);
+            prefetch(*j->strategy);
 
             std::lock_guard<std::mutex> lock(mutex_);
-            pending_.erase(strategy->describe());
+            pending_.erase(j->key);
         }
     }
 
@@ -152,9 +184,16 @@ class prefetcher
 std::mutex                  instance_mutex;
 std::unique_ptr<prefetcher> instance;
 
-} // namespace
+struct prefetch_request
+{
+    spl::shared_ptr<prefetch_strategy> strategy;
+    bool                               has_range;
+    int                                priority;
+};
 
-std::wstring prefetch_command(protocol::amcp::command_context& ctx)
+// [channel[-layer]] url [SEEK n] [IN n] [LENGTH n] [OUT n] [PRIORITY n], shared by the PREFETCH commands. Logs
+// and returns nothing if it's invalid.
+std::optional<prefetch_request> parse_request(const std::wstring& command, protocol::amcp::command_context& ctx)
 {
     auto params = ctx.parameters;
 
@@ -166,8 +205,8 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx)
     if (params.size() > 1 && boost::regex_match(params.at(0), match, channel_exp)) {
         auto channel = std::stoi(match[1].str());
         if (channel < 1 || channel > static_cast<int>(ctx.channels->size())) {
-            CASPAR_LOG(error) << L"PREFETCH: no channel " << params.at(0);
-            return L"403 PREFETCH FAILED\r\n";
+            CASPAR_LOG(error) << command << L": no channel " << params.at(0);
+            return {};
         }
         format_desc = ctx.channels->at(channel - 1).raw_channel->stage()->video_format_desc();
         params.erase(params.begin());
@@ -178,33 +217,54 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx)
     // Local files have nothing to cache, and only real protocols go through the shared protocol.
     if (!resolved || !boost::contains(resolved->path, L"://") ||
         avio_find_protocol_name(u8(resolved->path).c_str()) == nullptr) {
-        CASPAR_LOG(error) << L"ffmpeg[" << params.at(0) << L"] Cannot prefetch, not a supported url";
-        return L"403 PREFETCH FAILED\r\n";
+        CASPAR_LOG(error) << L"ffmpeg[" << params.at(0) << L"] " << command << L": not a supported url";
+        return {};
     }
 
     auto has_range = contains_param(L"SEEK", params) || contains_param(L"IN", params) ||
                      contains_param(L"LENGTH", params) || contains_param(L"OUT", params);
     std::optional<play_range> range;
+    int                       priority = 0;
     try {
         if (has_range) {
             range = parse_play_range(params, format_desc ? &*format_desc : nullptr);
         }
+        priority = get_param(L"PRIORITY", params, 0);
     } catch (user_error& e) {
         auto msg = boost::get_error_info<msg_info_t>(e);
-        CASPAR_LOG(error) << L"ffmpeg[" << resolved->path << L"] Cannot prefetch, "
-                          << (msg ? u16(*msg) : L"invalid SEEK, IN, LENGTH or OUT");
-        return L"403 PREFETCH FAILED\r\n";
+        CASPAR_LOG(error) << L"ffmpeg[" << resolved->path << L"] " << command << L": "
+                          << (msg ? u16(*msg) : L"invalid SEEK, IN, LENGTH, OUT or PRIORITY");
+        return {};
     }
 
-    auto strategy =
-        range ? create_range_prefetch(u8(resolved->path), *range) : create_whole_file_prefetch(u8(resolved->path));
+    auto url = u8(resolved->path);
+    return prefetch_request{
+        range ? create_range_prefetch(url, *range) : create_whole_file_prefetch(url), has_range, priority};
+}
+
+} // namespace
+
+std::wstring prefetch_command(protocol::amcp::command_context& ctx)
+{
+    auto request = parse_request(L"PREFETCH", ctx);
+    if (!request) {
+        return L"403 PREFETCH FAILED\r\n";
+    }
 
     std::lock_guard<std::mutex> lock(instance_mutex);
     if (!instance) {
         instance = std::make_unique<prefetcher>();
     }
-    if (!instance->enqueue(strategy)) {
-        CASPAR_LOG(info) << L"ffmpeg[" << u16(strategy->describe()) << L"] Prefetch already in progress";
+    const auto name = u16(request->strategy->describe());
+    switch (instance->enqueue(request->strategy, request->priority)) {
+        case prefetcher::enqueue_result::queued:
+            break;
+        case prefetcher::enqueue_result::reprioritised:
+            CASPAR_LOG(info) << L"ffmpeg[" << name << L"] Prefetch moved to priority " << request->priority;
+            break;
+        case prefetcher::enqueue_result::already_pending:
+            CASPAR_LOG(info) << L"ffmpeg[" << name << L"] Prefetch already in progress";
+            break;
     }
 
     return L"202 PREFETCH OK\r\n";

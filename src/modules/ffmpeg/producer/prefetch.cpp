@@ -46,6 +46,13 @@ namespace {
 
 class prefetcher
 {
+    enum class stop_reason
+    {
+        none,
+        cancel,
+        preempt,
+    };
+
     struct job
     {
         job(spl::shared_ptr<prefetch_strategy> strategy, int priority, uint64_t seq, prefetcher* owner)
@@ -61,13 +68,14 @@ class prefetcher
         std::string                        key;
         int                                priority;
         uint64_t                           seq;
-        std::atomic<bool>                  cancelled{false};
+        std::atomic<stop_reason>           stop{stop_reason::none};
         prefetcher*                        owner;
     };
 
     std::mutex                                  mutex_;
     std::condition_variable                     cond_;
     std::vector<std::shared_ptr<job>>           queue_;
+    std::vector<std::shared_ptr<job>>           running_; // in the order they started
     std::map<std::string, std::shared_ptr<job>> pending_; // queued or running, by key
     std::vector<std::thread>                    workers_;
     std::atomic<bool>                           abort_{false};
@@ -77,6 +85,31 @@ class prefetcher
     static bool runs_before(const std::shared_ptr<job>& a, const std::shared_ptr<job>& b)
     {
         return a->priority != b->priority ? a->priority > b->priority : a->seq < b->seq;
+    }
+
+    // Stops running jobs for queued ones that outrank them and have no worker to go to. Jobs that are already
+    // stopping count as free workers, so each queued job stops at most one running job.
+    void preempt()
+    {
+        auto queued = queue_;
+        std::sort(queued.begin(), queued.end(), runs_before);
+
+        auto busy =
+            std::count_if(running_.begin(), running_.end(), [](const auto& j) { return j->stop == stop_reason::none; });
+        for (auto i = workers_.size() - static_cast<size_t>(busy); i < queued.size(); ++i) {
+            // The lowest priority, and the one started last of those, since it has done the least.
+            std::shared_ptr<job> victim;
+            for (const auto& j : running_) {
+                if (j->stop == stop_reason::none && (!victim || j->priority <= victim->priority)) {
+                    victim = j;
+                }
+            }
+            if (!victim || victim->priority >= queued[i]->priority) {
+                return;
+            }
+            victim->stop = stop_reason::preempt;
+            CASPAR_LOG(info) << "ffmpeg[" << victim->key << "] Prefetch preempted by " << queued[i]->key;
+        }
     }
 
   public:
@@ -111,6 +144,7 @@ class prefetcher
                 return enqueue_result::already_pending;
             }
             existing->priority = priority;
+            preempt();
             return enqueue_result::reprioritised;
         }
 
@@ -124,6 +158,7 @@ class prefetcher
         if (workers_.size() < static_cast<size_t>(concurrency) && workers_.size() < pending_.size()) {
             workers_.emplace_back([this] { run(); });
         }
+        preempt();
 
         cond_.notify_one();
         return enqueue_result::queued;
@@ -143,8 +178,8 @@ class prefetcher
             }
             // A running job stops within the shared protocol's interrupt poll and logs that itself. It leaves
             // pending_ now, so that the same PREFETCH can be queued again right away.
-            j->cancelled = true;
-            auto queued  = std::find(queue_.begin(), queue_.end(), j);
+            j->stop     = stop_reason::cancel;
+            auto queued = std::find(queue_.begin(), queue_.end(), j);
             if (queued != queue_.end()) {
                 queue_.erase(queued);
                 CASPAR_LOG(info) << "ffmpeg[" << j->key << "] Prefetch cancelled";
@@ -159,7 +194,7 @@ class prefetcher
     static int interrupt_cb(void* ctx)
     {
         auto j = static_cast<job*>(ctx);
-        return j->owner->abort_ || j->cancelled ? 1 : 0;
+        return j->owner->abort_ || j->stop != stop_reason::none ? 1 : 0;
     }
 
     void run()
@@ -177,20 +212,31 @@ class prefetcher
                 auto next = std::min_element(queue_.begin(), queue_.end(), runs_before);
                 j         = std::move(*next);
                 queue_.erase(next);
+                running_.push_back(j);
             }
 
-            prefetch(*j);
+            auto preempted = !prefetch(*j);
+
+            std::lock_guard<std::mutex> lock(mutex_);
+            running_.erase(std::find(running_.begin(), running_.end(), j));
+
+            // Back in line with its old seq, first within its priority. A cancel may have come since.
+            if (preempted && j->stop == stop_reason::preempt) {
+                j->stop = stop_reason::none;
+                queue_.push_back(j);
+                continue;
+            }
 
             // A cancelled job's key may already belong to a new job.
-            std::lock_guard<std::mutex> lock(mutex_);
-            auto                        it = pending_.find(j->key);
+            auto it = pending_.find(j->key);
             if (it != pending_.end() && it->second == j) {
                 pending_.erase(it);
             }
         }
     }
 
-    void prefetch(job& j)
+    // Returns false if it was preempted.
+    bool prefetch(job& j)
     {
         caspar::timer     timer;
         prefetch_progress progress;
@@ -210,14 +256,19 @@ class prefetcher
                                  << timer.elapsed() << "s)";
             }
         } catch (...) {
-            if (j.cancelled) {
-                CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch cancelled after " << progress.bytes << " bytes";
-            } else if (abort_) {
+            if (abort_) {
                 CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch aborted";
+            } else if (j.stop == stop_reason::cancel) {
+                CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch cancelled after " << progress.bytes << " bytes";
+            } else if (j.stop == stop_reason::preempt) {
+                CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch paused after " << progress.bytes
+                                 << " bytes, queued again";
+                return false;
             } else {
                 log_failure(name, progress);
             }
         }
+        return true;
     }
 
     // Called from a catch block.

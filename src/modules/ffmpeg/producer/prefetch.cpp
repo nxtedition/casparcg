@@ -31,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -69,6 +70,7 @@ class prefetcher
         int                                priority;
         uint64_t                           seq;
         std::atomic<stop_reason>           stop{stop_reason::none};
+        prefetch_progress                  progress;
         prefetcher*                        owner;
     };
 
@@ -190,6 +192,38 @@ class prefetcher
         return count;
     }
 
+    // A line per job, running first, then the queue in the order it will run:
+    // RUNNING|QUEUED priority bytes size key\r\n
+    std::wstring list()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        // A job that is being preempted is already back in line, as far as anyone asking is concerned.
+        std::vector<std::shared_ptr<job>> running;
+        auto                              queued = queue_;
+        for (const auto& j : running_) {
+            if (j->stop == stop_reason::none) {
+                running.push_back(j);
+            } else if (j->stop == stop_reason::preempt) {
+                queued.push_back(j);
+            }
+        }
+        std::sort(queued.begin(), queued.end(), runs_before);
+
+        std::wstringstream str;
+        auto               line = [&](const wchar_t* state, const job& j) {
+            str << state << L" " << j.priority << L" " << j.progress.bytes.load() << L" " << j.progress.size.load()
+                << L" " << u16(j.key) << L"\r\n";
+        };
+        for (const auto& j : running) {
+            line(L"RUNNING", *j);
+        }
+        for (const auto& j : queued) {
+            line(L"QUEUED", *j);
+        }
+        return str.str();
+    }
+
   private:
     static int interrupt_cb(void* ctx)
     {
@@ -238,9 +272,13 @@ class prefetcher
     // Returns false if it was preempted.
     bool prefetch(job& j)
     {
-        caspar::timer     timer;
-        prefetch_progress progress;
-        const auto&       name = j.key;
+        caspar::timer timer;
+        auto&         progress = j.progress;
+        const auto&   name     = j.key;
+
+        // A preempted job starts over, reading what it already fetched from the cache.
+        progress.bytes = 0;
+        progress.size  = -1;
 
         try {
             CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch started";
@@ -376,6 +414,20 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx)
     }
 
     return L"202 PREFETCH OK\r\n";
+}
+
+std::wstring prefetch_status_command(protocol::amcp::command_context& ctx)
+{
+    std::wstringstream reply;
+    reply << L"200 PREFETCH STATUS OK\r\n";
+    {
+        std::lock_guard<std::mutex> lock(instance_mutex);
+        if (instance) {
+            reply << instance->list();
+        }
+    }
+    reply << L"\r\n";
+    return reply.str();
 }
 
 std::wstring prefetch_cancel_command(protocol::amcp::command_context& ctx)

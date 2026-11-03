@@ -51,6 +51,8 @@ class range_prefetch : public prefetch_strategy
         }
     }
 
+    const std::string& url() const override { return url_; }
+
     std::string describe() const override
     {
         auto str = url_ + " " + seconds(std::min(seek_, start_)) + "-" + (end_ ? seconds(*end_) : "end");

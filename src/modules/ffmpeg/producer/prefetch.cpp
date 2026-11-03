@@ -48,10 +48,21 @@ class prefetcher
 {
     struct job
     {
+        job(spl::shared_ptr<prefetch_strategy> strategy, int priority, uint64_t seq, prefetcher* owner)
+            : strategy(std::move(strategy))
+            , key(this->strategy->describe())
+            , priority(priority)
+            , seq(seq)
+            , owner(owner)
+        {
+        }
+
         spl::shared_ptr<prefetch_strategy> strategy;
-        std::string                        key; // strategy->describe()
+        std::string                        key;
         int                                priority;
         uint64_t                           seq;
+        std::atomic<bool>                  cancelled{false};
+        prefetcher*                        owner;
     };
 
     std::mutex                                  mutex_;
@@ -103,7 +114,7 @@ class prefetcher
             return enqueue_result::reprioritised;
         }
 
-        auto j = std::make_shared<job>(job{std::move(strategy), key, priority, next_seq_++});
+        auto j = std::make_shared<job>(std::move(strategy), priority, next_seq_++, this);
         pending_.emplace(std::move(key), j);
         queue_.push_back(std::move(j));
 
@@ -118,8 +129,38 @@ class prefetcher
         return enqueue_result::queued;
     }
 
+    // Cancels the prefetch with key, or without one all prefetches of url. Returns how many it cancelled.
+    int cancel(const std::string& url, const std::optional<std::string>& key)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        int count = 0;
+        for (auto it = pending_.begin(); it != pending_.end();) {
+            auto j = it->second;
+            if (key ? j->key != *key : j->strategy->url() != url) {
+                ++it;
+                continue;
+            }
+            // A running job stops within the shared protocol's interrupt poll and logs that itself. It leaves
+            // pending_ now, so that the same PREFETCH can be queued again right away.
+            j->cancelled = true;
+            auto queued  = std::find(queue_.begin(), queue_.end(), j);
+            if (queued != queue_.end()) {
+                queue_.erase(queued);
+                CASPAR_LOG(info) << "ffmpeg[" << j->key << "] Prefetch cancelled";
+            }
+            it = pending_.erase(it);
+            ++count;
+        }
+        return count;
+    }
+
   private:
-    static int interrupt_cb(void* ctx) { return static_cast<prefetcher*>(ctx)->abort_ ? 1 : 0; }
+    static int interrupt_cb(void* ctx)
+    {
+        auto j = static_cast<job*>(ctx);
+        return j->owner->abort_ || j->cancelled ? 1 : 0;
+    }
 
     void run()
     {
@@ -138,24 +179,28 @@ class prefetcher
                 queue_.erase(next);
             }
 
-            prefetch(*j->strategy);
+            prefetch(*j);
 
+            // A cancelled job's key may already belong to a new job.
             std::lock_guard<std::mutex> lock(mutex_);
-            pending_.erase(j->key);
+            auto                        it = pending_.find(j->key);
+            if (it != pending_.end() && it->second == j) {
+                pending_.erase(it);
+            }
         }
     }
 
-    void prefetch(prefetch_strategy& strategy)
+    void prefetch(job& j)
     {
         caspar::timer     timer;
         prefetch_progress progress;
-        const auto        name = strategy.describe();
+        const auto&       name = j.key;
 
         try {
             CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch started";
 
             create_cache_directories();
-            strategy.fill(AVIOInterruptCB{interrupt_cb, this}, progress);
+            j.strategy->fill(AVIOInterruptCB{interrupt_cb, &j}, progress);
 
             if (progress.size > progress.bytes) {
                 CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch done (" << progress.bytes << " of "
@@ -164,14 +209,26 @@ class prefetcher
                 CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch done (" << progress.bytes << " bytes in "
                                  << timer.elapsed() << "s)";
             }
-        } catch (ffmpeg_error_t& e) {
-            auto err = boost::get_error_info<ffmpeg_errn_info>(e);
-            if (err && *err == AVERROR_EXIT) {
+        } catch (...) {
+            if (j.cancelled) {
+                CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch cancelled after " << progress.bytes << " bytes";
+            } else if (abort_) {
                 CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch aborted";
             } else {
-                CASPAR_LOG(error) << "ffmpeg[" << name << "] Prefetch failed after " << progress.bytes
-                                  << " bytes: " << (err ? error_string(*err) : std::string("unknown error"));
+                log_failure(name, progress);
             }
+        }
+    }
+
+    // Called from a catch block.
+    static void log_failure(const std::string& name, const prefetch_progress& progress)
+    {
+        try {
+            throw;
+        } catch (ffmpeg_error_t& e) {
+            auto err = boost::get_error_info<ffmpeg_errn_info>(e);
+            CASPAR_LOG(error) << "ffmpeg[" << name << "] Prefetch failed after " << progress.bytes
+                              << " bytes: " << (err ? error_string(*err) : std::string("unknown error"));
         } catch (std::runtime_error& e) {
             CASPAR_LOG(error) << "ffmpeg[" << name << "] Prefetch failed: " << e.what();
         } catch (...) {
@@ -268,6 +325,25 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx)
     }
 
     return L"202 PREFETCH OK\r\n";
+}
+
+std::wstring prefetch_cancel_command(protocol::amcp::command_context& ctx)
+{
+    auto request = parse_request(L"PREFETCH CANCEL", ctx);
+    if (!request) {
+        return L"403 PREFETCH CANCEL FAILED\r\n";
+    }
+
+    const auto& strategy = *request->strategy;
+    const auto  key      = request->has_range ? std::optional<std::string>(strategy.describe()) : std::nullopt;
+
+    std::lock_guard<std::mutex> lock(instance_mutex);
+    if (!instance || instance->cancel(strategy.url(), key) == 0) {
+        CASPAR_LOG(info) << L"ffmpeg[" << u16(key ? *key : strategy.url()) << L"] No prefetch to cancel";
+        return L"404 PREFETCH CANCEL FAILED\r\n";
+    }
+
+    return L"202 PREFETCH CANCEL OK\r\n";
 }
 
 void check_size_limit(int64_t bytes, int64_t limit)

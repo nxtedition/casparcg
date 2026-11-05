@@ -105,12 +105,12 @@ std::string build_open_options(const std::string&    filename,
         set_config_options(options, scope);
     }
 
-    if (cache == cache_mode::playback) {
+    if (cache != cache_mode::none) {
         set_config_options(options, L"shared");
-    } else if (cache == cache_mode::prefetch) {
-        // The "shared" scope tunes uninterrupted playback (e.g. ignore_errors). A prefetch must
-        // instead fail loudly unless every block ends up in the cache, so these always win.
-        // Only the cache size limit is shared with playback.
+    }
+    if (cache == cache_mode::prefetch) {
+        // Share cache locations and protocol options with playback, but require every block to
+        // end up in the cache. These prefetch safety options always win over user configuration.
         FF(av_dict_set(options, "ignore_errors", "0", 0));
         FF(av_dict_set(options, "cache_read_only", "0", 0));
         FF(av_dict_set(options, "cache_size_max", std::to_string(prefetch_size_limit()).c_str(), 0));
@@ -131,6 +131,22 @@ int64_t prefetch_size_limit()
     auto entry = av_dict_get(shared, "cache_size_max", nullptr, 0);
     // av_strtod, like ffmpeg's option parser, accepts suffixes such as 10G.
     return entry ? std::max<int64_t>(0, static_cast<int64_t>(av_strtod(entry->value, nullptr))) : 0;
+}
+
+void create_cache_directories()
+{
+    AVDictionary* shared = nullptr;
+    CASPAR_SCOPE_EXIT { av_dict_free(&shared); };
+    FF(av_dict_set(&shared, "cache_dir", u8(cache_path()).c_str(), 0));
+    set_config_options(&shared, L"default");
+    set_config_options(&shared, L"shared");
+
+    for (const auto* name : {"cache_dir", "metadata_dir"}) {
+        auto entry = av_dict_get(shared, name, nullptr, 0);
+        if (entry && entry->value[0]) {
+            boost::filesystem::create_directories(u16(entry->value));
+        }
+    }
 }
 
 std::wstring cache_path()
@@ -326,8 +342,10 @@ std::shared_ptr<AVFormatContext> open_input(const std::string&     filename,
 
 std::shared_ptr<AVFormatContext> Input::open()
 {
-    return open_input(
-        filename_, cache_ ? cache_mode::playback : cache_mode::none, seekable_, AVIOInterruptCB{Input::interrupt_cb, this});
+    return open_input(filename_,
+                      cache_ ? cache_mode::playback : cache_mode::none,
+                      seekable_,
+                      AVIOInterruptCB{Input::interrupt_cb, this});
 }
 
 void Input::internal_reset()

@@ -46,6 +46,9 @@ int64_t prefetch_size_limit();
 
 std::wstring cache_path();
 
+// Creates the cache directories, which shared options may override or extend with a metadata_dir.
+void create_cache_directories();
+
 // Opens filename the way the producer does, including avformat_find_stream_info.
 std::shared_ptr<AVFormatContext> open_input(const std::string&     filename,
                                             cache_mode             cache,

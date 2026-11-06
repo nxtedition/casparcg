@@ -554,6 +554,27 @@ for lib in "$FRAMEWORKS"/*.dylib; do
     fi
 done
 
+# Homebrew's sdl2 is sdl2-compat, which loads SDL3 at runtime from next to
+# itself (@loader_path/libSDL3.dylib) and aborts at startup without it. Nothing
+# links SDL3, so the dependency discovery above can't find it.
+for sdl2 in "$FRAMEWORKS"/libSDL2*.dylib; do
+    if [ -f "$sdl2" ] && [ ! -L "$sdl2" ] && grep -q "sdl2-compat" "$sdl2"; then
+        SDL3_LIB=""
+        for candidate in /opt/homebrew/opt/sdl3/lib/libSDL3.dylib /usr/local/opt/sdl3/lib/libSDL3.dylib; do
+            if [ -f "$candidate" ]; then
+                SDL3_LIB="$candidate"
+                break
+            fi
+        done
+        if [ -n "$SDL3_LIB" ]; then
+            echo "Bundling SDL3 for sdl2-compat..."
+            copy_lib "$SDL3_LIB"
+        else
+            echo "  Warning: SDL2 is sdl2-compat but SDL3 was not found. Install via: brew install sdl3"
+        fi
+    fi
+done
+
 # ============================================================================
 # Handle Vulkan ICD (Installable Client Driver) configuration
 # ============================================================================
@@ -713,10 +734,22 @@ chmod +x "$MACOS/CasparCG-Terminal"
 echo ""
 echo "Final pass: fixing all library paths..."
 
-# Function to fix all Homebrew paths in a binary
+# otool reads "file(member)" as an archive member, so binaries such as
+# "CasparCG Helper (Renderer)" are read through a link without parentheses
+OTOOL_LINK="$(mktemp -d)/binary"
+otool_deps() {
+    ln -sfn "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")" "$OTOOL_LINK"
+    otool -L "$OTOOL_LINK" 2>/dev/null | tail -n +2 | awk '{print $1}'
+}
+
+# Function to fix all Homebrew paths in a binary. Its bundled dependencies
+# become "$2/<name>": @executable_path/../Frameworks by default, @loader_path
+# for libraries in Frameworks and @rpath for the CEF helpers, whose
+# @executable_path is inside their own app bundle.
 fix_all_lib_paths() {
     local binary="$1"
-    local deps=$(otool -L "$binary" 2>/dev/null | tail -n +2 | awk '{print $1}')
+    local prefix="${2:-@executable_path/../Frameworks}"
+    local deps=$(otool_deps "$binary")
 
     for dep in $deps; do
         # Skip if already using @executable_path or system path
@@ -731,7 +764,7 @@ fix_all_lib_paths() {
         # Check if we have this library in Frameworks
         if [ -f "$FRAMEWORKS/$dep_name" ] || [ -L "$FRAMEWORKS/$dep_name" ]; then
             echo "  Fixing: $dep_name in $(basename "$binary")"
-            install_name_tool -change "$dep" "@executable_path/../Frameworks/$dep_name" "$binary" 2>/dev/null || true
+            install_name_tool -change "$dep" "$prefix/$dep_name" "$binary" 2>/dev/null || true
         fi
     done
 }
@@ -739,32 +772,36 @@ fix_all_lib_paths() {
 # Fix paths in main executable
 fix_all_lib_paths "$MACOS/casparcg"
 
-# Fix paths in all framework libraries
+# Fix paths in all framework libraries. They point at each other relative to
+# themselves, so that they resolve from the CEF helpers too.
 for lib in "$FRAMEWORKS"/*.dylib; do
     if [ -f "$lib" ] && [ ! -L "$lib" ]; then
-        fix_all_lib_paths "$lib"
+        fix_all_lib_paths "$lib" "@loader_path"
     fi
 done
 
-# Fix paths in CEF helper app executables
+# Fix paths in CEF helper app executables, through the
+# @executable_path/../../../../Frameworks rpath added when they were created
 for helper_app in "$FRAMEWORKS/CasparCG Helper"*.app; do
     if [ -d "$helper_app" ]; then
         for helper_exe in "$helper_app/Contents/MacOS/"*; do
             if [ -f "$helper_exe" ]; then
-                fix_all_lib_paths "$helper_exe"
-                # Fix CEF framework path for helper binary
-                install_name_tool -change \
-                    "@rpath/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
-                    "@executable_path/../../../../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
-                    "$helper_exe" 2>/dev/null || true
-                install_name_tool -change \
-                    "/Library/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
-                    "@executable_path/../../../../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
-                    "$helper_exe" 2>/dev/null || true
+                fix_all_lib_paths "$helper_exe" "@rpath"
+                # Fix CEF framework path for helper binary: the main
+                # executable's @executable_path/../Frameworks is not the
+                # helper's
+                for cef in \
+                    "@executable_path/../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
+                    "/Library/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework"; do
+                    install_name_tool -change "$cef" \
+                        "@rpath/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
+                        "$helper_exe" 2>/dev/null || true
+                done
             fi
         done
     fi
 done
+rm -rf "$(dirname "$OTOOL_LINK")"
 
 echo ""
 echo "Bundled libraries:"
@@ -773,6 +810,8 @@ echo ""
 
 # Create Info.plist
 # Note: We use casparcg-launcher as the executable to set up library paths
+# LSAppNapIsDisabled: CasparCG plays out in real time, usually with no visible
+# window, which is when App Nap would throttle its timers
 echo "Creating Info.plist..."
 cat > "$CONTENTS/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -804,6 +843,8 @@ cat > "$CONTENTS/Info.plist" << EOF
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>LSAppNapIsDisabled</key>
     <true/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>

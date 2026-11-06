@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include "handoff.h"
+
 #include <common/bit_depth.h>
 #include <core/frame/frame.h>
 #include <memory>
@@ -28,7 +30,7 @@
 
 namespace caspar { namespace accelerator { namespace vulkan {
 
-class texture final
+class texture final : public core::texture
 {
   public:
     texture(int               width,
@@ -48,6 +50,11 @@ class texture final
 
     vk::ImageView view() const;
 
+    // core::texture interface. No-ops on Vulkan: there is no global texture bind
+    // point — sampling is expressed via descriptor sets at draw time.
+    void bind(int index) override;
+    void unbind() override;
+
     int               width() const;
     int               height() const;
     int               stride() const;
@@ -55,6 +62,14 @@ class texture final
     void              set_depth(common::bit_depth depth);
     int               size() const;
     VkImage           id() const;
+
+    // The pending cross-queue hand-off for this texture: stamped by the producer
+    // (the transfer upload's release half) and consumed once by the next-stage
+    // consumer (the renderer's acquire half), which both waits its completion and
+    // records the matching acquire barrier. The only per-frame multi-queue state on
+    // the texture — empty/inert when producer and consumer share a queue.
+    void          set_pending_handoff(const handoff_token& token);
+    handoff_token take_pending_handoff(); // moves it out, leaving an empty token
 
   private:
     struct impl;

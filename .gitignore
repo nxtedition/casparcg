@@ -26,3 +26,5 @@ src/.idea
 .cursor
 .aider*
 .*-private
+# macos specific
+.DS_Store

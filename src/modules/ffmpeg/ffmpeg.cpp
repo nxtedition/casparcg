@@ -52,6 +52,14 @@ static void sanitize(uint8_t* line)
     }
 }
 
+/// What to call an object in the log prefix. item_name is optional in an AVClass — FFmpeg's own
+/// Vulkan context, for one, leaves it null — so fall back to the class name the way FFmpeg's
+/// default callback does, rather than calling through a null pointer.
+const char* log_item_name(const AVClass* avc, void* ptr)
+{
+    return avc->item_name != nullptr ? avc->item_name(ptr) : avc->class_name;
+}
+
 void log_callback(void* ptr, int level, const char* fmt, va_list vl)
 {
     static thread_local bool print_prefix_tss = true;
@@ -68,9 +76,9 @@ void log_callback(void* ptr, int level, const char* fmt, va_list vl)
             AVClass** parent =
                 *reinterpret_cast<AVClass***>(static_cast<uint8_t*>(ptr) + avc->parent_log_context_offset);
             if ((parent != nullptr) && (*parent != nullptr))
-                std::snprintf(line, sizeof(line), "[%s @ %p] ", (*parent)->item_name(parent), parent);
+                std::snprintf(line, sizeof(line), "[%s @ %p] ", log_item_name(*parent, parent), parent);
         }
-        std::snprintf(line + strlen(line), sizeof(line) - strlen(line), "[%s @ %p] ", avc->item_name(ptr), ptr);
+        std::snprintf(line + strlen(line), sizeof(line) - strlen(line), "[%s @ %p] ", log_item_name(avc, ptr), ptr);
     }
 
     std::vsnprintf(line + strlen(line), sizeof(line) - strlen(line), fmt, vl);
@@ -119,10 +127,18 @@ void init(const core::module_dependencies& dependencies)
     // Not a channel command, see prefetch_command. A channel command named PREFETCH would take over
     // "PREFETCH 1 url".
     dependencies.command_repository->register_command(L"Media Commands", L"PREFETCH", prefetch_command, 1);
+
+#ifdef ENABLE_VULKAN
+    set_vulkan_accelerator_device(dependencies.accelerator_device);
+#endif
 }
 
 void uninit()
 {
+    wait_for_producer_destruction();
+#ifdef ENABLE_VULKAN
+    set_vulkan_accelerator_device(nullptr);
+#endif
     // avfilter_uninit();
     prefetch_uninit();
     avformat_network_deinit();

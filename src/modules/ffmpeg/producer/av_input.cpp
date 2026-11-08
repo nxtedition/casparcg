@@ -87,6 +87,10 @@ std::string build_open_options(const std::string&    filename,
         // Wait this long for a block another reader (e.g. a prefetch) is fetching before fetching it
         // too. shared's 10 ms default makes concurrent readers download most blocks twice.
         FF(av_dict_set(options, "cache_timeout", "100000", 0));
+        if (url_parts.first == L"http" || url_parts.first == L"https") {
+            // The shared cache keeps its own copy, so ask caches between us and the source not to store one.
+            FF(av_dict_set(options, "headers", "Cache-Control: no-store, private\r\n", 0));
+        }
     }
 
     if (*input_format == nullptr) {

@@ -22,11 +22,16 @@
 
 #include "image_kernel.h"
 
+#include "../util/barrier.h"
 #include "../util/buffer.h"
+#include "../util/command_context.h"
 #include "../util/device.h"
+#include "../util/gpu_frame_factory.h"
+#include "../util/handoff.h"
 #include "../util/renderpass.h"
 #include "../util/texture.h"
 #include "../util/transfer.h"
+#include "../util/vulkan_queue.h"
 
 #ifdef WIN32
 #include "../../d3d/d3d_texture2d.h"
@@ -45,19 +50,26 @@
 #include <core/frame/pixel_format.h>
 #include <core/video_format.h>
 
+#include <algorithm>
 #include <any>
+#include <memory>
+#include <mutex>
 #include <vector>
 
 namespace caspar { namespace accelerator { namespace vulkan {
 
-using future_texture = std::shared_future<std::shared_ptr<texture>>;
+// Textures are created eagerly (transfer::copy_async returns the texture directly, GPU ordering
+// rides the handoff/timeline token), so we carry the resolved texture — no future wrapper, no CPU
+// wait. This is Vulkan-internal; the cross-accelerator boundary is the type-erased const_frame
+// opaque() (std::any). The OGL accelerator keeps its own genuinely-async future_texture.
+using texture_ptr = std::shared_ptr<texture>;
 
 struct item
 {
-    core::pixel_format_desc     pix_desc = core::pixel_format_desc(core::pixel_format::invalid);
-    std::vector<future_texture> textures;
-    draw_transforms             transforms;
-    core::frame_geometry        geometry = core::frame_geometry::get_default();
+    core::pixel_format_desc  pix_desc = core::pixel_format_desc(core::pixel_format::invalid);
+    std::vector<texture_ptr> textures;
+    draw_transforms          transforms;
+    core::frame_geometry     geometry = core::frame_geometry::get_default();
 };
 
 struct layer
@@ -89,13 +101,13 @@ class image_renderer
     }
 
     std::future<std::tuple<array<const std::uint8_t>, std::shared_ptr<core::texture>>>
-    operator()(std::vector<layer> layers, const core::video_format_desc& format_desc)
+    operator()(std::vector<layer> layers, const core::video_format_desc& format_desc, bool need_host_frame)
     {
         if (layers.empty()) { // Bypass GPU with empty frame.
             static const std::vector<uint8_t, boost::alignment::aligned_allocator<uint8_t, 32>> buffer(max_frame_size_,
                                                                                                        0);
             return make_ready_future<std::tuple<array<const std::uint8_t>, std::shared_ptr<core::texture>>>(
-                {array<const std::uint8_t>(buffer.data(), format_desc.size, true), nullptr});
+                {array<const std::uint8_t>(buffer.data(), format_desc.size, true), kernel_.empty_texture()});
         }
 
         // Record + submit synchronously on the caller's (mixer) thread; the only
@@ -104,18 +116,58 @@ class image_renderer
         auto target = pass->default_attachment();
         draw(target, std::move(layers), format_desc, pass);
 
-        pass->commit();
+        pass->commit(); // leaves `target` in eRenderingLocalRead
 
-        auto readback = vulkan_->transfer().copy_async(target);
+        if (!need_host_frame) {
+            // Finalize to the output invariant: `target` always ends in
+            // eShaderReadOnlyOptimal
+            kernel_.record_and_submit([&](vk::CommandBuffer cmd) {
+                transitionImageLayout(target->id(),
+                                      vk::ImageLayout::eRenderingLocalRead,
+                                      vk::AccessFlagBits2::eColorAttachmentWrite,
+                                      vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                      vk::ImageLayout::eShaderReadOnlyOptimal,
+                                      vk::AccessFlagBits2::eShaderRead,
+                                      vk::PipelineStageFlagBits2::eAllCommands,
+                                      cmd);
+            });
+
+            return make_ready_future<std::tuple<array<const std::uint8_t>, std::shared_ptr<core::texture>>>(
+                {array<const std::uint8_t>(), target});
+        }
+
+        // A host consumer wants the bytes: read them back through the transfer
+        // service on its own command context and (at distance 1/2) its own queue.
+        // The readback is a two-leg cross-queue hand-off: the render queue RELEASES
+        // `target` (eRenderingLocalRead -> eTransferSrcOptimal) to the transfer queue,
+        // which copies it out and hands it back (eTransferSrcOptimal ->
+        // eShaderReadOnlyOptimal), so a GPU-direct consumer can still sample the
+        // const_frame's texture. At distance 0 every leg is inert and this is
+        // byte-for-byte the old submission-ordered sequence.
+        auto to_transfer = vulkan_->transfer().readback_handoff();
+        auto release_token =
+            kernel_.record_and_submit([&](vk::CommandBuffer cmd) { record_release(cmd, to_transfer, target->id()); });
+        to_transfer.completion = release_token;
+
+        auto readback = vulkan_->transfer().copy_async(target, to_transfer);
+
+        // Finalize: take the transfer service's return hand-off and record its acquire
+        // half on the kernel context, waiting the readback's completion, so `target`
+        // ends in the shader-read output invariant the screen consumer samples.
+        auto to_renderer = target->take_pending_handoff();
+        kernel_.record_and_submit([&](vk::CommandBuffer cmd) { acquire_into(cmd, to_renderer, target->id()); },
+                                  to_renderer.completion);
 
         return std::async(std::launch::deferred,
-                          [readback = std::move(readback)]() mutable
-                              -> std::tuple<array<const std::uint8_t>, std::shared_ptr<core::texture>> {
-                              return {std::move(readback.get()), nullptr};
+                          [readback = std::move(readback),
+                           target]() mutable -> std::tuple<array<const std::uint8_t>, std::shared_ptr<core::texture>> {
+                              return {std::move(readback.get()), target};
                           });
     }
 
     common::bit_depth depth() const { return depth_; }
+
+    completion_token render_completion() { return kernel_.render_completion(); }
 
   private:
     void draw(std::shared_ptr<texture>&      target_texture,
@@ -193,8 +245,8 @@ class image_renderer
         draw_params.aspect_ratio =
             static_cast<double>(format_desc.square_width) / static_cast<double>(format_desc.square_height);
 
-        for (auto& future_texture : item.textures) {
-            draw_params.textures.push_back(spl::make_shared_ptr(future_texture.get()));
+        for (auto& tex : item.textures) {
+            draw_params.textures.push_back(spl::make_shared_ptr(tex));
         }
 
         if (draw_params.transforms.image_transform
@@ -257,11 +309,23 @@ struct image_mixer::impl
     : public core::frame_factory
     , public std::enable_shared_from_this<impl>
 {
+    // A producer-owned command_context awaiting deferred destruction: kept alive until the GPU has
+    // drained both its own work (`self`) and the render queue's work in flight when it was handed back
+    // (`render_barrier`) — which may still wait on the completion_tokens its timeline signalled.
+    struct retired_context
+    {
+        std::unique_ptr<command_context> ctx;
+        completion_token                 self;
+        completion_token                 render_barrier;
+    };
+
     spl::shared_ptr<device>      vulkan_;
     image_renderer               renderer_;
     std::vector<draw_transforms> transform_stack_;
     std::vector<layer>           layers_; // layer/stream/items
     std::vector<layer*>          layer_stack_;
+    std::mutex                   retire_mutex_;
+    std::vector<retired_context> retired_;
 
     double aspect_ratio_ = 1.0;
 
@@ -275,6 +339,15 @@ struct image_mixer::impl
         , transform_stack_(1)
     {
         CASPAR_LOG(info) << L"Initialized Vulkan Accelerated GPU Image Mixer for channel " << channel_id;
+    }
+
+    ~impl()
+    {
+        // Destroy any producer contexts still awaiting drain. The render thread has stopped by now, so
+        // idle the device — command_context's dtor does not wait, and a retired one may not have been
+        // polled to completion yet.
+        vulkan_->getVkDevice().waitIdle();
+        retired_.clear();
     }
 
     void update_aspect_ratio(double aspect_ratio) { aspect_ratio_ = aspect_ratio; }
@@ -313,10 +386,13 @@ struct image_mixer::impl
         item.transforms = transform_stack_.back();
         item.geometry   = frame.geometry();
 
-        auto textures_ptr = std::any_cast<std::shared_ptr<std::vector<future_texture>>>(frame.opaque());
+        // A GPU-resident frame carries its textures out-of-band in opaque(); a host frame does not.
+        // This any_cast is what tells the two apart. Use the pointer overload (note the &): on a
+        // host frame it just returns nullptr, so we fall through to the host path below.
+        const auto* gpu_textures = std::any_cast<std::shared_ptr<std::vector<texture_ptr>>>(&frame.opaque());
 
-        if (textures_ptr) {
-            item.textures = *textures_ptr;
+        if (gpu_textures && *gpu_textures) {
+            item.textures = **gpu_textures;
         } else {
             for (int n = 0; n < static_cast<int>(item.pix_desc.planes.size()); ++n) {
                 item.textures.emplace_back(vulkan_->transfer().copy_async(frame.image_data(n),
@@ -337,9 +413,10 @@ struct image_mixer::impl
     }
 
     std::future<std::tuple<array<const std::uint8_t>, std::shared_ptr<core::texture>>>
-    render(const core::video_format_desc& format_desc)
+    render(const core::video_format_desc& format_desc, bool need_host_frame)
     {
-        return renderer_(std::move(layers_), format_desc);
+        drain_retired(); // reclaim any producer contexts the GPU has finished with
+        return renderer_(std::move(layers_), format_desc, need_host_frame);
     }
 
     core::mutable_frame create_frame(const void* tag, const core::pixel_format_desc& desc) override
@@ -366,7 +443,7 @@ struct image_mixer::impl
                                        if (!self) {
                                            return std::any{};
                                        }
-                                       std::vector<future_texture> textures;
+                                       std::vector<texture_ptr> textures;
                                        for (int n = 0; n < static_cast<int>(desc.planes.size()); ++n) {
                                            textures.emplace_back(
                                                self->vulkan_->transfer().copy_async(image_data[n],
@@ -389,6 +466,86 @@ struct image_mixer::impl
     }
 #endif
 
+    // --- gpu_frame_factory (GPU producer path) ---
+
+    std::shared_ptr<texture> create_producer_texture(int width, int height, int stride, common::bit_depth depth)
+    {
+        return vulkan_->create_texture(width, height, stride, depth);
+    }
+
+    std::shared_ptr<command_context> create_command_context(queue_type queue)
+    {
+        auto q = vulkan_->acquire_queue(queue);
+        if (!q)
+            return nullptr;
+        // The producer holds this for its lifetime but must NOT destroy it inline: when it dies the
+        // render queue may still be waiting on completion_tokens this context's timeline signalled, so
+        // tearing down the timeline semaphore would be use-after-free. The custom deleter hands it back
+        // for deferred destruction once the GPU has drained that work (see retire_command_context).
+        auto* raw = new command_context(vulkan_->getVkDevice(), q);
+        return std::shared_ptr<command_context>(raw, [this](command_context* ctx) { retire_command_context(ctx); });
+    }
+
+    // Take ownership of a producer's expired command_context (called from its shared_ptr deleter) and
+    // queue it for destruction once the GPU is done with it. Snapshots the drain conditions now;
+    // drain_retired() polls them on the render thread.
+    void retire_command_context(command_context* ctx)
+    {
+        completion_token self           = ctx->current_completion();    // this context's own submits
+        completion_token render_barrier = renderer_.render_completion(); // render work that may await it
+
+        std::lock_guard<std::mutex> lock(retire_mutex_);
+        retired_.push_back({std::unique_ptr<command_context>(ctx), self, render_barrier});
+    }
+
+    // Destroy every retired context whose drain conditions the GPU has now passed. Non-blocking
+    // (vkGetSemaphoreCounterValue only); called once per render tick from render().
+    void drain_retired()
+    {
+        auto device  = vulkan_->getVkDevice();
+        auto reached = [&](const completion_token& t) {
+            return !t.timeline || device.getSemaphoreCounterValue(t.timeline) >= t.value;
+        };
+
+        std::lock_guard<std::mutex> lock(retire_mutex_);
+        retired_.erase(std::remove_if(retired_.begin(),
+                                      retired_.end(),
+                                      [&](retired_context& r) { return reached(r.self) && reached(r.render_barrier); }),
+                       retired_.end());
+    }
+
+    handoff_token make_producer_handoff(const vulkan_queue&     producer_queue,
+                                        vk::ImageLayout         src_layout,
+                                        vk::PipelineStageFlags2 src_stage,
+                                        vk::AccessFlags2        src_access)
+    {
+        return make_handoff(producer_queue,
+                            *vulkan_->queue(),
+                            src_layout,
+                            vk::ImageLayout::eShaderReadOnlyOptimal,
+                            src_stage,
+                            src_access,
+                            vk::PipelineStageFlagBits2::eFragmentShader,
+                            vk::AccessFlagBits2::eShaderRead);
+    }
+
+    core::const_frame import_textures(const void*                    tag,
+                                      std::vector<gpu_plane>         planes,
+                                      const core::pixel_format_desc& desc,
+                                      array<const std::int32_t>      audio,
+                                      core::frame_geometry           geometry)
+    {
+        auto textures = std::make_shared<std::vector<texture_ptr>>();
+        textures->reserve(planes.size());
+        for (auto& p : planes) {
+            // Stamp the producer->render hand-off so renderpass acquires it (inert at distance 0).
+            p.tex->set_pending_handoff(p.handoff);
+            textures->push_back(std::move(p.tex));
+        }
+        return core::const_frame::from_textures(
+            tag, desc, std::any(std::move(textures)), std::move(audio), std::move(geometry));
+    }
+
     common::bit_depth depth() const { return renderer_.depth(); }
 };
 
@@ -405,9 +562,9 @@ void image_mixer::visit(const core::const_frame& frame) { impl_->visit(frame); }
 void image_mixer::pop() { impl_->pop(); }
 void image_mixer::update_aspect_ratio(double aspect_ratio) { impl_->update_aspect_ratio(aspect_ratio); }
 std::future<std::tuple<array<const std::uint8_t>, std::shared_ptr<core::texture>>>
-image_mixer::render(const core::video_format_desc& format_desc)
+image_mixer::render(const core::video_format_desc& format_desc, bool need_host_frame)
 {
-    return impl_->render(format_desc);
+    return impl_->render(format_desc, need_host_frame);
 }
 core::mutable_frame image_mixer::create_frame(const void* tag, const core::pixel_format_desc& desc)
 {
@@ -428,6 +585,31 @@ core::const_frame image_mixer::import_d3d_texture(const void*                   
     return impl_->import_d3d_texture(tag, d3d_texture, format, depth);
 }
 #endif
+
+std::shared_ptr<texture>
+image_mixer::create_producer_texture(int width, int height, int stride, common::bit_depth depth)
+{
+    return impl_->create_producer_texture(width, height, stride, depth);
+}
+std::shared_ptr<command_context> image_mixer::create_command_context(queue_type queue)
+{
+    return impl_->create_command_context(queue);
+}
+handoff_token image_mixer::make_producer_handoff(const vulkan_queue&     producer_queue,
+                                                 vk::ImageLayout         src_layout,
+                                                 vk::PipelineStageFlags2 src_stage,
+                                                 vk::AccessFlags2        src_access)
+{
+    return impl_->make_producer_handoff(producer_queue, src_layout, src_stage, src_access);
+}
+core::const_frame             image_mixer::import_textures(const void*                    tag,
+                                               std::vector<gpu_plane>         planes,
+                                               const core::pixel_format_desc& desc,
+                                               array<const std::int32_t>      audio,
+                                               core::frame_geometry           geometry)
+{
+    return impl_->import_textures(tag, std::move(planes), desc, std::move(audio), std::move(geometry));
+}
 
 common::bit_depth image_mixer::depth() const { return impl_->depth(); }
 

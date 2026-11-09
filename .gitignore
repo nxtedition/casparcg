@@ -29,3 +29,5 @@ src/.idea
 .specstory
 CLAUDE.local.md
 .*-private
+# macos specific
+.DS_Store

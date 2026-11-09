@@ -38,6 +38,7 @@ struct texture::impl
     int               stride_ = 0;
     int               size_   = 0;
     common::bit_depth depth_;
+    handoff_token     pending_handoff_;
 
     impl(const impl&)            = delete;
     impl& operator=(const impl&) = delete;
@@ -95,6 +96,9 @@ texture& texture::operator=(texture&& other)
 
 vk::ImageView texture::view() const { return impl_->imageView_; }
 
+void texture::bind(int /*index*/) {}
+void texture::unbind() {}
+
 int               texture::width() const { return impl_->width_; }
 int               texture::height() const { return impl_->height_; }
 int               texture::stride() const { return impl_->stride_; }
@@ -102,5 +106,14 @@ common::bit_depth texture::depth() const { return impl_->depth_; }
 void              texture::set_depth(common::bit_depth depth) { impl_->depth_ = depth; }
 int               texture::size() const { return impl_->size_; }
 VkImage           texture::id() const { return impl_->image_; }
+
+void texture::set_pending_handoff(const handoff_token& token) { impl_->pending_handoff_ = token; }
+
+handoff_token texture::take_pending_handoff()
+{
+    handoff_token token     = impl_->pending_handoff_;
+    impl_->pending_handoff_ = handoff_token{};
+    return token;
+}
 
 }}} // namespace caspar::accelerator::vulkan

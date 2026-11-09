@@ -141,8 +141,11 @@ struct server::impl
         setup_amcp_command_repo();
         CASPAR_LOG(info) << L"Initialized command repository.";
 
-        module_dependencies dependencies(
-            cg_registry_, producer_registry_, consumer_registry_, amcp_command_repo_wrapper_);
+        module_dependencies dependencies(cg_registry_,
+                                         producer_registry_,
+                                         consumer_registry_,
+                                         amcp_command_repo_wrapper_,
+                                         accelerator_.get_device());
         initialize_modules(dependencies);
         CASPAR_LOG(info) << L"Initialized modules.";
 
@@ -266,7 +269,11 @@ struct server::impl
         caspar::accelerator::accelerator_backend backend = caspar::accelerator::accelerator_backend::invalid;
         auto accelerator = boost::to_lower_copy(pt.get(L"configuration.accelerator", L"auto"));
         if (accelerator == L"auto") {
+#if defined(__APPLE__)
+            backend = caspar::accelerator::accelerator_backend::vulkan;
+#else
             backend = caspar::accelerator::accelerator_backend::opengl;
+#endif
         } else if (accelerator == L"opengl") {
             backend = caspar::accelerator::accelerator_backend::opengl;
         } else if (accelerator == L"vulkan") {
@@ -279,6 +286,10 @@ struct server::impl
 #endif
 
         accelerator_.set_backend(backend);
+
+#ifdef ENABLE_VULKAN
+        register_module_vulkan_requirements(accelerator_);
+#endif
     }
 
     std::vector<boost::property_tree::wptree> setup_channels(const boost::property_tree::wptree& pt)

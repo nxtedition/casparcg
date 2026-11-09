@@ -57,4 +57,6 @@ play_range parse_play_range(const std::vector<std::wstring>& params, const core:
 spl::shared_ptr<core::frame_producer> create_producer(const core::frame_producer_dependencies& dependencies,
                                                       const std::vector<std::wstring>&         params);
 
+void wait_for_producer_destruction();
+
 }} // namespace caspar::ffmpeg

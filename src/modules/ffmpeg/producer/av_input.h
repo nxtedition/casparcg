@@ -16,6 +16,7 @@
 
 #include <tbb/concurrent_queue.h>
 
+#include <boost/filesystem/path.hpp>
 #include <boost/optional.hpp>
 #include <boost/thread.hpp>
 
@@ -45,6 +46,18 @@ std::string build_open_options(const std::string&    filename,
 int64_t prefetch_size_limit();
 
 std::wstring cache_path();
+
+// The shared protocol's cache_key for url (as given to PLAY or PREFETCH, without "shared:"): lowercase hex
+// SHA-256, so the files are "<key>.cache" and "<key>.spacemap". Outside Caspar: printf '%s' "$url" | sha256sum
+std::string cache_key(const std::string& url);
+
+// Where shared puts the files, from the cache path and options.shared.
+struct cache_locations
+{
+    boost::filesystem::path cache_dir;    // <key>.cache
+    boost::filesystem::path metadata_dir; // <key>.spacemap; cache_dir unless metadata_dir is set
+};
+cache_locations get_cache_locations();
 
 // Creates the cache directories, which shared options may override or extend with a metadata_dir.
 void create_cache_directories();

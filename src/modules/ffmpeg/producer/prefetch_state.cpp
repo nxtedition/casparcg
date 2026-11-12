@@ -163,6 +163,51 @@ std::vector<prefetch_record> read_prefetch_records(const boost::filesystem::path
     return records;
 }
 
+std::vector<prefetch_record> read_cached_prefetches(const std::optional<std::string>& url)
+{
+    const auto                   locations = get_cache_locations();
+    std::vector<prefetch_record> result;
+
+    boost::system::error_code ec;
+    if (!boost::filesystem::is_directory(locations.metadata_dir, ec)) {
+        return result; // nothing prefetched yet
+    }
+    std::optional<state_lock> lock;
+    try {
+        lock.emplace(locations.metadata_dir, false);
+    } catch (std::exception& e) {
+        CASPAR_LOG(warning) << L"PREFETCH STATUS: can't lock " << locations.metadata_dir.wstring() << L": "
+                            << u16(e.what());
+        return result;
+    }
+
+    auto add = [&](const boost::filesystem::path& path) {
+        auto records = read_prefetch_records(path);
+        auto data    = locations.cache_dir / path.stem();
+        data += ".cache";
+        // Done isn't true anymore once the cache was deleted by hand.
+        boost::system::error_code exists_ec;
+        auto                      deleted = !boost::filesystem::exists(data, exists_ec);
+        for (auto& r : records) {
+            if (!deleted || r.state != prefetch_state::done) {
+                result.push_back(std::move(r));
+            }
+        }
+    };
+
+    if (url) {
+        add(state_path(locations, *url));
+    } else {
+        for (boost::filesystem::directory_iterator it(locations.metadata_dir, ec), end; !ec && it != end;
+             it.increment(ec)) {
+            if (it->path().extension() == ".prefetch") {
+                add(it->path());
+            }
+        }
+    }
+    return result;
+}
+
 void write_prefetch_record(prefetch_record record)
 {
     try {

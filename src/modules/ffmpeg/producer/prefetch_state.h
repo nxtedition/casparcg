@@ -40,4 +40,8 @@ void write_prefetch_record(prefetch_record record);
 // The lines of a .prefetch file; none if it's missing or not one.
 std::vector<prefetch_record> read_prefetch_records(const boost::filesystem::path& path);
 
+// The lines of url's file, or without a url of every .prefetch file in metadata_dir. Leaves out done lines
+// whose .cache is gone.
+std::vector<prefetch_record> read_cached_prefetches(const std::optional<std::string>& url);
+
 }} // namespace caspar::ffmpeg

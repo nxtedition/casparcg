@@ -206,9 +206,17 @@ class prefetcher
         return count;
     }
 
-    // A line per job, running first, then the queue in the order it will run:
-    // RUNNING|QUEUED priority bytes size key\r\n
-    std::wstring list()
+    struct list_entry
+    {
+        const wchar_t* state;
+        int            priority;
+        int64_t        bytes;
+        int64_t        size;
+        std::string    key;
+    };
+
+    // The jobs (only url's, if given), running first, then the queue in the order it will run.
+    std::vector<list_entry> list(const std::optional<std::string>& url)
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -224,18 +232,19 @@ class prefetcher
         }
         std::sort(queued.begin(), queued.end(), runs_before);
 
-        std::wstringstream str;
-        auto               line = [&](const wchar_t* state, const job& j) {
-            str << state << L" " << j.priority << L" " << j.progress.bytes.load() << L" " << j.progress.size.load()
-                << L" " << u16(j.key) << L"\r\n";
+        std::vector<list_entry> entries;
+        auto                    add = [&](const wchar_t* state, const job& j) {
+            if (!url || j.strategy->url() == *url) {
+                entries.push_back({state, j.priority, j.progress.bytes.load(), j.progress.size.load(), j.key});
+            }
         };
         for (const auto& j : running) {
-            line(L"RUNNING", *j);
+            add(L"RUNNING", *j);
         }
         for (const auto& j : queued) {
-            line(L"QUEUED", *j);
+            add(L"QUEUED", *j);
         }
-        return str.str();
+        return entries;
     }
 
   private:
@@ -445,14 +454,95 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx)
 
 std::wstring prefetch_status_command(protocol::amcp::command_context& ctx)
 {
-    std::wstringstream reply;
-    reply << L"200 PREFETCH STATUS OK\r\n";
+    auto params = ctx.parameters;
+    auto cached = !params.empty() && boost::iequals(params.at(0), L"CACHED");
+    if (cached) {
+        params.erase(params.begin());
+    }
+
+    std::optional<std::string> url;
+    if (!params.empty()) {
+        // As PREFETCH takes it, so that "shared:" doesn't matter.
+        auto resolved = resolve_path(params.at(0));
+        if (!resolved || !boost::contains(resolved->path, L"://")) {
+            CASPAR_LOG(error) << L"ffmpeg[" << params.at(0) << L"] PREFETCH STATUS: not a supported url";
+            return L"403 PREFETCH STATUS FAILED\r\n";
+        }
+        url = u8(resolved->path);
+    }
+
+    std::vector<prefetcher::list_entry> live;
     {
         std::lock_guard<std::mutex> lock(instance_mutex);
         if (instance) {
-            reply << instance->list();
+            live = instance->list(url);
         }
     }
+
+    std::wstringstream reply;
+    reply << L"200 PREFETCH STATUS OK\r\n";
+    auto line =
+        [&](const wchar_t* state, const std::wstring& priority, int64_t bytes, int64_t size, const std::string& key) {
+            reply << state << L" " << priority << L" " << bytes << L" " << size << L" " << u16(key) << L"\r\n";
+        };
+    for (const auto& e : live) {
+        line(e.state, std::to_wstring(e.priority), e.bytes, e.size, e.key);
+    }
+
+    if (cached) {
+        auto records = read_cached_prefetches(url);
+        std::sort(records.begin(), records.end(), [](const auto& a, const auto& b) {
+            return a.url != b.url ? a.url < b.url
+                                  : describe_prefetch(a.url, a.range) < describe_prefetch(b.url, b.range);
+        });
+
+        std::map<std::string, const prefetch_record*> whole_done;
+        for (const auto& r : records) {
+            if (!r.range && r.state == prefetch_state::done) {
+                whole_done[r.url] = &r;
+            }
+        }
+
+        for (const auto& r : records) {
+            const auto key = describe_prefetch(r.url, r.range);
+            // DONE means available: any range of a url whose whole file is cached is too, whatever its own
+            // prefetch did. It then shows the whole file's bytes.
+            auto whole = r.range && r.state != prefetch_state::done ? whole_done.find(r.url) : whole_done.end();
+            if (r.state == prefetch_state::done || whole != whole_done.end()) {
+                const auto& done = whole != whole_done.end() ? *whole->second : r;
+                line(L"DONE", L"-", done.bytes, done.size, key);
+                continue;
+            }
+            // Otherwise a live job is the current state of its request.
+            if (std::any_of(
+                    live.begin(), live.end(), [&](const prefetcher::list_entry& e) { return e.key == key; })) {
+                continue;
+            }
+
+            const wchar_t* state = L"";
+            switch (r.state) {
+                case prefetch_state::done:
+                    break;
+                case prefetch_state::running:
+                    state = L"INTERRUPTED"; // no live job: Caspar stopped without recording its end
+                    break;
+                case prefetch_state::failed:
+                    state = L"FAILED";
+                    break;
+                case prefetch_state::cancelled:
+                    state = L"CANCELLED";
+                    break;
+                case prefetch_state::paused:
+                    state = L"PAUSED";
+                    break;
+                case prefetch_state::aborted:
+                    state = L"ABORTED";
+                    break;
+            }
+            line(state, L"-", r.bytes, r.size, key);
+        }
+    }
+
     reply << L"\r\n";
     return reply.str();
 }

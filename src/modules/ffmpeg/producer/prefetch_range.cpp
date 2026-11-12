@@ -53,14 +53,7 @@ class range_prefetch : public prefetch_strategy
 
     const std::string& url() const override { return url_; }
 
-    std::string describe() const override
-    {
-        auto str = url_ + " " + seconds(std::min(seek_, start_)) + "-" + (end_ ? seconds(*end_) : "end");
-        if (seek_ != start_) {
-            str += " seek " + seconds(seek_);
-        }
-        return str;
-    }
+    std::optional<prefetch_range> range() const override { return prefetch_range{start_, seek_, end_}; }
 
     void fill(const AVIOInterruptCB& interrupt, prefetch_progress& progress) override
     {
@@ -137,6 +130,19 @@ class range_prefetch : public prefetch_strategy
 };
 
 } // namespace
+
+std::string describe_prefetch(const std::string& url, const std::optional<prefetch_range>& range)
+{
+    if (!range) {
+        return url;
+    }
+    auto str =
+        url + " " + seconds(std::min(range->seek, range->start)) + "-" + (range->end ? seconds(*range->end) : "end");
+    if (range->seek != range->start) {
+        str += " seek " + seconds(range->seek);
+    }
+    return str;
+}
 
 spl::shared_ptr<prefetch_strategy> create_range_prefetch(std::string url, const play_range& range)
 {

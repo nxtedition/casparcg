@@ -2,6 +2,7 @@
 
 #include "av_input.h"
 #include "ffmpeg_producer.h"
+#include "prefetch_state.h"
 #include "prefetch_strategy.h"
 
 #include "../util/av_assert.h"
@@ -11,6 +12,7 @@
 #include <common/log.h>
 #include <common/os/thread.h>
 #include <common/param.h>
+#include <common/scope_exit.h>
 #include <common/timer.h>
 #include <common/utf.h>
 
@@ -70,6 +72,7 @@ class prefetcher
         int                                priority;
         uint64_t                           seq;
         std::atomic<stop_reason>           stop{stop_reason::none};
+        bool                               started = false; // ran before, i.e. was preempted if queued
         prefetch_progress                  progress;
         prefetcher*                        owner;
     };
@@ -169,6 +172,14 @@ class prefetcher
     // Cancels the prefetch with key, or without one all prefetches of url. Returns how many it cancelled.
     int cancel(const std::string& url, const std::optional<std::string>& key)
     {
+        std::vector<std::shared_ptr<job>> paused;
+        CASPAR_SCOPE_EXIT
+        {
+            // A running job records its end itself; a paused one isn't running, so its "paused" is replaced here.
+            for (const auto& j : paused) {
+                record(*j, prefetch_state::cancelled);
+            }
+        };
         std::lock_guard<std::mutex> lock(mutex_);
 
         int count = 0;
@@ -185,6 +196,9 @@ class prefetcher
             if (queued != queue_.end()) {
                 queue_.erase(queued);
                 CASPAR_LOG(info) << "ffmpeg[" << j->key << "] Prefetch cancelled";
+                if (j->started) {
+                    paused.push_back(j);
+                }
             }
             it = pending_.erase(it);
             ++count;
@@ -247,6 +261,7 @@ class prefetcher
                 j         = std::move(*next);
                 queue_.erase(next);
                 running_.push_back(j);
+                j->started = true;
             }
 
             auto preempted = !prefetch(*j);
@@ -284,6 +299,7 @@ class prefetcher
             CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch started";
 
             create_cache_directories();
+            record(j, prefetch_state::running);
             j.strategy->fill(AVIOInterruptCB{interrupt_cb, &j}, progress);
 
             if (progress.size > progress.bytes) {
@@ -293,20 +309,31 @@ class prefetcher
                 CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch done (" << progress.bytes << " bytes in "
                                  << timer.elapsed() << "s)";
             }
+            record(j, prefetch_state::done);
         } catch (...) {
             if (abort_) {
                 CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch aborted";
+                record(j, prefetch_state::aborted);
             } else if (j.stop == stop_reason::cancel) {
                 CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch cancelled after " << progress.bytes << " bytes";
+                record(j, prefetch_state::cancelled);
             } else if (j.stop == stop_reason::preempt) {
                 CASPAR_LOG(info) << "ffmpeg[" << name << "] Prefetch paused after " << progress.bytes
                                  << " bytes, queued again";
+                record(j, prefetch_state::paused);
                 return false;
             } else {
                 log_failure(name, progress);
+                record(j, prefetch_state::failed);
             }
         }
         return true;
+    }
+
+    static void record(const job& j, prefetch_state state)
+    {
+        write_prefetch_record(
+            {state, j.strategy->range(), j.progress.bytes.load(), j.progress.size.load(), 0, j.strategy->url()});
     }
 
     // Called from a catch block.

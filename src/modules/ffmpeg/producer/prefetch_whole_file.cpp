@@ -32,7 +32,7 @@ class whole_file_prefetch : public prefetch_strategy
 
     const std::string& url() const override { return url_; }
 
-    std::string describe() const override { return url_; }
+    std::optional<prefetch_range> range() const override { return {}; }
 
     void fill(const AVIOInterruptCB& interrupt, prefetch_progress& progress) override
     {

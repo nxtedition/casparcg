@@ -15,7 +15,8 @@ namespace caspar { namespace ffmpeg {
 std::wstring prefetch_command(protocol::amcp::command_context& ctx);
 
 // PREFETCH CANCEL [channel[-layer]] url [SEEK n] [IN n] [LENGTH n] [OUT n]: cancels the queued or running
-// prefetch with that range, or without a range all prefetches of url. What's cached stays cached.
+// prefetch of url with that range, in any spelling of it; without a range, the whole-file prefetch. What's cached
+// stays cached.
 std::wstring prefetch_cancel_command(protocol::amcp::command_context& ctx);
 
 // PREFETCH STATUS [CACHED] [url]: a line per queued or running prefetch, "RUNNING|QUEUED priority bytes size

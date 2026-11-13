@@ -180,8 +180,8 @@ class prefetcher
         return enqueue_result::queued;
     }
 
-    // Cancels the prefetch with key, or without one all prefetches of url. Returns how many it cancelled.
-    int cancel(const std::string& url, const std::optional<std::string>& key)
+    // Cancels the prefetch with key. Returns whether there was one.
+    bool cancel(const std::string& key)
     {
         std::vector<std::shared_ptr<job>> paused;
         CASPAR_SCOPE_EXIT
@@ -193,28 +193,24 @@ class prefetcher
         };
         std::lock_guard<std::mutex> lock(mutex_);
 
-        int count = 0;
-        for (auto it = pending_.begin(); it != pending_.end();) {
-            auto j = it->second;
-            if (key ? j->key != *key : j->strategy->url() != url) {
-                ++it;
-                continue;
-            }
-            // A running job stops within the shared protocol's interrupt poll and logs that itself. It leaves
-            // pending_ now, so that the same PREFETCH can be queued again right away.
-            j->stop     = stop_reason::cancel;
-            auto queued = std::find(queue_.begin(), queue_.end(), j);
-            if (queued != queue_.end()) {
-                queue_.erase(queued);
-                CASPAR_LOG(info) << "ffmpeg[" << j->key << "] Prefetch cancelled";
-                if (j->started) {
-                    paused.push_back(j);
-                }
-            }
-            it = pending_.erase(it);
-            ++count;
+        auto it = pending_.find(key);
+        if (it == pending_.end()) {
+            return false;
         }
-        return count;
+        // A running job stops within the shared protocol's interrupt poll and logs that itself. It leaves
+        // pending_ now, so that the same PREFETCH can be queued again right away.
+        auto j      = it->second;
+        j->stop     = stop_reason::cancel;
+        auto queued = std::find(queue_.begin(), queue_.end(), j);
+        if (queued != queue_.end()) {
+            queue_.erase(queued);
+            CASPAR_LOG(info) << "ffmpeg[" << j->key << "] Prefetch cancelled";
+            if (j->started) {
+                paused.push_back(j);
+            }
+        }
+        pending_.erase(it);
+        return true;
     }
 
     struct list_entry
@@ -388,7 +384,6 @@ std::unique_ptr<prefetcher> instance;
 struct prefetch_request
 {
     spl::shared_ptr<prefetch_strategy> strategy;
-    bool                               has_range;
     int                                priority;
     std::string                        request; // see request_text
 };
@@ -454,10 +449,8 @@ std::optional<prefetch_request> parse_request(const std::wstring& command, proto
     }
 
     auto url = u8(resolved->path);
-    return prefetch_request{range ? create_range_prefetch(url, *range) : create_whole_file_prefetch(url),
-                            has_range,
-                            priority,
-                            request_text(params)};
+    return prefetch_request{
+        range ? create_range_prefetch(url, *range) : create_whole_file_prefetch(url), priority, request_text(params)};
 }
 
 } // namespace
@@ -595,12 +588,11 @@ std::wstring prefetch_cancel_command(protocol::amcp::command_context& ctx)
         return L"403 PREFETCH CANCEL FAILED\r\n";
     }
 
-    const auto& strategy = *request->strategy;
-    const auto  key      = request->has_range ? std::optional<std::string>(strategy.describe()) : std::nullopt;
+    const auto key = request->strategy->describe();
 
     std::lock_guard<std::mutex> lock(instance_mutex);
-    if (!instance || instance->cancel(strategy.url(), key) == 0) {
-        CASPAR_LOG(info) << L"ffmpeg[" << u16(key ? *key : strategy.url()) << L"] No prefetch to cancel";
+    if (!instance || !instance->cancel(key)) {
+        CASPAR_LOG(info) << L"ffmpeg[" << u16(key) << L"] No prefetch to cancel";
         return L"404 PREFETCH CANCEL FAILED\r\n";
     }
 

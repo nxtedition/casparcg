@@ -402,6 +402,19 @@ std::string request_text(const std::vector<std::wstring>& params)
     return u8(text);
 }
 
+// The url a PREFETCH command's url parameter names ("shared:" stripped), or nothing if it can't be prefetched: local
+// files have nothing to cache, and only real protocols go through the shared protocol. Logs why.
+std::optional<std::wstring> prefetch_url(const std::wstring& command, const std::wstring& param)
+{
+    auto resolved = resolve_path(param);
+    if (!resolved || !boost::contains(resolved->path, L"://") ||
+        avio_find_protocol_name(u8(resolved->path).c_str()) == nullptr) {
+        CASPAR_LOG(error) << L"ffmpeg[" << param << L"] " << command << L": not a supported url";
+        return {};
+    }
+    return resolved->path;
+}
+
 // [channel[-layer]] url [SEEK n] [IN n] [LENGTH n] [OUT n] [PRIORITY n], shared by the PREFETCH commands. Logs
 // and returns nothing if it's invalid.
 std::optional<prefetch_request> parse_request(const std::wstring& command, protocol::amcp::command_context& ctx)
@@ -423,12 +436,8 @@ std::optional<prefetch_request> parse_request(const std::wstring& command, proto
         params.erase(params.begin());
     }
 
-    auto resolved = resolve_path(params.at(0));
-
-    // Local files have nothing to cache, and only real protocols go through the shared protocol.
-    if (!resolved || !boost::contains(resolved->path, L"://") ||
-        avio_find_protocol_name(u8(resolved->path).c_str()) == nullptr) {
-        CASPAR_LOG(error) << L"ffmpeg[" << params.at(0) << L"] " << command << L": not a supported url";
+    auto path = prefetch_url(command, params.at(0));
+    if (!path) {
         return {};
     }
 
@@ -443,12 +452,12 @@ std::optional<prefetch_request> parse_request(const std::wstring& command, proto
         priority = get_param(L"PRIORITY", params, 0);
     } catch (user_error& e) {
         auto msg = boost::get_error_info<msg_info_t>(e);
-        CASPAR_LOG(error) << L"ffmpeg[" << resolved->path << L"] " << command << L": "
+        CASPAR_LOG(error) << L"ffmpeg[" << *path << L"] " << command << L": "
                           << (msg ? u16(*msg) : L"invalid SEEK, IN, LENGTH, OUT or PRIORITY");
         return {};
     }
 
-    auto url = u8(resolved->path);
+    auto url = u8(*path);
     return prefetch_request{
         range ? create_range_prefetch(url, *range) : create_whole_file_prefetch(url), priority, request_text(params)};
 }
@@ -492,12 +501,11 @@ std::wstring prefetch_status_command(protocol::amcp::command_context& ctx)
     std::optional<std::string> url;
     if (!params.empty()) {
         // As PREFETCH takes it, so that "shared:" doesn't matter.
-        auto resolved = resolve_path(params.at(0));
-        if (!resolved || !boost::contains(resolved->path, L"://")) {
-            CASPAR_LOG(error) << L"ffmpeg[" << params.at(0) << L"] PREFETCH STATUS: not a supported url";
+        auto path = prefetch_url(L"PREFETCH STATUS", params.at(0));
+        if (!path) {
             return L"403 PREFETCH STATUS FAILED\r\n";
         }
-        url = u8(resolved->path);
+        url = u8(*path);
     }
 
     std::vector<prefetcher::list_entry> live;

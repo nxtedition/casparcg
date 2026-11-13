@@ -21,6 +21,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/eval.h>
+#include <libavutil/hash.h>
 }
 
 namespace caspar { namespace ffmpeg {
@@ -123,6 +124,10 @@ std::string build_open_options(const std::string&    filename,
         // Nothing waits on a prefetch, so leave pending blocks to whoever is fetching them.
         FF(av_dict_set(options, "cache_timeout", "30000000", 0));
     }
+    if (cache != cache_mode::none) {
+        // After the user scopes: a configured cache_key would put every clip into the same file.
+        FF(av_dict_set(options, "cache_key", cache_key(filename).c_str(), 0));
+    }
 
     return url;
 }
@@ -137,7 +142,20 @@ int64_t prefetch_size_limit()
     return entry ? std::max<int64_t>(0, static_cast<int64_t>(av_strtod(entry->value, nullptr))) : 0;
 }
 
-void create_cache_directories()
+std::string cache_key(const std::string& url)
+{
+    AVHashContext* ctx = nullptr;
+    FF(av_hash_alloc(&ctx, "SHA256"));
+    CASPAR_SCOPE_EXIT { av_hash_freep(&ctx); };
+
+    av_hash_init(ctx);
+    av_hash_update(ctx, reinterpret_cast<const uint8_t*>(url.data()), url.size());
+    char hex[2 * 32 + 1] = {};
+    av_hash_final_hex(ctx, reinterpret_cast<uint8_t*>(hex), sizeof(hex));
+    return hex;
+}
+
+cache_locations get_cache_locations()
 {
     AVDictionary* shared = nullptr;
     CASPAR_SCOPE_EXIT { av_dict_free(&shared); };
@@ -145,10 +163,20 @@ void create_cache_directories()
     set_config_options(&shared, L"default");
     set_config_options(&shared, L"shared");
 
-    for (const auto* name : {"cache_dir", "metadata_dir"}) {
-        auto entry = av_dict_get(shared, name, nullptr, 0);
-        if (entry && entry->value[0]) {
-            boost::filesystem::create_directories(u16(entry->value));
+    cache_locations result;
+    result.cache_dir = u16(av_dict_get(shared, "cache_dir", nullptr, 0)->value);
+    auto metadata    = av_dict_get(shared, "metadata_dir", nullptr, 0);
+    // shared falls back to cache_dir for an empty metadata_dir as well.
+    result.metadata_dir = metadata && metadata->value[0] ? u16(metadata->value) : result.cache_dir;
+    return result;
+}
+
+void create_cache_directories()
+{
+    const auto locations = get_cache_locations();
+    for (const auto& dir : {locations.cache_dir, locations.metadata_dir}) {
+        if (!dir.empty()) {
+            boost::filesystem::create_directories(dir);
         }
     }
 }

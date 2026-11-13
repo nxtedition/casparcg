@@ -4,18 +4,33 @@
 
 #include <common/memory.h>
 
+#include <atomic>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 struct AVIOInterruptCB;
 
 namespace caspar { namespace ffmpeg {
 
+// Atomic, since PREFETCH STATUS reads it while a worker writes it.
 struct prefetch_progress
 {
-    int64_t bytes = 0;
-    int64_t size  = -1; // of the whole resource, if known
+    std::atomic<int64_t> bytes{0};
+    std::atomic<int64_t> size{-1}; // of the whole resource, if known
 };
+
+// The part of a url a range prefetch reads, in AV_TIME_BASE units relative to the clip's start_time.
+struct prefetch_range
+{
+    int64_t                start = 0;
+    int64_t                seek  = 0;
+    std::optional<int64_t> end; // none: to the end
+};
+
+// The url and the part of it to prefetch (none: the whole file), e.g. "url 20.000s-30.000s". Identical
+// requests are only run once.
+std::string describe_prefetch(const std::string& url, const std::optional<prefetch_range>& range);
 
 class prefetch_strategy
 {
@@ -28,8 +43,11 @@ class prefetch_strategy
 
     prefetch_strategy(const prefetch_strategy&) = delete;
 
-    // The url and the part of it to prefetch. Identical requests are only run once.
-    virtual std::string describe() const = 0;
+    virtual const std::string& url() const = 0;
+
+    virtual std::optional<prefetch_range> range() const = 0;
+
+    std::string describe() const { return describe_prefetch(url(), range()); }
 
     // Reads through the shared protocol, which is what fills the cache. Throws on failure.
     virtual void fill(const AVIOInterruptCB& interrupt, prefetch_progress& progress) = 0;

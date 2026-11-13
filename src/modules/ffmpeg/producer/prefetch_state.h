@@ -30,11 +30,12 @@ struct prefetch_record
     int64_t                       bytes   = 0;
     int64_t                       size    = -1;
     int64_t                       updated = 0; // unix seconds
+    std::vector<std::string>      requests;    // the PREFETCH parameters of each spelling of it
     std::string                   url;
 };
 
-// Replaces the line for record's request in its url's file. A done line is only replaced by another done:
-// the data stays cached whatever a later attempt does. Logs instead of throwing.
+// Replaces the line for record's request in its url's file, keeping the spellings it had. A done line is only
+// replaced by another done: the data stays cached whatever a later attempt does. Logs instead of throwing.
 void write_prefetch_record(prefetch_record record);
 
 // The lines of a .prefetch file; none if it's missing or not one.

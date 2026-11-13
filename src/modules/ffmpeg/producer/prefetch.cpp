@@ -58,9 +58,14 @@ class prefetcher
 
     struct job
     {
-        job(spl::shared_ptr<prefetch_strategy> strategy, int priority, uint64_t seq, prefetcher* owner)
+        job(spl::shared_ptr<prefetch_strategy> strategy,
+            std::string                        request,
+            int                                priority,
+            uint64_t                           seq,
+            prefetcher*                        owner)
             : strategy(std::move(strategy))
             , key(this->strategy->describe())
+            , requests{std::move(request)}
             , priority(priority)
             , seq(seq)
             , owner(owner)
@@ -69,6 +74,7 @@ class prefetcher
 
         spl::shared_ptr<prefetch_strategy> strategy;
         std::string                        key;
+        std::vector<std::string>           requests; // every spelling of it; guarded by mutex_
         int                                priority;
         uint64_t                           seq;
         std::atomic<stop_reason>           stop{stop_reason::none};
@@ -137,7 +143,7 @@ class prefetcher
         }
     }
 
-    enqueue_result enqueue(spl::shared_ptr<prefetch_strategy> strategy, int priority)
+    enqueue_result enqueue(spl::shared_ptr<prefetch_strategy> strategy, std::string request, int priority)
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -145,6 +151,11 @@ class prefetcher
         auto it  = pending_.find(key);
         if (it != pending_.end()) {
             auto& existing = it->second;
+            // Another spelling of the same range is the same job, but STATUS lists it too.
+            auto& requests = existing->requests;
+            if (std::find(requests.begin(), requests.end(), request) == requests.end()) {
+                requests.push_back(std::move(request));
+            }
             if (existing->priority == priority || std::find(queue_.begin(), queue_.end(), existing) == queue_.end()) {
                 return enqueue_result::already_pending;
             }
@@ -153,7 +164,7 @@ class prefetcher
             return enqueue_result::reprioritised;
         }
 
-        auto j = std::make_shared<job>(std::move(strategy), priority, next_seq_++, this);
+        auto j = std::make_shared<job>(std::move(strategy), std::move(request), priority, next_seq_++, this);
         pending_.emplace(std::move(key), j);
         queue_.push_back(std::move(j));
 
@@ -208,11 +219,12 @@ class prefetcher
 
     struct list_entry
     {
-        const wchar_t* state;
-        int            priority;
-        int64_t        bytes;
-        int64_t        size;
-        std::string    key;
+        const wchar_t*           state;
+        int                      priority;
+        int64_t                  bytes;
+        int64_t                  size;
+        std::string              key;
+        std::vector<std::string> requests;
     };
 
     // The jobs (only url's, if given), running first, then the queue in the order it will run.
@@ -235,7 +247,8 @@ class prefetcher
         std::vector<list_entry> entries;
         auto                    add = [&](const wchar_t* state, const job& j) {
             if (!url || j.strategy->url() == *url) {
-                entries.push_back({state, j.priority, j.progress.bytes.load(), j.progress.size.load(), j.key});
+                entries.push_back(
+                    {state, j.priority, j.progress.bytes.load(), j.progress.size.load(), j.key, j.requests});
             }
         };
         for (const auto& j : running) {
@@ -339,10 +352,16 @@ class prefetcher
         return true;
     }
 
-    static void record(const job& j, prefetch_state state)
+    // Called without mutex_ held.
+    void record(const job& j, prefetch_state state)
     {
-        write_prefetch_record(
-            {state, j.strategy->range(), j.progress.bytes.load(), j.progress.size.load(), 0, j.strategy->url()});
+        prefetch_record r{
+            state, j.strategy->range(), j.progress.bytes.load(), j.progress.size.load(), 0, {}, j.strategy->url()};
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            r.requests = j.requests;
+        }
+        write_prefetch_record(std::move(r));
     }
 
     // Called from a catch block.
@@ -371,7 +390,22 @@ struct prefetch_request
     spl::shared_ptr<prefetch_strategy> strategy;
     bool                               has_range;
     int                                priority;
+    std::string                        request; // see request_text
 };
+
+// The parameters as the client sent them, without the channel and PRIORITY, for STATUS to hand back to match on.
+std::string request_text(const std::vector<std::wstring>& params)
+{
+    std::wstring text;
+    for (size_t i = 0; i < params.size(); ++i) {
+        if (i > 0 && boost::iequals(params[i], L"PRIORITY")) {
+            ++i; // and its value
+            continue;
+        }
+        text += (text.empty() ? L"" : L" ") + params[i];
+    }
+    return u8(text);
+}
 
 // [channel[-layer]] url [SEEK n] [IN n] [LENGTH n] [OUT n] [PRIORITY n], shared by the PREFETCH commands. Logs
 // and returns nothing if it's invalid.
@@ -420,8 +454,10 @@ std::optional<prefetch_request> parse_request(const std::wstring& command, proto
     }
 
     auto url = u8(resolved->path);
-    return prefetch_request{
-        range ? create_range_prefetch(url, *range) : create_whole_file_prefetch(url), has_range, priority};
+    return prefetch_request{range ? create_range_prefetch(url, *range) : create_whole_file_prefetch(url),
+                            has_range,
+                            priority,
+                            request_text(params)};
 }
 
 } // namespace
@@ -438,7 +474,7 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx)
         instance = std::make_unique<prefetcher>();
     }
     const auto name = u16(request->strategy->describe());
-    switch (instance->enqueue(request->strategy, request->priority)) {
+    switch (instance->enqueue(request->strategy, request->request, request->priority)) {
         case prefetcher::enqueue_result::queued:
             break;
         case prefetcher::enqueue_result::reprioritised:
@@ -481,12 +517,18 @@ std::wstring prefetch_status_command(protocol::amcp::command_context& ctx)
 
     std::wstringstream reply;
     reply << L"200 PREFETCH STATUS OK\r\n";
-    auto line =
-        [&](const wchar_t* state, const std::wstring& priority, int64_t bytes, int64_t size, const std::string& key) {
-            reply << state << L" " << priority << L" " << bytes << L" " << size << L" " << u16(key) << L"\r\n";
-        };
+    // A line per spelling of the request, so that each client finds the one it sent.
+    auto line = [&](const wchar_t*                  state,
+                    const std::wstring&             priority,
+                    int64_t                         bytes,
+                    int64_t                         size,
+                    const std::vector<std::string>& requests) {
+        for (const auto& request : requests) {
+            reply << state << L" " << priority << L" " << bytes << L" " << size << L" " << u16(request) << L"\r\n";
+        }
+    };
     for (const auto& e : live) {
-        line(e.state, std::to_wstring(e.priority), e.bytes, e.size, e.key);
+        line(e.state, std::to_wstring(e.priority), e.bytes, e.size, e.requests);
     }
 
     if (cached) {
@@ -510,12 +552,11 @@ std::wstring prefetch_status_command(protocol::amcp::command_context& ctx)
             auto whole = r.range && r.state != prefetch_state::done ? whole_done.find(r.url) : whole_done.end();
             if (r.state == prefetch_state::done || whole != whole_done.end()) {
                 const auto& done = whole != whole_done.end() ? *whole->second : r;
-                line(L"DONE", L"-", done.bytes, done.size, key);
+                line(L"DONE", L"-", done.bytes, done.size, r.requests);
                 continue;
             }
             // Otherwise a live job is the current state of its request.
-            if (std::any_of(
-                    live.begin(), live.end(), [&](const prefetcher::list_entry& e) { return e.key == key; })) {
+            if (std::any_of(live.begin(), live.end(), [&](const prefetcher::list_entry& e) { return e.key == key; })) {
                 continue;
             }
 
@@ -539,7 +580,7 @@ std::wstring prefetch_status_command(protocol::amcp::command_context& ctx)
                     state = L"ABORTED";
                     break;
             }
-            line(state, L"-", r.bytes, r.size, key);
+            line(state, L"-", r.bytes, r.size, r.requests);
         }
     }
 

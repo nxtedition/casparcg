@@ -18,8 +18,10 @@ std::wstring prefetch_command(protocol::amcp::command_context& ctx);
 // prefetch with that range, or without a range all prefetches of url. What's cached stays cached.
 std::wstring prefetch_cancel_command(protocol::amcp::command_context& ctx);
 
-// PREFETCH STATUS [CACHED] [url]: a line per queued or running prefetch, "RUNNING|QUEUED priority bytes size key",
-// running first, then in the order they will run. size is -1 until known. With url, only that url's.
+// PREFETCH STATUS [CACHED] [url]: a line per queued or running prefetch, "RUNNING|QUEUED priority bytes size
+// request", running first, then in the order they will run. size is -1 until known. request is the PREFETCH
+// parameters as sent, without the channel and PRIORITY; a prefetch requested with several spellings of the same
+// range has a line for each. With url, only that url's.
 // CACHED adds what earlier prefetches left in the cache ("<key>.prefetch"), after the queue, with priority "-":
 // DONE (cached: its prefetch finished, or for a range the whole file's did), FAILED, CANCELLED, PAUSED, ABORTED or
 // INTERRUPTED (Caspar stopped while it ran). A live job replaces its line, except DONE.

@@ -18,6 +18,10 @@
 #include <sstream>
 #include <stdexcept>
 
+extern "C" {
+#include <libavutil/base64.h>
+}
+
 #ifdef _WIN32
 #include <io.h>
 #else
@@ -28,8 +32,9 @@ namespace caspar { namespace ffmpeg {
 
 namespace {
 
-// First line of a .prefetch file. Each further line is "state start seek end bytes size updated url", times in
-// AV_TIME_BASE units or "-" (start, seek and end for the whole file, end for "to the end").
+// First line of a .prefetch file. Each further line is "state start seek end bytes size updated requests url",
+// times in AV_TIME_BASE units or "-" (start, seek and end for the whole file, end for "to the end"), requests
+// the spellings of the request, each base64 encoded since they contain spaces, comma separated.
 const std::string HEADER = "caspar-prefetch 1";
 
 const char* const STATE_NAMES[] = {"running", "done", "failed", "cancelled", "paused", "aborted"};
@@ -99,6 +104,30 @@ void write_synced(const boost::filesystem::path& path, const std::string& data)
 
 std::string field(const std::optional<int64_t>& value) { return value ? std::to_string(*value) : "-"; }
 
+std::string requests(const prefetch_record& record)
+{
+    std::string str;
+    for (const auto& request : record.requests) {
+        std::vector<char> out(AV_BASE64_SIZE(request.size()));
+        av_base64_encode(out.data(),
+                         static_cast<int>(out.size()),
+                         reinterpret_cast<const uint8_t*>(request.data()),
+                         static_cast<int>(request.size()));
+        str += (str.empty() ? "" : ",") + std::string(out.data());
+    }
+    return str.empty() ? "-" : str;
+}
+
+std::optional<std::string> decode(const std::string& base64)
+{
+    std::vector<uint8_t> out(base64.size() * 3 / 4 + 3);
+    auto                 size = av_base64_decode(out.data(), base64.c_str(), static_cast<int>(out.size()));
+    if (size < 0) {
+        return {};
+    }
+    return std::string(out.begin(), out.begin() + size);
+}
+
 std::optional<int64_t> parse_field(const std::string& str)
 {
     if (str == "-") {
@@ -118,10 +147,19 @@ bool same_request(const std::optional<prefetch_range>& a, const std::optional<pr
 std::optional<prefetch_record> parse_line(const std::string& line)
 {
     std::istringstream str(line);
-    std::string        state, start, seek, end;
+    std::string        state, start, seek, end, requests;
     prefetch_record    record{};
-    if (!(str >> state >> start >> seek >> end >> record.bytes >> record.size >> record.updated)) {
+    if (!(str >> state >> start >> seek >> end >> record.bytes >> record.size >> record.updated >> requests)) {
         return {};
+    }
+    std::istringstream list(requests);
+    for (std::string request; std::getline(list, request, ',');) {
+        if (request.empty() || request == "-") {
+            continue;
+        }
+        if (auto text = decode(request)) {
+            record.requests.push_back(std::move(*text));
+        }
     }
     std::getline(str >> std::ws, record.url);
 
@@ -223,10 +261,20 @@ void write_prefetch_record(prefetch_record record)
         });
         if (it == records.end()) {
             records.push_back(record);
-        } else if (it->state != prefetch_state::done || record.state == prefetch_state::done) {
-            *it = record;
         } else {
-            return;
+            // A new spelling is kept even when the state isn't replaced: a done range is done for it too.
+            auto requests = it->requests;
+            for (const auto& request : record.requests) {
+                if (std::find(requests.begin(), requests.end(), request) == requests.end()) {
+                    requests.push_back(request);
+                }
+            }
+            if (it->state != prefetch_state::done || record.state == prefetch_state::done) {
+                *it = record;
+            } else if (requests == it->requests) {
+                return;
+            }
+            it->requests = std::move(requests);
         }
 
         std::ostringstream str;
@@ -235,7 +283,7 @@ void write_prefetch_record(prefetch_record record)
             const auto range = r.range.value_or(prefetch_range{});
             str << STATE_NAMES[static_cast<int>(r.state)] << " " << (r.range ? std::to_string(range.start) : "-") << " "
                 << (r.range ? std::to_string(range.seek) : "-") << " " << field(range.end) << " " << r.bytes << " "
-                << r.size << " " << r.updated << " " << r.url << "\n";
+                << r.size << " " << r.updated << " " << requests(r) << " " << r.url << "\n";
         }
 
         auto tmp = path;

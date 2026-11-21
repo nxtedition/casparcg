@@ -39,25 +39,12 @@ AMCPCommandQueue::AMCPCommandQueue(const std::wstring&                          
 
 AMCPCommandQueue::~AMCPCommandQueue() {}
 
-std::future<bool> exec_cmd(std::shared_ptr<AMCPCommand>                         cmd,
-                           const spl::shared_ptr<std::vector<channel_context>>& channels,
-                           bool                                                 reply_without_req_id)
+// Must be called from within a catch block.
+void send_error_reply(const std::shared_ptr<AMCPCommand>& cmd, bool reply_without_req_id)
 {
     try {
         try {
-            caspar::timer timer;
-
-            auto name = cmd->name();
-            CASPAR_LOG(debug) << "Executing command: " << name;
-
-            auto res = cmd->Execute(channels).share();
-            return std::async(std::launch::async, [cmd, res, reply_without_req_id, timer, name]() -> bool {
-                cmd->SendReply(res.get(), reply_without_req_id);
-
-                CASPAR_LOG(debug) << "Executed command (" << timer.elapsed() << "s): " << name;
-                return true;
-            });
-
+            throw;
         } catch (file_not_found&) {
             CASPAR_LOG(error) << " File not found.";
             cmd->SendReply(L"404 " + cmd->name() + L" FAILED\r\n", reply_without_req_id);
@@ -80,6 +67,33 @@ std::future<bool> exec_cmd(std::shared_ptr<AMCPCommand>                         
 
     } catch (...) {
         CASPAR_LOG_CURRENT_EXCEPTION();
+    }
+}
+
+std::future<bool> exec_cmd(std::shared_ptr<AMCPCommand>                         cmd,
+                           const spl::shared_ptr<std::vector<channel_context>>& channels,
+                           bool                                                 reply_without_req_id)
+{
+    try {
+        caspar::timer timer;
+
+        auto name = cmd->name();
+        CASPAR_LOG(debug) << "Executing command: " << name;
+
+        auto res = cmd->Execute(channels).share();
+        return std::async(std::launch::async, [cmd, res, reply_without_req_id, timer, name]() -> bool {
+            try {
+                cmd->SendReply(res.get(), reply_without_req_id);
+            } catch (...) {
+                send_error_reply(cmd, reply_without_req_id);
+                return false;
+            }
+
+            CASPAR_LOG(debug) << "Executed command (" << timer.elapsed() << "s): " << name;
+            return true;
+        });
+    } catch (...) {
+        send_error_reply(cmd, reply_without_req_id);
     }
 
     return make_ready_future(false);

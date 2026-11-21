@@ -1695,7 +1695,10 @@ std::wstring mixer_grid_command(command_context& ctx)
     int                duration = ctx.parameters.size() > 1 ? std::stoi(ctx.parameters[1]) : 0;
     std::wstring       tween    = ctx.parameters.size() > 2 ? ctx.parameters[2] : L"linear";
     int                n        = std::stoi(ctx.parameters.at(0));
-    double             delta    = 1.0 / static_cast<double>(n);
+    if (n < 1 || n > 64) {
+        CASPAR_THROW_EXCEPTION(user_error() << msg_info(L"GRID resolution must be between 1 and 64"));
+    }
+    double delta = 1.0 / static_cast<double>(n);
     for (int x = 0; x < n; ++x) {
         for (int y = 0; y < n; ++y) {
             int index = x + y * n + 1;

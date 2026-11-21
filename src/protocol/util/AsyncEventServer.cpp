@@ -51,6 +51,7 @@ class connection : public spl::enable_shared_from_this<connection>
     const spl::shared_ptr<tcp::socket>       socket_;
     std::shared_ptr<boost::asio::io_context> io_context_;
     const std::wstring                       listen_port_;
+    const std::wstring                       ipv4_address_;
     const spl::shared_ptr<connection_set>    connection_set_;
     protocol_strategy_factory<char>::ptr     protocol_factory_;
     std::shared_ptr<protocol_strategy<char>> protocol_;
@@ -116,11 +117,12 @@ class connection : public spl::enable_shared_from_this<connection>
   public:
     static spl::shared_ptr<connection> create(std::shared_ptr<boost::asio::io_context>    io_context,
                                               spl::shared_ptr<tcp::socket>                socket,
+                                              const std::wstring&                         remote_address,
                                               const protocol_strategy_factory<char>::ptr& protocol,
                                               spl::shared_ptr<connection_set>             connection_set)
     {
-        spl::shared_ptr<connection> con(
-            new connection(std::move(io_context), std::move(socket), std::move(protocol), std::move(connection_set)));
+        spl::shared_ptr<connection> con(new connection(
+            std::move(io_context), std::move(socket), remote_address, std::move(protocol), std::move(connection_set)));
         con->init();
         con->read_some();
         return con;
@@ -134,10 +136,7 @@ class connection : public spl::enable_shared_from_this<connection>
 
     std::wstring address() const { return u16(socket_->local_endpoint().address().to_string()); }
 
-    std::wstring ipv4_address() const
-    {
-        return socket_->is_open() ? u16(socket_->remote_endpoint().address().to_string()) : L"no-address";
-    }
+    std::wstring ipv4_address() const { return ipv4_address_; }
 
     void send(std::string&& data)
     {
@@ -199,11 +198,13 @@ class connection : public spl::enable_shared_from_this<connection>
 
     connection(const std::shared_ptr<boost::asio::io_context>& io_context,
                const spl::shared_ptr<tcp::socket>&             socket,
+               const std::wstring&                             remote_address,
                const protocol_strategy_factory<char>::ptr&     protocol_factory,
                const spl::shared_ptr<connection_set>&          connection_set)
         : socket_(socket)
         , io_context_(io_context)
         , listen_port_(socket_->is_open() ? std::to_wstring(socket_->local_endpoint().port()) : L"no-port")
+        , ipv4_address_(remote_address)
         , connection_set_(connection_set)
         , protocol_factory_(protocol_factory)
         , is_writing_(false)
@@ -341,18 +342,33 @@ struct AsyncEventServer::implementation : public spl::enable_shared_from_this<im
             return;
 
         if (!error) {
-            boost::system::error_code ec;
-            socket->set_option(boost::asio::socket_base::keep_alive(true), ec);
+            try {
+                boost::system::error_code ec;
+                auto                      remote_endpoint = socket->remote_endpoint(ec);
 
-            if (ec)
-                CASPAR_LOG(warning) << print() << L" Failed to enable TCP keep-alive on socket";
+                if (ec) {
+                    // e.g. a health check or port scan that reset the connection before it was accepted
+                    CASPAR_LOG(info) << print() << L" Client disconnected before the connection was accepted.";
+                } else {
+                    socket->set_option(boost::asio::socket_base::keep_alive(true), ec);
 
-            auto conn = connection::create(io_context_, socket, protocol_factory_, connection_set_);
-            connection_set_->insert(conn);
+                    if (ec)
+                        CASPAR_LOG(warning) << print() << L" Failed to enable TCP keep-alive on socket";
 
-            for (auto& lifecycle_factory : lifecycle_factories_) {
-                auto lifecycle_bound = lifecycle_factory(u8(conn->ipv4_address()));
-                conn->add_lifecycle_bound_object(lifecycle_bound.first, lifecycle_bound.second);
+                    auto conn = connection::create(io_context_,
+                                                   socket,
+                                                   u16(remote_endpoint.address().to_string()),
+                                                   protocol_factory_,
+                                                   connection_set_);
+                    connection_set_->insert(conn);
+
+                    for (auto& lifecycle_factory : lifecycle_factories_) {
+                        auto lifecycle_bound = lifecycle_factory(u8(conn->ipv4_address()));
+                        conn->add_lifecycle_bound_object(lifecycle_bound.first, lifecycle_bound.second);
+                    }
+                }
+            } catch (...) {
+                CASPAR_LOG_CURRENT_EXCEPTION();
             }
         }
         start_accept();

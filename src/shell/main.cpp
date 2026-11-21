@@ -61,8 +61,6 @@
 
 namespace caspar {
 
-std::atomic<bool> sig_exit;
-
 void setup_global_locale()
 {
     boost::locale::generator gen;
@@ -162,6 +160,9 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
 
     // Signal handlers needs to be installed after Cef has been initialized.
     boost::asio::signal_set signals(io, SIGINT, SIGTERM);
+#ifndef WIN32
+    signals.add(SIGHUP);
+#endif
     signals.async_wait([&](auto, auto) { io.stop(); });
 
     io.run();
